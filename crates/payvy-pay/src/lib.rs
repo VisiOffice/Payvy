@@ -13,8 +13,9 @@
 //! - **direct**: a Read and Write token. Mercury sends at once. Mercury
 //!   requires the server's IP on the token's allowlist.
 //!
-//! Ramp, Brex, Wise and Airwallex fit the same shape: list recipients, send
-//! or request a payment under an idempotency key, read its status.
+//! Ramp's read and OAuth client is in [`ramp`]. Payment submission is not
+//! enabled until its beta contract and durable submission path are verified.
+//! Brex, Wise and Airwallex are planned.
 //!
 //! Rho is the exception that proves the capability split: its API only
 //! reads accounts and transactions, so its client below has no pay method
@@ -24,6 +25,8 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+
+pub mod ramp;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
