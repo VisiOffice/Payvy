@@ -2150,3 +2150,28 @@ impl Store {
         Ok(())
     }
 }
+
+/// Payee proposals waiting for a person, oldest first.
+pub async fn open_payee_proposals(tx: &mut Tx) -> anyhow::Result<Vec<Payee>> {
+    let rows = sqlx::query(concat!(
+        "SELECT ",
+        payee_cols!(),
+        " FROM vendor_payees WHERE status = 'proposed' ORDER BY created_at"
+    ))
+    .fetch_all(&mut **tx)
+    .await?;
+    Ok(rows.iter().map(payee).collect())
+}
+
+/// Workflow proposals waiting for a person, for any vendor or the default,
+/// oldest first.
+pub async fn open_workflow_proposals(tx: &mut Tx) -> anyhow::Result<Vec<WorkflowRow>> {
+    let rows = sqlx::query(concat!(
+        "SELECT ",
+        workflow_cols!(),
+        " FROM workflows WHERE status = 'proposed' ORDER BY created_at"
+    ))
+    .fetch_all(&mut **tx)
+    .await?;
+    rows.iter().map(workflow_row).collect()
+}

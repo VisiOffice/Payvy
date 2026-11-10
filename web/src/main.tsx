@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { BrowserRouter } from 'react-router';
 import { Theme } from '@astryxdesign/core/theme';
 import { LinkProvider } from '@astryxdesign/core/Link';
+import { ToastViewport } from '@astryxdesign/core/Toast';
 import { neutralTheme } from '@astryxdesign/theme-neutral/built';
 import { RouterLink } from './RouterLink';
 import { App } from './App';
@@ -13,7 +14,9 @@ createRoot(document.getElementById('root')!).render(
     <BrowserRouter>
       <Theme theme={neutralTheme}>
         <LinkProvider component={RouterLink}>
-          <App />
+          <ToastViewport position="bottomEnd">
+            <App />
+          </ToastViewport>
         </LinkProvider>
       </Theme>
     </BrowserRouter>

@@ -360,3 +360,57 @@ async fn organizations_cannot_see_each_other() {
     assert_eq!(list["result"]["vendors"], json!([]));
     db.drop().await;
 }
+
+#[tokio::test]
+async fn the_inbox_shows_what_waits_on_a_person() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = &db.state;
+    let robert = person("robert");
+    let v = vendor(s, &robert, "King Environmental").await;
+    set_workflow(
+        s,
+        &robert,
+        Some(&v),
+        json!([
+            { "id": "ok", "type": "approve", "approvers": ["robert"] },
+            { "id": "pay", "type": "pay", "release": "manual" }
+        ]),
+    )
+    .await;
+    let b = common::bill(s, &agent("claude-ap"), &v, "189727", 45_900).await;
+    commit(
+        s,
+        &agent("claude-ap"),
+        "workflow.propose",
+        json!({ "workflow": { "steps": [{ "id": "pay", "type": "pay", "release": "auto" }] },
+                "reason": "small vendors" }),
+    )
+    .await
+    .unwrap();
+
+    let inbox = commit(s, &robert, "inbox.get", json!({})).await.unwrap()["result"].clone();
+    assert_eq!(inbox["count"], 2, "{inbox:#}");
+    assert_eq!(inbox["bills"][0]["bill"]["id"], b.as_str());
+    assert_eq!(inbox["bills"][0]["action"], "approve");
+    assert!(inbox["workflow_proposals"][0]["vendor_name"].is_null());
+    assert_eq!(
+        inbox["workflow_proposals"][0]["proposal"]["reason"],
+        "small vendors"
+    );
+
+    // Someone else isn't asked to approve robert's bill.
+    let other = commit(s, &person("maria"), "inbox.get", json!({}))
+        .await
+        .unwrap()["result"]
+        .clone();
+    assert_eq!(other["bills"].as_array().unwrap().len(), 0);
+
+    commit(s, &robert, "bill.approve", json!({ "bill_id": b }))
+        .await
+        .unwrap();
+    let inbox = commit(s, &robert, "inbox.get", json!({})).await.unwrap()["result"].clone();
+    assert_eq!(inbox["bills"][0]["action"], "release");
+    db.drop().await;
+}

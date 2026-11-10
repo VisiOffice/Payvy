@@ -244,6 +244,8 @@ export interface BillVoidInput {
   reason: string;
 }
 
+export interface InboxGetInput {}
+
 export interface PersonListInput {}
 
 export interface PersonAddInput {
@@ -372,6 +374,7 @@ export interface CommandInputs {
   "bill.release": BillReleaseInput;
   "bill.mark_paid": BillMarkPaidInput;
   "bill.void": BillVoidInput;
+  "inbox.get": InboxGetInput;
   "person.list": PersonListInput;
   "person.add": PersonAddInput;
   "person.remove": PersonRemoveInput;
@@ -419,6 +422,7 @@ export const COMMANDS: Record<CommandName, { tier: Tier; personOnly: boolean; su
   "bill.release": { tier: "confirmed", personOnly: true, summary: "Release a bill for payment at its pay step. With a bank connected, this sends the payment through it to the vendor's accepted payee; the preview shows exactly what will be sent. Preview first; commit with the returned token." },
   "bill.mark_paid": { tier: "confirmed", personOnly: false, summary: "Record that a released or ready bill was paid outside Payvy (a check, a payment made in the bank's own app). Payments sent through the connected bank are recorded on their own. Preview first; commit with the returned token." },
   "bill.void": { tier: "confirmed", personOnly: true, summary: "Void a bill entered by mistake. It no longer counts for duplicate detection. Preview first; commit with the returned token." },
+  "inbox.get": { tier: "read", personOnly: false, summary: "What is waiting on the caller: bills a step needs them to approve or release (action approve or release), and payee changes and workflow proposals a person must accept or decline. Agents see it too, to remind people." },
   "person.list": { tier: "read", personOnly: false, summary: "Everyone who can sign in to the web app, with the actor name their actions are recorded under." },
   "person.add": { tier: "routine", personOnly: true, summary: "Let someone sign in to the web app with a link sent to their email. They act as the person named by actor, with every right a person has: approving, releasing payments, accepting payees and workflows." },
   "person.remove": { tier: "routine", personOnly: true, summary: "Stop someone signing in, and sign them out everywhere. Their past actions stay on the record." },

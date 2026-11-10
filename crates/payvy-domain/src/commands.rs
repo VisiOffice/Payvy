@@ -185,6 +185,14 @@ pub const COMMANDS: &[CommandSpec] = &[
         person_only: true,
         input_schema: r#"{"type":"object","required":["bill_id","reason"],"properties":{"bill_id":{"type":"string","format":"uuid"},"reason":{"type":"string"}}}"#,
     },
+    // ── Inbox ───────────────────────────────────────────────────────────────
+    CommandSpec {
+        name: "inbox.get",
+        summary: "What is waiting on the caller: bills a step needs them to approve or release (action approve or release), and payee changes and workflow proposals a person must accept or decline. Agents see it too, to remind people.",
+        tier: RiskTier::Read,
+        person_only: false,
+        input_schema: r#"{"type":"object","properties":{}}"#,
+    },
     // ── People ──────────────────────────────────────────────────────────────
     CommandSpec {
         name: "person.list",

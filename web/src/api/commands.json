@@ -142,6 +142,13 @@
     },
     {
       "input_schema": "{\"type\":\"object\",\"properties\":{}}",
+      "name": "inbox.get",
+      "person_only": false,
+      "summary": "What is waiting on the caller: bills a step needs them to approve or release (action approve or release), and payee changes and workflow proposals a person must accept or decline. Agents see it too, to remind people.",
+      "tier": "read"
+    },
+    {
+      "input_schema": "{\"type\":\"object\",\"properties\":{}}",
       "name": "person.list",
       "person_only": false,
       "summary": "Everyone who can sign in to the web app, with the actor name their actions are recorded under.",

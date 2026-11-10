@@ -7,6 +7,7 @@ import { SessionContext } from './session';
 import { Shell } from './Shell';
 import { SignIn } from './pages/SignIn';
 import { Bills } from './pages/Bills';
+import { Inbox } from './pages/Inbox';
 
 type State = { kind: 'loading' } | { kind: 'signed_out' } | { kind: 'signed_in'; me: Me };
 
@@ -62,7 +63,7 @@ export function App() {
     <SessionContext value={{ me: state.me, signOut }}>
       <Shell>
         <Routes>
-          <Route path="/" element={<Bills mine />} />
+          <Route path="/" element={<Inbox />} />
           <Route path="/bills" element={<Bills />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
