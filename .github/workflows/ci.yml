@@ -1,0 +1,123 @@
+# Runs everything against the docker compose stores (Postgres with the
+# non-superuser `payvy` role, SeaweedFS for S3) and fakes for the model,
+# banks and mail. No repository secrets.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  rust:
+    name: Rust (fmt, clippy, test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # The same stores as local development, so the init script creates
+      # the payvy role (NOSUPERUSER NOBYPASSRLS) and RLS is really enforced.
+      - name: Start Postgres and SeaweedFS
+        run: |
+          docker compose up -d
+          for i in $(seq 60); do
+            docker compose exec -T postgres psql -h 127.0.0.1 -U payvy -d payvy -tAc 'select 1' >/dev/null 2>&1 && break
+            sleep 1
+          done
+          docker compose exec -T postgres psql -h 127.0.0.1 -U payvy -d payvy -tAc \
+            "select rolsuper, rolbypassrls from pg_roles where rolname = 'payvy'"
+          for i in $(seq 60); do curl -s -o /dev/null http://127.0.0.1:8336 && break; sleep 1; done
+
+      - name: Load .env.example
+        run: grep -E '^[A-Z_]+=' .env.example >> "$GITHUB_ENV"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # Database and S3 tests return early (and pass) when their environment
+      # is missing; fail instead if any of them skipped.
+      - name: cargo test
+        run: |
+          set -o pipefail
+          cargo test --workspace -- --nocapture 2>&1 | tee test.log
+          if grep -n 'skipping:' test.log; then
+            echo '::error::some tests skipped: the test database or S3 is not configured'
+            exit 1
+          fi
+          grep -E '^test result:' test.log | awk '{p+=$4; f+=$6; i+=$8} END {print "total: " p " passed, " f " failed, " i " ignored"}'
+
+  web:
+    name: Web (gen:api, typecheck, e2e)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start Postgres and SeaweedFS
+        run: |
+          docker compose up -d
+          for i in $(seq 60); do
+            docker compose exec -T postgres psql -h 127.0.0.1 -U payvy -d payvy -tAc 'select 1' >/dev/null 2>&1 && break
+            sleep 1
+          done
+          for i in $(seq 60); do curl -s -o /dev/null http://127.0.0.1:8336 && break; sleep 1; done
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.17.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # The app's command types must match the server's registry.
+      - name: gen:api is current
+        run: |
+          pnpm --dir web gen:api
+          git diff --exit-code -- web/src/api || {
+            echo '::error::web/src/api is stale: run pnpm --dir web gen:api and commit the result'
+            exit 1
+          }
+
+      - name: Typecheck (web and workers)
+        run: pnpm -r check
+
+      - name: Playwright browsers
+        run: pnpm --dir web exec playwright install --with-deps chromium
+
+      # Builds the app and the server, then runs every browser test against
+      # a fresh database, the SeaweedFS bucket and the fake model and banks.
+      - name: Browser tests
+        env:
+          PLAYWRIGHT_HTML_OPEN: never
+        run: pnpm --dir web -s e2e --reporter=github,list,html
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            web/playwright-report/
+            web/test-results/
+            web/e2e/.state/server.log
+          retention-days: 7
+          if-no-files-found: ignore
