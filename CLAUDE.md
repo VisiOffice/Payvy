@@ -62,7 +62,7 @@ Conventions follow Visirent (`~/Code/visirent`).
   and confirmed. It commits an unknown attempt, its event and the consumed token
   before calling Mercury; a crash or unclear response must never automatically
   resend. This is an intentional two-transaction command. Its preview skips the
-  checkpoint and the POST. Completion only proposes a payee. Invite error bodies
+  checkpoint and the POST. Completion only proposes a payee; the payment worker checks open invitations every five minutes (`check_invites`), and only a person recovers one by its Mercury ID. Invite error bodies
   and onboarding links must never reach events or logs. See `docs/payments.md`.
 - **Rho is a read-only connection** (`payvy-pay`'s `Rho`, mode `read_only`): it coexists with
   the paying bank (one live paying connection per org, plus one read-only connection per

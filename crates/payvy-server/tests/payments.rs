@@ -33,6 +33,7 @@ struct Bank0 {
     invites: HashMap<String, Value>,
     invite_posts: Vec<Value>,
     invite_failure: Option<u16>,
+    invite_gets: usize,
 }
 
 #[derive(Clone, Default)]
@@ -98,7 +99,9 @@ async fn get_invite(State(f): State<Fake>, h: HeaderMap, Path(id): Path<String>)
     if !authed(&h) {
         return unauthorized();
     }
-    match f.0.lock().unwrap().invites.get(&id) {
+    let mut b = f.0.lock().unwrap();
+    b.invite_gets += 1;
+    match b.invites.get(&id) {
         Some(i) => (StatusCode::OK, Json(i.clone())),
         None => (
             StatusCode::NOT_FOUND,
@@ -1052,5 +1055,87 @@ async fn invitation_terminal_states_and_incomplete_onboarding_do_not_propose_pay
         .await
         .unwrap();
     assert!(detail["result"]["payees"].as_array().unwrap().is_empty());
+    db.drop().await;
+}
+
+#[tokio::test]
+async fn the_invitation_checker_proposes_a_payee_once_the_vendor_completes() {
+    let Some((db, fake)) = db().await else { return };
+    let who = person("robert");
+    connect(&db, "direct").await;
+    let v = vendor(&db.state, &who, "King Environmental").await;
+    let input = json!({"vendor_id":v,"email":"ar@kingenv.com","method":"ach"});
+    confirm(&db.state, &who, "vendor.invite_payee", input)
+        .await
+        .unwrap();
+    // Waiting for the vendor: checked, nothing proposed.
+    assert_eq!(payment_worker::check_invites(&db.state).await.unwrap(), 0);
+    let gets = |f: &Fake| f.0.lock().unwrap().invite_gets;
+    assert_eq!(gets(&fake), 1);
+    // Checked a moment ago, so not asked again yet.
+    payment_worker::check_invites(&db.state).await.unwrap();
+    assert_eq!(gets(&fake), 1);
+    {
+        let mut b = fake.0.lock().unwrap();
+        let remote = b.invites.get_mut("invite-1").unwrap();
+        remote["status"] = json!("completed");
+        remote["recipientId"] = json!(KING);
+    }
+    db.advance(1);
+    assert_eq!(payment_worker::check_invites(&db.state).await.unwrap(), 1);
+    let detail = commit(&db.state, &who, "vendor.get", json!({"vendor_id":v}))
+        .await
+        .unwrap();
+    assert_eq!(detail["result"]["payees"].as_array().unwrap().len(), 1);
+    assert_eq!(detail["result"]["payees"][0]["status"], "proposed");
+    assert_eq!(detail["result"]["payees"][0]["proposed_by"], "bank");
+    // Proposed: nothing left to check, and an agent still can't accept it.
+    db.advance(1);
+    payment_worker::check_invites(&db.state).await.unwrap();
+    assert_eq!(gets(&fake), 2);
+    let proposal = detail["result"]["payees"][0]["id"].clone();
+    assert!(
+        commit(
+            &db.state,
+            &agent("bank"),
+            "vendor.accept_payee",
+            json!({"proposal_id": proposal})
+        )
+        .await
+        .is_err()
+    );
+    db.drop().await;
+}
+
+#[tokio::test]
+async fn only_a_person_recovers_an_invitation_by_its_mercury_id() {
+    let Some((db, fake)) = db().await else { return };
+    let who = person("robert");
+    connect(&db, "direct").await;
+    let v = vendor(&db.state, &who, "King Environmental").await;
+    fake.0.lock().unwrap().invite_failure = Some(503);
+    let id = confirm(
+        &db.state,
+        &who,
+        "vendor.invite_payee",
+        json!({"vendor_id":v,"email":"ar@kingenv.com","method":"ach"}),
+    )
+    .await
+    .unwrap()["result"]["invite"]["id"]
+        .clone();
+    // Uncertain delivery isn't something the checker can resolve.
+    payment_worker::check_invites(&db.state).await.unwrap();
+    assert_eq!(fake.0.lock().unwrap().invite_gets, 0);
+    assert!(matches!(
+        commit(
+            &db.state,
+            &agent("bot"),
+            "vendor.refresh_payee_invite",
+            json!({"invite_id":id,"mercury_invite_id":"invite-1"})
+        )
+        .await
+        .unwrap_err(),
+        CommandError::Forbidden(_)
+    ));
     db.drop().await;
 }
