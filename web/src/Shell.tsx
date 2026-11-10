@@ -3,9 +3,10 @@ import { useLocation } from 'react-router';
 import { run } from './api/client';
 import { AppShell } from '@astryxdesign/core/AppShell';
 import { Button } from '@astryxdesign/core/Button';
-import { SideNav, SideNavHeading, SideNavItem, SideNavSection } from '@astryxdesign/core/SideNav';
+import { SideNav, SideNavItem, SideNavSection } from '@astryxdesign/core/SideNav';
 import { Text } from '@astryxdesign/core/Text';
 import { HStack } from '@astryxdesign/core/HStack';
+import { DropdownMenu } from '@astryxdesign/core/DropdownMenu';
 import { useSession } from './session';
 import { AppearanceControl } from './Appearance';
 import { NavIcon } from './NavIcon';
@@ -43,7 +44,19 @@ export function Shell({ children }: { children: ReactNode }) {
       className="payvy-shell"
       sideNav={
         <SideNav
-          header={<SideNavHeading heading="Payvy" headingHref="/" subheading={me.organization.name} icon={<span className="payvy-brand-mark" aria-hidden="true">p<span>·</span></span>} />}
+          header={<div className="payvy-company-menu"><DropdownMenu
+            renderTrigger={props => <button {...props} className="payvy-company-switcher" aria-label={`${me.organization.name}, company menu`}>
+              <span className="payvy-company-mark" aria-hidden="true">{me.organization.name.trim().split(/\s+/).slice(0, 2).map(word => word[0]).join('').toUpperCase()}</span>
+              <span className="payvy-company-label"><strong>{me.organization.name}</strong><span>Company</span></span>
+              <svg width="14" height="18" viewBox="0 0 14 18" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m4 6 3-3 3 3m-6 6 3 3 3-3" /></svg>
+            </button>}
+            items={[
+              { label: 'Bank settings', href: '/settings/bank' },
+              { label: 'Default workflow', href: '/workflows' },
+              { type: 'divider' },
+              { label: 'Sign out', onClick: signOut },
+            ]}
+          /></div>}
           footer={
             <div className="payvy-nav-footer">
               <AppearanceControl />

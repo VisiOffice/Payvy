@@ -1,6 +1,26 @@
 import { expect, test } from '@playwright/test';
 import { agent, bill, vendor } from './api';
 
+test('company menu opens with the keyboard and works on mobile', async ({ page }, testInfo) => {
+  await page.goto('/');
+  const trigger = page.getByRole('button', { name: 'Default, company menu', exact: true });
+  await trigger.focus();
+  await page.keyboard.press('Enter');
+  await expect(page.getByRole('menuitem', { name: 'Bank settings' })).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath('company-menu-desktop.png'), animations: 'disabled' });
+  await page.getByRole('menuitem', { name: 'Bank settings' }).click();
+  await expect(page).toHaveURL('/settings/bank');
+  await expect(page.getByRole('menuitem', { name: 'Bank settings' })).toHaveCount(0);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await trigger.click();
+  await expect(page.getByRole('menuitem', { name: 'Default workflow' })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath('company-menu-mobile.png'), animations: 'disabled' });
+  await page.getByRole('menuitem', { name: 'Default workflow' }).click();
+  await expect(page).toHaveURL('/workflows');
+  await expect(page.getByRole('menuitem', { name: 'Default workflow' })).toHaveCount(0);
+});
+
 test('appearance persists, overrides the OS, and can follow it again', async ({ page }) => {
   await page.emulateMedia({ colorScheme: 'light' });
   await page.goto('/');

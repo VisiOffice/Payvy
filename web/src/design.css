@@ -46,13 +46,26 @@ body { -webkit-font-smoothing: antialiased; }
 }
 .payvy-shell .astryx-side-nav-heading { padding: 8px 8px 28px; }
 .payvy-shell .astryx-side-nav[data-mode='topbar'] .astryx-side-nav-heading { padding: 0 8px; }
-.payvy-brand-mark {
-  display: grid; place-content: center; width: 32px; height: 32px;
-  background: var(--color-text-primary); color: var(--color-background-card);
-  border-radius: 9px; font-size: 28px; font-weight: 700; letter-spacing: -3px;
-  position: relative; padding-right: 6px; line-height: 1;
+.payvy-company-menu { width: 100%; padding: 0 0 20px; }
+.payvy-company-switcher {
+  display: flex; align-items: center; gap: 9px; width: 100%; padding: 8px;
+  background: transparent; color: var(--color-text-primary); border-radius: 7px;
+  text-align: left; font: inherit; cursor: pointer;
 }
-.payvy-brand-mark span { position: absolute; right: 4px; bottom: 3px; color: #f17c8a; }
+.payvy-company-switcher:hover, .payvy-company-switcher[aria-expanded='true'] { background: var(--color-background-muted); }
+.payvy-company-switcher:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; }
+.payvy-company-switcher > svg { flex-shrink: 0; color: var(--color-text-secondary); }
+.payvy-company-label { display: grid; gap: 3px; flex: 1; min-width: 0; }
+.payvy-company-label strong { font-size: 14px; font-weight: 600; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.payvy-company-label > span { font-size: 11px; color: var(--color-text-secondary); }
+.payvy-shell .astryx-side-nav[data-mode='topbar'] { padding: 0 8px; }
+.payvy-shell .astryx-side-nav[data-mode='topbar'] .payvy-company-menu { padding: 0; }
+.payvy-company-mark {
+  display: grid; place-content: center; width: 32px; height: 32px;
+  background: var(--color-accent-muted); color: var(--color-text-accent);
+  border: 1px solid var(--color-border); border-radius: 8px;
+  font-size: 12px; font-weight: 600; line-height: 1; flex-shrink: 0;
+}
 .payvy-shell .astryx-side-nav-item { margin-bottom: 4px; }
 .payvy-shell .astryx-side-nav-item[aria-current='page'] {
   background: var(--color-accent-muted); color: var(--color-text-accent); border-radius: 6px;
