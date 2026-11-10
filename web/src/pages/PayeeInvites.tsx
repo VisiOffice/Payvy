@@ -74,9 +74,10 @@ function InviteStatus({ invite, proposalStatus, onChanged }: { invite: PayeeInvi
       <Text>Check Mercury before sending another invitation. If it exists, enter its invitation ID to check it here.</Text>
       {!invite.mercury_invite_id && <TextInput label="Mercury invitation ID" value={recoveryId} onChange={setRecoveryId} />}
     </>}
+    {invite.status === 'created' && <Text type="supporting">Payvy checks with Mercury every few minutes. When the vendor finishes, their payment details appear in Waiting on you for you to accept.</Text>}
     {proposalStatus === 'proposed' && <Text type="supporting">Review the proposed destination in Waiting on you before paying this vendor.</Text>}
     {error && <Banner status="warning" title={error} />}
-    {unresolved && <Button label="Check invitation" variant="secondary" clickAction={refresh}
+    {unresolved && <Button label={invite.status === 'unknown' ? 'Check invitation' : 'Check now'} variant="secondary" clickAction={refresh}
       isDisabled={invite.status === 'unknown' && !invite.mercury_invite_id && !recoveryId.trim()} />}
   </VStack>;
 }

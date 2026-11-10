@@ -1,7 +1,7 @@
 //! A person initiates an invitation. Mercury collects the banking details;
 //! completing it proposes a payee, and never accepts or pays one.
 use payvy_pay::{BankError, Method};
-use payvy_store::{self as store, NewPayee, PayeeInvite};
+use payvy_store::{self as store, ActorKind, NewPayee, PayeeInvite};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -131,6 +131,14 @@ pub async fn refresh(cx: &mut Cx<'_>, input: Refresh) -> Result<Value, CommandEr
         ));
     }
     let supplied_id = text(input.mercury_invite_id);
+    // Anyone may check an invitation (the invitation checker does, as the
+    // agent `bank`), but tying an uncertain attempt to an ID found in Mercury
+    // is a person's call.
+    if supplied_id.is_some() && cx.actor.kind != ActorKind::Person {
+        return Err(CommandError::Forbidden(
+            "only a person can recover an invitation by its Mercury ID".into(),
+        ));
+    }
     if supplied_id.is_some() && invite.mercury_invite_id.is_some() {
         return Err(CommandError::Invalid(
             "the Mercury invitation ID is already known".into(),

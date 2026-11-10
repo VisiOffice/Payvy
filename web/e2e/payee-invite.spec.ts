@@ -28,10 +28,11 @@ test('vendor invite previews, sends once, and still needs payee acceptance', asy
     await expect(page.getByText('Waiting for the vendor', { exact: true })).toBeVisible();
     expect((await (await fetch(`${state().mercuryUrl}/test/posts`)).json()).posts).toBe(1);
     await expect(page.getByRole('button', { name: 'Invite payment details…' })).toHaveCount(0);
+    await expect(page.getByText(/Payvy checks with Mercury every few minutes/)).toBeVisible();
     await page.reload();
     await expect(page.getByText('Waiting for the vendor', { exact: true })).toBeVisible();
     await fetch(`${state().mercuryUrl}/test/complete`, { method: 'POST' });
-    await page.getByRole('button', { name: 'Check invitation' }).click();
+    await page.getByRole('button', { name: 'Check now' }).click();
     await expect(page.getByText('Change proposed', { exact: true })).toBeVisible();
     await expect(page.getByText(/…6789/)).toBeVisible();
     expect(await page.locator('body').innerText()).not.toContain('000123456789');

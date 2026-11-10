@@ -76,9 +76,9 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "vendor.refresh_payee_invite",
-        summary: "Check a Mercury invitation. Once completed, propose its recipient for the vendor without accepting it. If delivery was uncertain, a person can recover it by supplying the invitation ID from Mercury; the email and method must match.",
+        summary: "Check a Mercury invitation. Once completed, propose its recipient for the vendor without accepting it. Payvy also checks open invitations itself every few minutes. If delivery was uncertain, a person can recover it by supplying the invitation ID from Mercury; the email and method must match.",
         tier: RiskTier::Routine,
-        person_only: true,
+        person_only: false,
         input_schema: r#"{"type":"object","required":["invite_id"],"properties":{"invite_id":{"type":"string","format":"uuid"},"mercury_invite_id":{"type":"string","description":"Only for recovering an invitation whose delivery was uncertain"}}}"#,
     },
     CommandSpec {

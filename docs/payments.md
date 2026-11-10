@@ -63,15 +63,17 @@ uses the preview's single-use token. Supported methods are `ach`, `check`,
 `domestic_wire`, and `real_time_payment`. It invites a new recipient; it does not
 change an existing Mercury recipient's details or ask for tax documents.
 
-Use **Check invitation** after the vendor responds (there is no background
-invitation polling in this first version):
+Payvy checks open invitations with Mercury every five minutes, as the agent
+`bank`, through the same command the vendor page's **Check now** button and
+any agent can run:
 
 ```
 vendor.refresh_payee_invite { "invite_id": "…" }
 vendor.accept_payee         { "proposal_id": "…" }
 ```
 
-Refresh is person-only. When Mercury reports completion and the recipient is
+The checker skips invitations whose delivery is uncertain and ones on a
+replaced bank connection; both need a person. When Mercury reports completion and the recipient is
 active with the requested method, refresh creates one payee proposal. Review
 and accept it in **Waiting on you** before it can be used to pay. Refresh previews
 roll back the proposal; repeated or concurrent refreshes cannot create another.
@@ -92,7 +94,7 @@ vendor page, or run:
 vendor.refresh_payee_invite { "invite_id": "…", "mercury_invite_id": "…" }
 ```
 
-Recovery checks the email and requested method and never sends another email.
+Only a person may recover an invitation this way. Recovery checks the email and requested method and never sends another email.
 If no invitation can be found, leave the uncertain attempt for investigation;
 you can still set up a recipient in Mercury and use the existing
 `vendor.propose_payee` → `vendor.accept_payee` flow. Payvy does not infer that an

@@ -2295,6 +2295,41 @@ pub async fn update_payee_invite(tx: &mut Tx, invite: &PayeeInvite) -> anyhow::R
     Ok(())
 }
 
+/// Open invitations Mercury can tell us about, least recently checked first:
+/// waiting for the vendor, or completed without a proposal yet. Invitations
+/// whose delivery is uncertain need a person, and ones on a replaced
+/// connection can't be resolved, so neither is checked.
+pub async fn invites_to_check(
+    tx: &mut Tx,
+    now: DateTime<Utc>,
+    every: chrono::Duration,
+    limit: i64,
+) -> anyhow::Result<Vec<Uuid>> {
+    let rows = sqlx::query(
+        "SELECT i.id FROM vendor_payee_invites i
+         JOIN bank_connections c ON c.id = i.connection_id AND c.retired_at IS NULL
+         WHERE i.mercury_invite_id IS NOT NULL AND i.proposal_id IS NULL
+           AND i.status IN ('created', 'completed')
+           AND (i.checked_at IS NULL OR i.checked_at < $1 - $2)
+         ORDER BY i.checked_at NULLS FIRST, i.created_at LIMIT $3",
+    )
+    .bind(now)
+    .bind(every)
+    .bind(limit)
+    .fetch_all(&mut **tx)
+    .await?;
+    Ok(rows.iter().map(|r| r.get("id")).collect())
+}
+
+pub async fn mark_invite_checked(tx: &mut Tx, id: Uuid, now: DateTime<Utc>) -> anyhow::Result<()> {
+    sqlx::query("UPDATE vendor_payee_invites SET checked_at = $2 WHERE id = $1")
+        .bind(id)
+        .bind(now)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
 /// Serialize competing invitation commands before any external effect.
 pub async fn lock_invite_vendor(tx: &mut Tx, vendor_id: Uuid) -> anyhow::Result<bool> {
     Ok(

@@ -38,8 +38,8 @@
     {
       "input_schema": "{\"type\":\"object\",\"required\":[\"invite_id\"],\"properties\":{\"invite_id\":{\"type\":\"string\",\"format\":\"uuid\"},\"mercury_invite_id\":{\"type\":\"string\",\"description\":\"Only for recovering an invitation whose delivery was uncertain\"}}}",
       "name": "vendor.refresh_payee_invite",
-      "person_only": true,
-      "summary": "Check a Mercury invitation. Once completed, propose its recipient for the vendor without accepting it. If delivery was uncertain, a person can recover it by supplying the invitation ID from Mercury; the email and method must match.",
+      "person_only": false,
+      "summary": "Check a Mercury invitation. Once completed, propose its recipient for the vendor without accepting it. Payvy also checks open invitations itself every few minutes. If delivery was uncertain, a person can recover it by supplying the invitation ID from Mercury; the email and method must match.",
       "tier": "routine"
     },
     {
