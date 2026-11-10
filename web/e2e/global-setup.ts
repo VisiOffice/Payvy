@@ -91,6 +91,8 @@ export default async function globalSetup() {
     PAYVY_EXTRACT_BASE_URL: `http://127.0.0.1:${MODEL_PORT}`,
     PAYVY_EXTRACT_API_KEY: 'fake',
     PAYVY_SECRETS_KEY: randomBytes(32).toString('hex'),
+    PAYVY_INBOUND_DOMAIN: 'in.payvy.test',
+    PAYVY_INBOUND_SECRET: randomBytes(32).toString('hex'),
     PAYVY_MERCURY_SANDBOX_URL: `http://127.0.0.1:${BANK_PORT}/mercury`,
     PAYVY_RHO_SANDBOX_URL: `http://127.0.0.1:${BANK_PORT}/rho`,
   };

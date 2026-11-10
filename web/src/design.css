@@ -162,3 +162,6 @@ body { -webkit-font-smoothing: antialiased; }
 @media (prefers-reduced-motion: no-preference) {
   .payvy-queue-row, .payvy-shell .astryx-side-nav-item { transition: background-color 120ms ease; }
 }
+
+/* Settings > Bill inbox: the address, easy to read and select whole. */
+.payvy-inbox-address { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 15px; padding: 6px 10px; border-radius: 6px; background: var(--color-background-body); user-select: all; overflow-wrap: anywhere; }

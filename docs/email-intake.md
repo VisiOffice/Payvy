@@ -32,7 +32,8 @@ as `in.example.com`, so it never touches the mail for your main domain.
    a subdomain, and let Cloudflare create its MX and SPF records.
 5. **Route everything to the worker**: in Email Routing's routing rules, set the catch-all
    address for `in.example.com` to *Send to a Worker* → `payvy-email-inbound`.
-6. **Create your address**: a person runs `email.new_address` (REST or MCP). `email.address`
+6. **Create your address**: a person opens Settings → Bill inbox and clicks *Create address*
+   (or runs `email.new_address` over REST or MCP). `email.address`
    shows it afterwards.
 
 Send yourself a test bill and check `email.list` and `document.list`.

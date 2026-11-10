@@ -52,6 +52,7 @@ export function Shell({ children }: { children: ReactNode }) {
             </button>}
             items={[
               { label: 'Bank settings', href: '/settings/bank' },
+              { label: 'Bill inbox', href: '/settings/email' },
               { label: 'Default workflow', href: '/workflows' },
               { type: 'divider' },
               { label: 'Sign out', onClick: signOut },
@@ -84,6 +85,7 @@ export function Shell({ children }: { children: ReactNode }) {
           </SideNavSection>
           <SideNavSection title="Settings">
             <SideNavItem label="Bank" href="/settings/bank" isSelected={pathname.startsWith('/settings/bank')} />
+            <SideNavItem label="Bill inbox" href="/settings/email" isSelected={pathname.startsWith('/settings/email')} />
           </SideNavSection>
         </SideNav>
       }
