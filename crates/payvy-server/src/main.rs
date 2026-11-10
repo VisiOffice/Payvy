@@ -173,7 +173,7 @@ impl ExtractArgs {
 /// The web app, and signing in to it with links sent by email.
 #[derive(clap::Args)]
 struct WebArgs {
-    /// Where people open the app, e.g. https://app.payvy.com; sign-in links
+    /// Where people open the app, e.g. https://beta.payvy.com; sign-in links
     /// point here. Without it, nobody can sign in (API keys still work).
     #[arg(long, env = "PAYVY_PUBLIC_URL")]
     public_url: Option<String>,

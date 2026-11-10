@@ -1,4 +1,4 @@
-# Hosted Payvy: the API at api.payvy.com and the web app at app.payvy.com, on thatch-api-prod (5.78.94.150) beside
+# Hosted Payvy: the API at dev.payvy.com and the web app at beta.payvy.com, on thatch-api-prod (5.78.94.150) beside
 # VisiStaff and Unicorn Phonics. See docs/deploy.md.
 service: payvy
 image: regatlas-llc/payvy
@@ -23,8 +23,8 @@ ssh:
 # identical in all three repos. nginx on the host terminates TLS.
 proxy:
   hosts:
-    - api.payvy.com
-    - app.payvy.com
+    - dev.payvy.com
+    - beta.payvy.com
   ssl: false
   forward_headers: true
   app_port: 7430
@@ -56,7 +56,7 @@ env:
     # Reads bills from documents; the model defaults to claude-opus-5-5.
     PAYVY_EXTRACT_PROVIDER: anthropic
     # Sign-in links open the app here. The image serves the app itself.
-    PAYVY_PUBLIC_URL: https://app.payvy.com
+    PAYVY_PUBLIC_URL: https://beta.payvy.com
     # Sign-in links and notifications go out through Cloudflare Email Service.
     PAYVY_MAIL_FROM: Payvy <no-reply@payvy.com>
     PAYVY_CLOUDFLARE_ACCOUNT_ID: 65a93a8aa12255c42cb5bbaa1d1a2ea2

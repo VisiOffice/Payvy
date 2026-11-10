@@ -1,4 +1,8 @@
-# Hosted deploy (api.payvy.com)
+# Hosted deploy (dev.payvy.com)
+
+**Until cutover** the rebuild runs at `dev.payvy.com` (API, MCP, webhooks) and `beta.payvy.com`
+(the web app); the legacy app keeps `api.payvy.com` and `app.payvy.com`, which are still used to
+look up old records. At cutover the new stack takes over those names.
 
 Hosted Payvy runs on `thatch-api-prod` (5.78.94.150, Hetzner Hillsboro) with
 [Kamal](https://kamal-deploy.org), beside VisiStaff and Unicorn Phonics. Self-hosters can use
@@ -20,8 +24,8 @@ Kamal runs under the mise Ruby; if it reports `can't find gem kamal`:
 - **Database:** the `payvy-db` accessory (Postgres 18.6), data in `/root/payvy-db/data`. The
   init script `deploy/postgres-init/01-app-role.sh` creates the `payvy` role, which owns the
   database but is not a superuser, so row-level security holds in production.
-- **Traffic:** Cloudflare DNS (`api.payvy.com`, A record, not proxied) → host nginx, TLS from
-  certbot (`deploy/nginx-api.payvy.com.conf`) → kamal-proxy on `127.0.0.1:8090` → the app on
+- **Traffic:** Cloudflare DNS (`dev.payvy.com` and `beta.payvy.com`, A records, not proxied) → host nginx, TLS from
+  certbot (`deploy/nginx-payvy-beta.conf`) → kamal-proxy on `127.0.0.1:8090` → the app on
   7430. kamal-proxy is shared: its `proxy.run` settings must match the other apps on the box.
 - **Documents:** R2 bucket `payvy-documents` in the Robert@payvy.com Cloudflare account.
 - **Inbound email:** `in.payvy.com` on the payvy.com Email Routing. The zone's catch-all still
@@ -39,16 +43,16 @@ Kamal runs under the mise Ruby; if it reports `can't find gem kamal`:
    losing it means reconnecting every bank). Add an R2 API token scoped to
    `payvy-documents` (Object Read & Write) as two items, and an Anthropic API key for reading
    documents (`PAYVY_EXTRACT_API_KEY`). Put the references in `.kamal/secrets`.
-2. Cloudflare: A records `api.payvy.com` and `app.payvy.com` → 5.78.94.150 (DNS only); Email
+2. Cloudflare: A records `dev.payvy.com` and `beta.payvy.com` → 5.78.94.150 (DNS only); Email
    Routing → add the subdomain `in.payvy.com`; Email Service → onboard `payvy.com` for sending
    and create an API token allowed to send email (`PAYVY_CLOUDFLARE_EMAIL_TOKEN`).
 3. On the host: copy the nginx file to `/etc/nginx/sites-available/payvy`, link it, get the
-   certificate (`certbot certonly --webroot -w /var/www/payvy-acme -d api.payvy.com -d app.payvy.com`), then
+   certificate (`certbot certonly --webroot -w /var/www/payvy-acme -d dev.payvy.com -d beta.payvy.com`), then
    `nginx -t && systemctl reload nginx`.
 4. `kamal accessory boot db`, then `kamal deploy`.
 5. Legacy worker: `wrangler secret put PAYVY_INBOUND_SECRET` and deploy it.
 6. Let the first person sign in (`kamal app exec "payvy person add --email ... --name ..."`),
-   open https://app.payvy.com and ask for a link. Create the inbound address
+   open https://beta.payvy.com and ask for a link. Create the inbound address
    (`email.new_address`), then send a test bill.
 7. Paying through Mercury: in direct mode, add 5.78.94.150 to the token's IP allowlist; request
    mode needs none. Connect with `bank.connect` (see `docs/payments.md`).

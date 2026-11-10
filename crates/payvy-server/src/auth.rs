@@ -33,7 +33,7 @@ const SESSION_DAYS: i64 = 30;
 const LINKS_PER_WINDOW: i64 = 5;
 
 pub struct Auth {
-    /// Where people open the app, e.g. https://app.payvy.com. Links point here.
+    /// Where people open the app, e.g. https://beta.payvy.com. Links point here.
     pub public_url: String,
     pub mailer: Mailer,
 }
