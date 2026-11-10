@@ -6,6 +6,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import pg from 'pg';
+import { startFakeBank } from './fake-bank';
 import { startFakeModel } from './fake-model';
 import { linkAfter, logMark } from './mail';
 import {
@@ -13,6 +14,7 @@ import {
   APP_URL,
   BASE_URL,
   MODEL_PORT,
+  BANK_PORT,
   PERSON,
   PORT,
   ROOT,
@@ -61,6 +63,7 @@ export default async function globalSetup() {
   await admin.end();
 
   const model = await startFakeModel(MODEL_PORT);
+  const bank = await startFakeBank(BANK_PORT);
 
   // Only what this run needs: nothing from the developer's shell that could
   // point it at a real bank, mailer or model.
@@ -85,6 +88,9 @@ export default async function globalSetup() {
     PAYVY_EXTRACT_MODEL: 'fake',
     PAYVY_EXTRACT_BASE_URL: `http://127.0.0.1:${MODEL_PORT}`,
     PAYVY_EXTRACT_API_KEY: 'fake',
+    PAYVY_SECRETS_KEY: randomBytes(32).toString('hex'),
+    PAYVY_MERCURY_SANDBOX_URL: `http://127.0.0.1:${BANK_PORT}/mercury`,
+    PAYVY_RHO_SANDBOX_URL: `http://127.0.0.1:${BANK_PORT}/rho`,
   };
   const serverLog = path.join(STATE_DIR, 'server.log');
   const out = fs.openSync(serverLog, 'w');
@@ -135,6 +141,7 @@ export default async function globalSetup() {
     server.kill('SIGTERM');
     await new Promise((r) => server.once('exit', r));
     model.close();
+    bank.close();
     const admin = new pg.Client({ connectionString: ADMIN_URL });
     await admin.connect();
     await admin.query(`DROP DATABASE IF EXISTS ${db} WITH (FORCE)`);

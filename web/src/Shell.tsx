@@ -56,6 +56,9 @@ export function Shell({ children }: { children: ReactNode }) {
               />
             ))}
           </SideNavSection>
+          <SideNavSection title="Settings">
+            <SideNavItem label="Bank" href="/settings/bank" isSelected={pathname.startsWith('/settings/bank')} />
+          </SideNavSection>
         </SideNav>
       }
     >

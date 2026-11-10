@@ -14,6 +14,7 @@ import { Vendors } from './pages/Vendors';
 // The bill page brings pdf.js; load it only when a bill is opened.
 const BillPage = lazy(() => import('./pages/Bill').then((m) => ({ default: m.BillPage })));
 const Workflows = lazy(() => import('./pages/Workflows').then((m) => ({ default: m.Workflows })));
+const Bank = lazy(() => import('./pages/Bank').then((m) => ({ default: m.Bank })));
 const VendorPage = lazy(() => import('./pages/Vendor').then((m) => ({ default: m.VendorPage })));
 const DocumentReview = lazy(() =>
   import('./pages/DocumentReview').then((m) => ({ default: m.DocumentReview })),
@@ -107,6 +108,14 @@ export function App() {
             element={
               <Suspense fallback={<Spinner label="Loading" />}>
                 <VendorPage />
+              </Suspense>
+            }
+          />
+          <Route
+            path="/settings/bank"
+            element={
+              <Suspense fallback={<Spinner label="Loading" />}>
+                <Bank />
               </Suspense>
             }
           />

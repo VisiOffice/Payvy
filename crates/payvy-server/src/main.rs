@@ -38,6 +38,14 @@ enum Command {
         /// Payvy and marked paid. Losing it means reconnecting every bank.
         #[arg(long, env = "PAYVY_SECRETS_KEY", hide_env_values = true)]
         secrets_key: Option<String>,
+        /// Where a sandbox Mercury connection talks to, instead of
+        /// Mercury's own sandbox. For tests against a fake bank; production
+        /// connections always go to Mercury.
+        #[arg(long, env = "PAYVY_MERCURY_SANDBOX_URL")]
+        mercury_sandbox_url: Option<String>,
+        /// The same for a sandbox Rho connection.
+        #[arg(long, env = "PAYVY_RHO_SANDBOX_URL")]
+        rho_sandbox_url: Option<String>,
         #[command(flatten)]
         web: WebArgs,
     },
@@ -310,6 +318,8 @@ async fn main() -> anyhow::Result<()> {
             extract,
             extract_auto,
             ref secrets_key,
+            ref mercury_sandbox_url,
+            ref rho_sandbox_url,
             ref web,
         } => {
             let api_key = api_key.clone();
@@ -355,7 +365,14 @@ async fn main() -> anyhow::Result<()> {
             match secrets_key {
                 Some(key) => {
                     let sealer = payvy_server::secrets::Sealer::from_hex(key)?;
-                    state = state.with_bank(payvy_server::Bank::new(sealer));
+                    let mut bank = payvy_server::Bank::new(sealer);
+                    if let Some(url) = mercury_sandbox_url.clone() {
+                        bank.mercury_sandbox = url;
+                    }
+                    if let Some(url) = rho_sandbox_url.clone() {
+                        bank.rho_sandbox = url;
+                    }
+                    state = state.with_bank(bank);
                     tokio::spawn(payvy_server::payment_worker::run(state.clone()));
                     tracing::info!("paying through connected banks");
                 }

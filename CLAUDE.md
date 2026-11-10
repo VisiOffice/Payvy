@@ -113,8 +113,10 @@ and `pnpm -r check` when `web/` or `workers/` changed.
 
 Playwright drives the built app on the real server (`target/debug/payvy`, port 7431) against a
 fresh database it drops afterwards, and a `payvy-e2e` bucket in the compose SeaweedFS. Nothing
-else is mocked except the model: `fake-model.ts` answers as an OpenAI-compatible API with what
-each fixture invoice prints, so extraction, checks and vendor matching run for real. Sign-in
+else is mocked except the model and the banks: `fake-model.ts` answers as an OpenAI-compatible API
+with what each fixture invoice prints, so extraction, checks and vendor matching run for real;
+`fake-bank.ts` stands in for Mercury and Rho, reached only through sandbox connections
+(`PAYVY_MERCURY_SANDBOX_URL`, `PAYVY_RHO_SANDBOX_URL`; production always goes to the real bank). Sign-in
 links are read from the server log (no mailer configured), so the tests sign in as a person
 does. Setup data is made through the command API with an agent key; what only a person may do
 (accept, approve, release, reject) is done in the browser. Run them when a change touches the

@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useState, type ComponentProps, type ReactNode } from 'react';
 import { useNavigate, useParams } from 'react-router';
-import { Badge } from '@astryxdesign/core/Badge';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
+import { Collapsible } from '@astryxdesign/core/Collapsible';
 import { DateInput } from '@astryxdesign/core/DateInput';
 import { Heading } from '@astryxdesign/core/Heading';
 import { HStack } from '@astryxdesign/core/HStack';
@@ -37,6 +37,29 @@ interface Form {
 
 const EMPTY: Form = { vendor_id: '', invoice_number: '', invoice_date: '', due_date: '', amount: '', memo: '' };
 
+
+/** What each extraction check looks at, in words. */
+const CHECK: Record<string, string> = {
+  is_invoice: 'It is an invoice',
+  vendor: 'Vendor',
+  total: 'Total',
+  invoice_number: 'Invoice number',
+  invoice_date: 'Invoice date',
+  invoice_date_readable: 'Invoice date',
+  due_date_readable: 'Due date',
+  due_after_invoice: 'Due after the invoice date',
+  currency: 'Currency',
+  lines_readable: 'Line items',
+  lines_add_up: 'Line items add up',
+  subtotal_plus_tax: 'Subtotal plus tax is the total',
+};
+
+/** A check's detail for a person: the server also writes it for agents. */
+function checkDetail(c: { check: string; detail: string }, newVendor: string | undefined): string {
+  if (c.check === 'vendor' && newVendor) return `${newVendor} isn't one of your vendors yet. Add it, or choose another.`;
+  if (c.check === 'vendor') return c.detail.replace(/; pick one$/, ': choose one.');
+  return c.detail;
+}
 
 type ISODate = NonNullable<ComponentProps<typeof DateInput>['value']>;
 /** A form date for DateInput: YYYY-MM-DD, or nothing. */
@@ -168,10 +191,24 @@ export function DocumentReview() {
     }
   }
 
+  const checks = x?.checks ?? [];
+  // A vendor problem is settled once someone chooses or adds the vendor.
+  const open = checks.filter((c) => !c.ok && !(c.check === 'vendor' && form.vendor_id));
+  const passed = checks.filter((c) => c.ok);
+  const title = x?.draft?.vendor_name
+    ? `${x.draft.vendor_name}${x.draft.invoice_number ? ` · ${x.draft.invoice_number}` : ''}`
+    : doc.filename;
+  const missing = [
+    !form.vendor_id && 'choose a vendor',
+    !form.invoice_number.trim() && 'enter the invoice number',
+    !form.invoice_date && 'enter the invoice date',
+    !amountCents && 'enter the amount',
+  ].filter((m): m is string => !!m);
+
   const match = x?.vendor_match;
   const vendorNote =
     match?.result === 'matched'
-      ? `Matched ${match.name} (${match.confidence}): ${match.reasons.join('; ')}`
+      ? `Matched ${match.name}: ${match.reasons.join('; ')}`
       : match?.result === 'ambiguous'
         ? `More than one vendor fits: ${match.vendor_ids
             .map((v) => vendors.find((x) => x.id === v)?.name ?? v)
@@ -183,9 +220,10 @@ export function DocumentReview() {
       <div className="payvy-split-side">
         <VStack gap={5} padding={5}>
           <VStack gap={1}>
-            <Heading level={1}>{doc.filename}</Heading>
-            <Text type="supporting">
-              {doc.source === 'email' ? 'Emailed' : 'Uploaded'} {date(doc.received_at)}
+            <Heading level={1}>{title}</Heading>
+            <Text type="supporting" className="payvy-wrap">
+              {title !== doc.filename ? `${doc.filename} · ` : ''}
+              {doc.source === 'email' ? 'emailed' : 'uploaded'} {date(doc.received_at)}
               {x ? ` · read by ${x.model}` : ''}
             </Text>
           </VStack>
@@ -217,14 +255,19 @@ export function DocumentReview() {
               endContent={<Button label="Try again" size="sm" clickAction={readAgain} />}
             />
           )}
-          {latest && latest.failed_checks.length > 0 && (
+          {doc.status === 'inbox' && open.length > 0 && (
             <Banner
               status="warning"
               title="Check these before making it a bill"
-              description={(x?.checks ?? [])
-                .filter((c) => !c.ok)
-                .map((c) => c.detail)
-                .join(' ')}
+              description={
+                <ul className="payvy-issues">
+                  {open.map((c) => (
+                    <li key={c.check}>
+                      <strong>{CHECK[c.check] ?? c.check}:</strong> {checkDetail(c, latest?.new_vendor?.name)}
+                    </li>
+                  ))}
+                </ul>
+              }
             />
           )}
 
@@ -242,10 +285,12 @@ export function DocumentReview() {
                 />
               </Field>
               {latest?.new_vendor && !form.vendor_id && (
-                <HStack gap={2} vAlign="center">
-                  <Text type="supporting">No vendor on file matches.</Text>
-                  <Button label={`Add ${latest.new_vendor.name}`} size="sm" clickAction={addVendor} />
-                </HStack>
+                <Button
+                  label={`Add ${latest.new_vendor.name} as a vendor`}
+                  size="sm"
+                  variant="secondary"
+                  clickAction={addVendor}
+                />
               )}
               <Field focusKey="invoice_number" onFocus={setFocus}>
                 <TextInput
@@ -269,12 +314,14 @@ export function DocumentReview() {
                   <DateInput
                     label="Due"
                     format="date"
-                    description="Blank: the vendor's terms"
                     value={iso(form.due_date)}
                     onChange={(v) => set({ due_date: v ?? '' })}
                   />
                 </Field>
               </HStack>
+              {!form.due_date && (
+                <Text type="supporting">No due date: the vendor's payment terms decide it.</Text>
+              )}
               <Field focusKey="total" onFocus={setFocus}>
                 <TextInput
                   label="Amount"
@@ -291,13 +338,21 @@ export function DocumentReview() {
 
               {lines && (
                 <VStack gap={1}>
-                  <Text weight="semibold">Lines</Text>
+                  <Text type="label">Lines</Text>
                   {lines.map((l, i) => (
                     <HStack key={i} hAlign="between" gap={3}>
                       <Text>{l.description}</Text>
                       <Text hasTabularNumbers>{money(l.amount_cents)}</Text>
                     </HStack>
                   ))}
+                  {amountCents !== null && (
+                    <HStack hAlign="between" gap={3} className="payvy-total">
+                      <Text weight="semibold">Total</Text>
+                      <Text weight="semibold" hasTabularNumbers>
+                        {money(amountCents)}
+                      </Text>
+                    </HStack>
+                  )}
                 </VStack>
               )}
               {latest?.bill_input?.lines && !lines && (
@@ -316,24 +371,35 @@ export function DocumentReview() {
                 />
               )}
 
-              <HStack gap={2}>
-                <Button label="Create bill" variant="primary" isDisabled={!canCreate} clickAction={() => create()} />
-                {x && <Button label="Read again" variant="ghost" clickAction={readAgain} />}
-                <Button label="Not a bill" variant="ghost" onClick={() => setTrashing(true)} />
-              </HStack>
+              <VStack gap={2}>
+                <HStack gap={2} wrap="wrap">
+                  <Button label="Create bill" variant="primary" isDisabled={!canCreate} clickAction={() => create()} />
+                  {x && <Button label="Read again" variant="ghost" clickAction={readAgain} />}
+                  <Button label="Not a bill" variant="ghost" onClick={() => setTrashing(true)} />
+                </HStack>
+                {missing.length > 0 && <Text type="supporting">To create the bill, {missing.join(' and ')}.</Text>}
+              </VStack>
             </VStack>
           )}
 
-          {x?.checks && x.checks.length > 0 && (
-            <VStack gap={2}>
-              <Heading level={2}>Checks</Heading>
-              {x.checks.map((c) => (
-                <HStack key={c.check} gap={2} vAlign="start">
-                  <Badge label={c.ok ? 'OK' : 'Check'} variant={c.ok ? 'success' : 'warning'} />
-                  <Text type="supporting">{c.detail}</Text>
-                </HStack>
-              ))}
-            </VStack>
+          {passed.length > 0 && (
+            <Collapsible
+              defaultIsOpen={false}
+              trigger={
+                <Text type="supporting">
+                  ✓ {passed.length} check{passed.length === 1 ? '' : 's'} passed
+                </Text>
+              }
+            >
+              <ul className="payvy-issues payvy-passed">
+                {passed.map((c) => (
+                  <li key={c.check}>
+                    {CHECK[c.check] ?? c.check}
+                    {c.detail && c.check !== 'is_invoice' ? <Text type="supporting"> · {c.detail}</Text> : null}
+                  </li>
+                ))}
+              </ul>
+            </Collapsible>
           )}
         </VStack>
       </div>
