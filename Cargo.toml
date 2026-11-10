@@ -1,0 +1,46 @@
+[workspace]
+members = [
+    "crates/payvy-domain",
+    "crates/payvy-store",
+    "crates/payvy-server",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-only"
+publish = false
+
+[workspace.dependencies]
+payvy-domain = { path = "crates/payvy-domain" }
+payvy-store = { path = "crates/payvy-store" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal"] }
+axum = "0.8"
+# Runtime queries only: don't use `query!` (it needs a live database or
+# offline data at build time). `macros` is on only for `migrate!`.
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json", "migrate", "macros"] }
+clap = { version = "4", features = ["derive", "env"] }
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+getrandom = "0.3"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+opt-level = 1
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

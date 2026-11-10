@@ -1,0 +1,13 @@
+[package]
+name = "payvy-domain"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Pure rules, no I/O and no clock: callers pass `now`.
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+chrono.workspace = true

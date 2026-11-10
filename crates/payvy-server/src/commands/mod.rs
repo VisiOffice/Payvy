@@ -1,0 +1,218 @@
+//! Command dispatch. REST and MCP both land here, so every caller gets the
+//! same validation, risk tiers, events and errors. Handlers live one module
+//! per area; the registry itself is `payvy_domain::commands::COMMANDS`.
+
+mod bills;
+mod events;
+mod vendors;
+mod workflows;
+
+use axum::http::StatusCode;
+use chrono::{DateTime, Utc};
+use payvy_domain::commands::{self, RiskTier};
+use payvy_store::{self as store, ActorKind, Tx};
+use serde::de::DeserializeOwned;
+use serde_json::{Value, json};
+use uuid::Uuid;
+
+use crate::{Actor, AppState};
+
+#[derive(Debug, thiserror::Error)]
+pub enum CommandError {
+    #[error("unknown command {0}")]
+    Unknown(String),
+    #[error("invalid input: {0}")]
+    Invalid(String),
+    #[error("{0} not found")]
+    NotFound(&'static str),
+    #[error("{0}")]
+    Conflict(String),
+    #[error(
+        "{0} needs confirmation: call it in preview mode, then commit with the confirm_token it returns"
+    )]
+    NeedsConfirmation(&'static str),
+    #[error("{0}")]
+    BadToken(String),
+    #[error("only a person can run {0}; an agent can prepare it, and a person signs off")]
+    PersonOnly(&'static str),
+    #[error("{0}")]
+    Forbidden(String),
+    #[error(transparent)]
+    Internal(#[from] anyhow::Error),
+}
+
+impl CommandError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            CommandError::Unknown(_) => "unknown_command",
+            CommandError::Invalid(_) => "invalid_input",
+            CommandError::NotFound(_) => "not_found",
+            CommandError::Conflict(_) => "conflict",
+            CommandError::NeedsConfirmation(_) => "needs_confirmation",
+            CommandError::BadToken(_) => "bad_confirm_token",
+            CommandError::PersonOnly(_) => "person_only",
+            CommandError::Forbidden(_) => "forbidden",
+            CommandError::Internal(_) => "internal",
+        }
+    }
+
+    pub fn status(&self) -> StatusCode {
+        match self {
+            CommandError::Unknown(_) | CommandError::NotFound(_) => StatusCode::NOT_FOUND,
+            CommandError::Invalid(_) => StatusCode::UNPROCESSABLE_ENTITY,
+            CommandError::Conflict(_)
+            | CommandError::NeedsConfirmation(_)
+            | CommandError::BadToken(_) => StatusCode::CONFLICT,
+            CommandError::PersonOnly(_) | CommandError::Forbidden(_) => StatusCode::FORBIDDEN,
+            CommandError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum Mode {
+    /// Run the command and describe the effect, then roll everything back.
+    Preview,
+    Commit {
+        confirm_token: Option<String>,
+    },
+}
+
+/// Runs one command. A commit returns the resulting state and the events it
+/// appended; a write that changes nothing is an error, never a bare success.
+pub async fn run(
+    state: &AppState,
+    actor: &Actor,
+    name: &str,
+    input: Value,
+    mode: Mode,
+) -> Result<Value, CommandError> {
+    let spec = commands::find(name).ok_or_else(|| CommandError::Unknown(name.to_owned()))?;
+    if spec.person_only && actor.kind != ActorKind::Person {
+        return Err(CommandError::PersonOnly(spec.name));
+    }
+    match (spec.tier, &mode) {
+        (
+            RiskTier::Confirmed,
+            Mode::Commit {
+                confirm_token: None,
+            },
+        ) => {
+            return Err(CommandError::NeedsConfirmation(spec.name));
+        }
+        (
+            RiskTier::Confirmed,
+            Mode::Commit {
+                confirm_token: Some(t),
+            },
+        ) => {
+            state
+                .confirm
+                .check(t, spec.name, &input)
+                .map_err(CommandError::BadToken)?;
+        }
+        _ => {}
+    }
+
+    let preview = matches!(mode, Mode::Preview);
+    let mut tx = state.store.begin(actor.org_id).await?;
+    if let Mode::Commit {
+        confirm_token: Some(t),
+    } = &mode
+        && spec.tier == RiskTier::Confirmed
+        && !store::consume_confirm_token(&mut tx, actor.org_id, t, spec.name).await?
+    {
+        return Err(CommandError::BadToken(
+            "confirm_token was already used. Preview again.".into(),
+        ));
+    }
+    let mut cx = Cx {
+        tx,
+        org: actor.org_id,
+        actor,
+        now: (state.clock)(),
+        events: Vec::new(),
+    };
+    let result = execute(&mut cx, spec.name, &input).await?;
+    let Cx { tx, events, .. } = cx;
+    if preview {
+        tx.rollback().await.map_err(anyhow::Error::from)?;
+    } else {
+        tx.commit().await.map_err(anyhow::Error::from)?;
+    }
+
+    let mut out = json!({
+        "command": spec.name,
+        "mode": if preview { "preview" } else { "commit" },
+        "result": result,
+        "events": events,
+    });
+    if preview && spec.tier == RiskTier::Confirmed {
+        out["confirm_token"] = json!(state.confirm.issue(spec.name, &input));
+    }
+    Ok(out)
+}
+
+async fn execute(cx: &mut Cx<'_>, name: &str, input: &Value) -> Result<Value, CommandError> {
+    match name {
+        "vendor.create" => vendors::create(cx, parse(input)?).await,
+        "vendor.list" => vendors::list(cx).await,
+        "vendor.get" => vendors::get(cx, parse(input)?).await,
+        "vendor.add_account" => vendors::add_account(cx, parse(input)?).await,
+        "workflow.get" => workflows::get(cx, parse(input)?).await,
+        "workflow.propose" => workflows::propose(cx, parse(input)?).await,
+        "workflow.accept" => workflows::decide(cx, parse(input)?, true).await,
+        "workflow.decline" => workflows::decide(cx, parse(input)?, false).await,
+        "bill.create" => bills::create(cx, parse(input)?).await,
+        "bill.list" => bills::list(cx, parse(input)?).await,
+        "bill.get" => bills::get(cx, parse(input)?).await,
+        "bill.approve" => bills::approve(cx, parse(input)?).await,
+        "bill.reject" => bills::reject(cx, parse(input)?).await,
+        "bill.signal" => bills::signal(cx, parse(input)?).await,
+        "bill.release" => bills::release(cx, parse(input)?).await,
+        "bill.mark_paid" => bills::mark_paid(cx, parse(input)?).await,
+        "bill.void" => bills::void(cx, parse(input)?).await,
+        "event.list" => events::list(cx, parse(input)?).await,
+        other => Err(CommandError::Unknown(other.to_owned())),
+    }
+}
+
+/// What a handler works with: one organization-scoped transaction, who is
+/// acting, the time, and the events appended so far.
+pub(crate) struct Cx<'a> {
+    pub tx: Tx,
+    pub org: Uuid,
+    pub actor: &'a Actor,
+    pub now: DateTime<Utc>,
+    pub events: Vec<String>,
+}
+
+impl Cx<'_> {
+    pub async fn emit(
+        &mut self,
+        kind: &str,
+        entity: Uuid,
+        payload: Value,
+    ) -> Result<(), CommandError> {
+        store::append_event(
+            &mut self.tx,
+            self.org,
+            kind,
+            Some(entity),
+            &self.actor.name,
+            &payload,
+        )
+        .await?;
+        self.events.push(kind.to_owned());
+        Ok(())
+    }
+}
+
+fn parse<T: DeserializeOwned>(input: &Value) -> Result<T, CommandError> {
+    serde_json::from_value(input.clone()).map_err(|e| CommandError::Invalid(e.to_string()))
+}
+
+/// Trimmed, or None when blank.
+fn text(s: Option<String>) -> Option<String> {
+    s.map(|s| s.trim().to_owned()).filter(|s| !s.is_empty())
+}
