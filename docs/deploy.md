@@ -53,7 +53,7 @@ Kamal runs under the mise Ruby; if it reports `can't find gem kamal`:
    `nginx -t && systemctl reload nginx`.
 4. `kamal accessory boot db`, then `kamal deploy`.
 5. Legacy worker: `wrangler secret put PAYVY_INBOUND_SECRET` and deploy it.
-6. Let the first person sign in (`kamal app exec "payvy person add --email ... --name ..."`),
+6. Let the first person sign in (`kamal app exec --reuse "payvy person add --email ... --name ..."`; `--reuse` runs it in the live container),
    open https://beta.payvy.com and ask for a link. Create the inbound address
    (`email.new_address`), then send a test bill.
 7. Paying through Mercury: in direct mode, add 5.78.94.150 to the token's IP allowlist; request

@@ -36,5 +36,6 @@ ENV PAYVY_BIND=0.0.0.0:7430 PAYVY_WEB_DIR=/usr/share/payvy/web
 EXPOSE 7430
 HEALTHCHECK --interval=15s --timeout=3s --start-period=30s --retries=3 \
     CMD curl --fail --silent http://127.0.0.1:7430/health || exit 1
-# Migrations run at startup.
-ENTRYPOINT ["payvy", "serve"]
+# Migrations run at startup. A command, not an entrypoint, so one-off commands run as
+# written: kamal app exec "payvy person add --email ... --name ...".
+CMD ["payvy", "serve"]
