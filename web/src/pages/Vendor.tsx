@@ -19,6 +19,7 @@ import { VStack } from '@astryxdesign/core/VStack';
 import { run } from '../api/client';
 import { Page } from '../Page';
 import { PayeeInvites, type PayeeInvite } from './PayeeInvites';
+import { RampPayee } from './RampPayee';
 import { VendorDialog } from './VendorDialog';
 import { BillsTable, type Listed } from '../bills/BillsTable';
 import { METHOD } from '../inbox/types';
@@ -154,6 +155,7 @@ export function VendorPage() {
                   Not set. Anyone can propose where this vendor is paid; a person accepts it in Waiting on you.
                 </Text>
               )}
+              <RampPayee key={`ramp:${vendor.id}`} vendorId={vendor.id} onChanged={loadVendor} />
               <PayeeInvites key={vendor.id} vendor={vendor} invites={detail.payee_invites} payees={detail.payees} onChanged={loadVendor} />
               {proposed.map((p) => (
                 <HStack key={p.id} gap={2} vAlign="center" wrap="wrap">

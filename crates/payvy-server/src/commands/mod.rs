@@ -12,6 +12,7 @@ mod inbox;
 mod payee_invites;
 mod payments;
 mod people;
+mod ramp;
 mod vendors;
 mod workflows;
 
@@ -194,6 +195,14 @@ async fn execute(cx: &mut Cx<'_>, name: &str, input: &Value) -> Result<Value, Co
         "person.list" => people::list(cx).await,
         "person.add" => people::add(cx, parse(input)?).await,
         "person.remove" => people::remove(cx, parse(input)?).await,
+        "bank.authorize" => {
+            let _: bank::Accounts = parse(input)?;
+            ramp::authorize(cx).await
+        }
+        "bank.complete_authorization" => ramp::complete(cx, parse(input)?).await,
+        "bank.authorization" => ramp::authorization(cx, parse(input)?).await,
+        "bank.activate" => ramp::activate(cx, parse(input)?).await,
+        "bank.renew" => ramp::renew(cx, parse(input)?).await,
         "bank.connect" => bank::connect(cx, parse(input)?).await,
         "bank.get" => bank::get(cx).await,
         "bank.disconnect" => bank::disconnect(cx, parse(input)?).await,

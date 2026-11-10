@@ -488,3 +488,60 @@ async fn malformed_and_oversized_token_responses_fail_without_secrets() {
         ));
     }
 }
+
+#[tokio::test]
+async fn authorization_uses_encoded_state_and_exact_redirect_and_only_read_scopes() {
+    let fake = Fake::start(vec![Reply::ok(tokens())]).await;
+    let oauth = fake.oauth();
+    let redirect = "https://payvy.test/settings/bank";
+    let url = Url::parse(
+        &oauth
+            .authorize_url(Environment::Sandbox, redirect, "state+/&?")
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(url.host_str(), Some("demo.ramp.com"));
+    let params: std::collections::HashMap<_, _> = url.query_pairs().collect();
+    assert_eq!(params["state"], "state+/&?");
+    assert_eq!(params["redirect_uri"], redirect);
+    assert_eq!(params["scope"], DISCOVERY_SCOPES);
+    assert!(!params["scope"].contains(":write"));
+    oauth
+        .authorization_code("private-code+/&?", redirect)
+        .await
+        .unwrap();
+    let requests = fake.state.requests.lock().unwrap();
+    let form = Url::parse(&format!("http://unused/?{}", requests[0].body)).unwrap();
+    let params: std::collections::HashMap<_, _> = form.query_pairs().collect();
+    assert_eq!(params["grant_type"], "authorization_code");
+    assert_eq!(params["code"], "private-code+/&?");
+    assert_eq!(params["redirect_uri"], redirect);
+}
+
+#[test]
+fn authorization_refuses_unsafe_redirects_and_fake_origin_overrides() {
+    let oauth = OAuth::new(Environment::Sandbox, "client", "secret").unwrap();
+    for redirect in [
+        "http://public.test/settings/bank",
+        "https://name:password@payvy.test/callback",
+        "https://payvy.test/callback#fragment",
+        "https://payvy.test/callback?code=old",
+        "javascript:alert(1)",
+    ] {
+        assert!(
+            oauth
+                .authorize_url(Environment::Sandbox, redirect, "state")
+                .is_err()
+        );
+    }
+    for origin in [
+        "https://api.ramp.com",
+        "http://localhost:9999",
+        "http://127.0.0.1@evil.test",
+        "http://127.0.0.1/path",
+        "http://127.0.0.1/?target=evil",
+    ] {
+        assert!(Ramp::sandbox_at(origin, "token").is_err());
+        assert!(OAuth::sandbox_at(origin, "client", "secret").is_err());
+    }
+}

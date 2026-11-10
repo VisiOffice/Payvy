@@ -98,6 +98,11 @@ async fn remove_webhook(cx: &Cx<'_>, c: &BankConnection) {
 
 /// A client for this connection, with its token unsealed.
 pub(super) fn mercury(cx: &Cx<'_>, c: &BankConnection) -> Result<Mercury, CommandError> {
+    if c.provider != "mercury" {
+        return Err(CommandError::Conflict(
+            "This operation requires Mercury; Ramp payments are not enabled".into(),
+        ));
+    }
     let bank = cx.bank()?;
     let token = bank
         .sealer
@@ -242,6 +247,7 @@ async fn connect_rho(cx: &mut Cx<'_>, input: &Connect) -> Result<Value, CommandE
 }
 
 pub async fn connect(cx: &mut Cx<'_>, input: Connect) -> Result<Value, CommandError> {
+    store::lock_bank(&mut cx.tx, cx.org).await?;
     let bank = cx.bank()?;
     if input.provider == "rho" {
         return connect_rho(cx, &input).await;
@@ -347,7 +353,9 @@ pub async fn connect(cx: &mut Cx<'_>, input: Connect) -> Result<Value, CommandEr
 }
 
 fn capability(c: &BankConnection) -> &'static str {
-    if c.mode == "read_only" {
+    if c.mode == "setup" {
+        "setup"
+    } else if c.mode == "read_only" {
         "read_only"
     } else {
         "pay"
@@ -365,7 +373,9 @@ pub async fn get(cx: &mut Cx<'_>) -> Result<Value, CommandError> {
             v
         })
         .collect();
-    Ok(json!({ "connection": paying, "connections": connections }))
+    Ok(
+        json!({ "connection": paying, "connections": connections, "ramp_available": cx.bank().ok().is_some_and(|b| b.ramp.is_some()) }),
+    )
 }
 
 #[derive(Deserialize, Default)]
@@ -375,6 +385,7 @@ pub struct Disconnect {
 }
 
 pub async fn disconnect(cx: &mut Cx<'_>, input: Disconnect) -> Result<Value, CommandError> {
+    store::lock_bank(&mut cx.tx, cx.org).await?;
     let c = match input.provider.as_deref() {
         None => live(cx).await?,
         Some("rho") => live_rho(cx).await?,
@@ -447,10 +458,31 @@ pub async fn transactions(cx: &mut Cx<'_>, input: Transactions) -> Result<Value,
 #[serde(deny_unknown_fields)]
 pub struct Recipients {
     search: Option<String>,
+    recipient_id: Option<Uuid>,
 }
 
 pub async fn recipients(cx: &mut Cx<'_>, input: Recipients) -> Result<Value, CommandError> {
     let c = live(cx).await?;
+    if c.provider == "ramp" {
+        let client = super::ramp::client(cx, &c).await?;
+        if let Some(id) = input.recipient_id {
+            let destinations = super::ramp::destinations(cx, &c, id).await?;
+            return Ok(json!({"provider":"ramp","connection_id":c.id,"destinations":destinations}));
+        }
+        let needle = text(input.search).map(|s| s.to_lowercase());
+        let vendors: Vec<_> = client
+            .vendors()
+            .await?
+            .into_iter()
+            .filter(|v| {
+                v.is_active
+                    && needle
+                        .as_ref()
+                        .is_none_or(|n| v.name.to_lowercase().contains(n))
+            })
+            .collect();
+        return Ok(json!({"provider":"ramp","connection_id":c.id,"vendors":vendors}));
+    }
     let all = mercury(cx, &c)?.recipients().await?;
     let needle = text(input.search).map(|s| s.to_lowercase());
     let found: Vec<_> = all
@@ -469,6 +501,9 @@ pub async fn recipients(cx: &mut Cx<'_>, input: Recipients) -> Result<Value, Com
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProposePayee {
+    connection_id: Option<Uuid>,
+    instrument_id: Option<Uuid>,
+    instrument_fingerprint: Option<String>,
     vendor_id: Uuid,
     recipient_id: String,
     method: String,
@@ -476,6 +511,7 @@ pub struct ProposePayee {
 }
 
 pub async fn propose_payee(cx: &mut Cx<'_>, input: ProposePayee) -> Result<Value, CommandError> {
+    store::lock_bank(&mut cx.tx, cx.org).await?;
     let method = Method::parse(&input.method).ok_or_else(|| {
         CommandError::Invalid("method is ach, check, domestic_wire or real_time_payment".into())
     })?;
@@ -483,6 +519,59 @@ pub async fn propose_payee(cx: &mut Cx<'_>, input: ProposePayee) -> Result<Value
         .await?
         .ok_or(CommandError::NotFound("vendor"))?;
     let c = live(cx).await?;
+    if c.provider == "ramp" {
+        if input.method != "ach" || input.connection_id != Some(c.id) {
+            return Err(CommandError::Invalid(
+                "Choose an ACH account on the current Ramp connection".into(),
+            ));
+        }
+        let instrument = input
+            .instrument_id
+            .ok_or_else(|| CommandError::Invalid("Ramp needs an explicit instrument_id".into()))?;
+        let recipient = Uuid::parse_str(&input.recipient_id)
+            .map_err(|_| CommandError::Invalid("Ramp recipient_id must be a UUID".into()))?;
+        let details = super::ramp::destination(cx, &c, recipient, instrument).await?;
+        if details["fingerprint"].as_str() != input.instrument_fingerprint.as_deref() {
+            return Err(CommandError::Conflict(
+                "Ramp destination changed; choose the account again".into(),
+            ));
+        }
+        let fingerprint = details["fingerprint"].as_str().unwrap();
+        let p = store::insert_payee_proposal(
+            &mut cx.tx,
+            cx.org,
+            &NewPayee {
+                vendor_id: vendor.id,
+                connection_id: c.id,
+                recipient_id: &recipient.to_string(),
+                recipient_name: details["recipient_name"].as_str().unwrap(),
+                method: "ach",
+                destination: details["destination"].as_str().unwrap(),
+                reason: text(input.reason).as_deref(),
+                proposed_by: &cx.actor.name,
+                created_at: cx.now,
+            },
+        )
+        .await?;
+        let p = store::ramp::set_instrument(&mut cx.tx, p.id, instrument, fingerprint).await?;
+        cx.emit(
+            "vendor.payee_proposed",
+            vendor.id,
+            json!({"vendor_id":vendor.id,"proposal_id":p.id,"provider":"ramp","details":details}),
+        )
+        .await?;
+        return Ok(
+            json!({"proposal":p,"next":"A person verifies the destination and accepts it with vendor.accept_payee. Ramp payments remain disabled."}),
+        );
+    }
+    if input.instrument_id.is_some()
+        || input.instrument_fingerprint.is_some()
+        || input.connection_id.is_some_and(|id| id != c.id)
+    {
+        return Err(CommandError::Invalid(
+            "These mapping details do not match the current bank".into(),
+        ));
+    }
     let recipient = mercury(cx, &c)?
         .recipient_by_id(input.recipient_id.trim())
         .await?
@@ -725,6 +814,7 @@ pub async fn decide_payee(
     input: DecidePayee,
     accept: bool,
 ) -> Result<Value, CommandError> {
+    store::lock_bank(&mut cx.tx, cx.org).await?;
     let p = store::get_payee(&mut cx.tx, input.proposal_id)
         .await?
         .ok_or(CommandError::NotFound("payee proposal"))?;
@@ -740,6 +830,17 @@ pub async fn decide_payee(
             return Err(CommandError::Conflict(
                 "this was proposed for a bank connection that has since been replaced; propose it again".into(),
             ));
+        }
+        if let Some(c) = live.filter(|c| c.provider == "ramp") {
+            let instrument = p.instrument_id.ok_or_else(|| {
+                CommandError::Conflict("Propose a specific Ramp account again".into())
+            })?;
+            let vendor = Uuid::parse_str(&p.recipient_id)
+                .map_err(|_| CommandError::Conflict("Invalid Ramp vendor mapping".into()))?;
+            let details = super::ramp::destination(cx, &c, vendor, instrument).await?;
+            if details["fingerprint"].as_str() != p.instrument_fingerprint.as_deref() {
+                return Err(CommandError::Conflict("The Ramp vendor or account details changed after this proposal; propose them again".into()));
+            }
         }
     }
     let previous = store::active_payee(&mut cx.tx, p.vendor_id).await?;

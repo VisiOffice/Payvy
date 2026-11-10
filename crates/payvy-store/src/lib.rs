@@ -1677,6 +1677,8 @@ pub struct Payee {
     pub connection_id: Uuid,
     pub recipient_id: String,
     pub recipient_name: String,
+    pub instrument_id: Option<Uuid>,
+    pub instrument_fingerprint: Option<String>,
     pub method: String,
     pub destination: String,
     pub status: String,
@@ -1689,7 +1691,7 @@ pub struct Payee {
 
 macro_rules! payee_cols {
     () => {
-        "id, vendor_id, connection_id, recipient_id, recipient_name, method, destination, status, reason, proposed_by, decided_by, decided_at, created_at"
+        "id, vendor_id, connection_id, recipient_id, recipient_name, instrument_id, instrument_fingerprint, method, destination, status, reason, proposed_by, decided_by, decided_at, created_at"
     };
 }
 
@@ -1700,6 +1702,8 @@ fn payee(r: &PgRow) -> Payee {
         connection_id: r.get("connection_id"),
         recipient_id: r.get("recipient_id"),
         recipient_name: r.get("recipient_name"),
+        instrument_id: r.get("instrument_id"),
+        instrument_fingerprint: r.get("instrument_fingerprint"),
         method: r.get("method"),
         destination: r.get("destination"),
         status: r.get("status"),
@@ -2433,4 +2437,15 @@ pub async fn lock_invite_vendor(tx: &mut Tx, vendor_id: Uuid) -> anyhow::Result<
             .await?
             .is_some(),
     )
+}
+
+pub mod ramp;
+
+/// Serialize connection changes and payee decisions, including the empty-bank case.
+pub async fn lock_bank(tx: &mut Tx, org: Uuid) -> anyhow::Result<()> {
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(format!("bank:{org}"))
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
 }

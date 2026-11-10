@@ -372,6 +372,7 @@ async fn db() -> Option<(TestDb, Fake)> {
     let mut db = TestDb::new().await?;
     let (fake, base) = fake_mercury().await;
     db.state = db.state.clone().with_bank(Bank {
+        ramp: None,
         sealer: Sealer::from_hex(&"5a".repeat(32)).unwrap(),
         mercury_production: base.clone(),
         mercury_sandbox: base.clone(),

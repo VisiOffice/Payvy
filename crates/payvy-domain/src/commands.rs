@@ -100,7 +100,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         summary: "Propose who this vendor's bills are paid to: a recipient already set up in the connected bank (see bank.recipients) and a method. The account's last four digits are shown for checking. Nothing changes until a person accepts it with vendor.accept_payee. Use this when a vendor's bank details change.",
         tier: RiskTier::Routine,
         person_only: false,
-        input_schema: r#"{"type":"object","required":["vendor_id","recipient_id","method"],"properties":{"vendor_id":{"type":"string","format":"uuid"},"recipient_id":{"type":"string","description":"The recipient's id in the bank"},"method":{"type":"string","enum":["ach","check","domestic_wire","real_time_payment"]},"reason":{"type":"string","description":"Why, for the person reviewing it, e.g. where the new details came from"}}}"#,
+        input_schema: r#"{"type":"object","required":["vendor_id","recipient_id","method"],"properties":{"vendor_id":{"type":"string","format":"uuid"},"recipient_id":{"type":"string","description":"The recipient's id in the bank"},"method":{"type":"string","enum":["ach","check","domestic_wire","real_time_payment"]},"reason":{"type":"string","description":"Why, for the person reviewing it, e.g. where the new details came from"},"connection_id":{"type":"string","format":"uuid"},"instrument_id":{"type":"string","format":"uuid"},"instrument_fingerprint":{"type":"string"}}}"#,
     },
     CommandSpec {
         name: "vendor.create_recipient",
@@ -259,6 +259,41 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     // ── Bank and payments ───────────────────────────────────────────────────
     CommandSpec {
+        name: "bank.authorize",
+        summary: "Begin Ramp OAuth with read scopes. Returns a consent URL; the current bank remains active. Authorization expires after ten minutes.",
+        tier: RiskTier::Routine,
+        person_only: true,
+        input_schema: r#"{"type":"object","required":[],"properties":{}}"#,
+    },
+    CommandSpec {
+        name: "bank.complete_authorization",
+        summary: "Complete Ramp OAuth for the same person and company. Seals credentials but does not activate a connection. Never retry an unclear code exchange; start authorization again.",
+        tier: RiskTier::Routine,
+        person_only: true,
+        input_schema: r#"{"type":"object","required":["state","code"],"properties":{"state":{"type":"string"},"code":{"type":"string"}}}"#,
+    },
+    CommandSpec {
+        name: "bank.authorization",
+        summary: "Read fresh Ramp entity and funding choices for your staged authorization. Choose an exact account and fingerprint before activation.",
+        tier: RiskTier::Read,
+        person_only: true,
+        input_schema: r#"{"type":"object","required":["authorization_id"],"properties":{"authorization_id":{"type":"string","format":"uuid"}}}"#,
+    },
+    CommandSpec {
+        name: "bank.activate",
+        summary: "Select a staged Ramp connection for setup and payee mapping, explicitly replacing the current paying bank. Preview and confirm the exact account fingerprint and previous connection ID (null if none). Ramp sending and auto-pay remain disabled.",
+        tier: RiskTier::Confirmed,
+        person_only: true,
+        input_schema: r#"{"type":"object","required":["authorization_id","entity_id","account_id","fingerprint","replacing_connection_id"],"properties":{"authorization_id":{"type":"string","format":"uuid"},"entity_id":{"type":"string","format":"uuid"},"account_id":{"type":"string","format":"uuid"},"fingerprint":{"type":"string"},"replacing_connection_id":{"type":["string","null"],"format":"uuid"}}}"#,
+    },
+    CommandSpec {
+        name: "bank.renew",
+        summary: "Renew access for a live Ramp connection using its sealed refresh grant. Renewal is serialized and preserves the original refresh expiry. Preview sends nothing.",
+        tier: RiskTier::Routine,
+        person_only: true,
+        input_schema: r#"{"type":"object","required":["connection_id"],"properties":{"connection_id":{"type":"string","format":"uuid"}}}"#,
+    },
+    CommandSpec {
         name: "bank.connect",
         summary: "Connect a bank with an API token from its dashboard. Mercury pays bills: mode request (default) waits in Mercury for a Mercury admin (Custom token, RequestSendMoney scope); mode direct sends at once (Read and Write token, server IP allowlisted). Rho is always read-only (no mode to choose): it never pays and never replaces the paying bank; create its token in Rho Settings > API > Access Tokens with accounts:read and transactions:read. Payvy keeps tokens encrypted and never holds money or account numbers.",
         tier: RiskTier::Routine,
@@ -277,7 +312,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         summary: "Disconnect a bank (the paying one by default, or provider rho for the read-only one). No new payments are sent through a disconnected paying bank; ones already sent are still tracked.",
         tier: RiskTier::Routine,
         person_only: true,
-        input_schema: r#"{"type":"object","properties":{"provider":{"type":"string","enum":["mercury","rho"]}}}"#,
+        input_schema: r#"{"type":"object","properties":{"provider":{"type":"string","enum":["mercury","rho","ramp"]}}}"#,
     },
     CommandSpec {
         name: "bank.accounts",
@@ -295,10 +330,10 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "bank.recipients",
-        summary: "Recipients set up in the connected bank, with the ways each can be paid and the last four digits of each account. Use one with vendor.propose_payee.",
+        summary: "Discover existing bank payees. Ramp lists vendors first; pass recipient_id to list specific ACH instruments, masked destinations and fingerprints for vendor.propose_payee. Never guess an instrument or enter bank numbers here.",
         tier: RiskTier::Read,
         person_only: false,
-        input_schema: r#"{"type":"object","properties":{"search":{"type":"string","description":"Part of the name"}}}"#,
+        input_schema: r#"{"type":"object","properties":{"search":{"type":"string","description":"Part of the name"},"recipient_id":{"type":"string","format":"uuid"}}}"#,
     },
     CommandSpec {
         name: "payment.list",
@@ -426,9 +461,11 @@ mod tests {
     }
 
     #[test]
-    fn reads_are_never_person_only() {
+    fn shared_reads_are_available_to_agents() {
         for c in COMMANDS.iter().filter(|c| c.tier == RiskTier::Read) {
-            assert!(!c.person_only, "{}", c.name);
+            // A pending OAuth grant belongs to the initiating person, not an
+            // organization-wide connection. Its setup discovery is private.
+            assert_eq!(c.person_only, c.name == "bank.authorization", "{}", c.name);
         }
     }
 

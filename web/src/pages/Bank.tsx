@@ -21,12 +21,13 @@ import { VStack } from '@astryxdesign/core/VStack';
 import { run } from '../api/client';
 import { date, money } from '../money';
 import { Page } from '../Page';
+import { RampConnection } from './RampConnection';
 
 interface Connection {
   id: string;
-  provider: 'mercury' | 'rho';
+  provider: 'mercury' | 'rho' | 'ramp';
   environment: 'production' | 'sandbox';
-  mode: 'request' | 'direct' | 'read_only';
+  mode: 'request' | 'direct' | 'read_only' | 'setup';
   account_name: string;
   created_at: string;
   created_by: string;
@@ -34,8 +35,9 @@ interface Connection {
 }
 
 interface BankState {
+  ramp_available: boolean;
   connection: Connection | null;
-  connections: (Connection & { capability: 'pay' | 'read_only' })[];
+  connections: (Connection & { capability: 'pay' | 'read_only' | 'setup' })[];
 }
 
 interface Account {
@@ -73,6 +75,7 @@ export function Bank() {
       {bank && (
         <>
           <PayingBank connection={bank.connection} onChange={load} />
+          <RampConnection available={bank.ramp_available} onChanged={load} />
           <ReadingBank connection={rho} onChange={load} />
         </>
       )}
@@ -92,7 +95,7 @@ function Disconnect({ c, consequence, onDone }: { c: Connection; consequence: st
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const toast = useToast();
-  const name = c.provider === 'rho' ? 'Rho' : 'Mercury';
+  const name = c.provider === 'rho' ? 'Rho' : c.provider === 'ramp' ? 'Ramp' : 'Mercury';
   return (
     <>
       <Button label="Disconnect" variant="ghost" onClick={() => setOpen(true)} />
@@ -134,30 +137,31 @@ function PayingBank({ connection, onChange }: { connection: Connection | null; o
   return (
     <VStack gap={3}>
       <VStack gap={1}>
-        <Heading level={2}>Pays bills</Heading>
-        <Text type="supporting">When a person releases a bill, Payvy asks this bank to pay the vendor.</Text>
+        <Heading level={2}>{c?.provider === 'ramp' ? 'Selected bank' : 'Pays bills'}</Heading>
+        <Text type="supporting">{c?.provider === 'ramp' ? 'Ramp is selected for setup. Payments are not enabled.' : 'When a person releases a bill, Payvy asks this bank to pay the vendor.'}</Text>
       </VStack>
       <Card>
         {c && !replacing ? (
           <VStack gap={4}>
             <HStack gap={2} vAlign="center" wrap="wrap">
-              <Text weight="semibold">Mercury</Text>
+              <Text weight="semibold">{c.provider === 'ramp' ? 'Ramp' : 'Mercury'}</Text>
               {c.environment === 'sandbox' && <Badge label="Sandbox" variant="warning" />}
             </HStack>
             <MetadataList>
               <MetadataListItem label="Pays from">{c.account_name}</MetadataListItem>
-              <MetadataListItem label="Payments">{MODE[c.mode] ?? c.mode}</MetadataListItem>
+              <MetadataListItem label="Payments">{c.mode === 'setup' ? 'Disabled — setup only' : MODE[c.mode] ?? c.mode}</MetadataListItem>
               <MetadataListItem label="Updates">
-                {c.webhook_id ? 'As they happen' : 'Checked every minute'}
+                {c.provider === 'ramp' ? 'Use Renew Ramp access if your session expires' : c.webhook_id ? 'As they happen' : 'Checked every minute'}
               </MetadataListItem>
             </MetadataList>
             <HStack gap={2} hAlign="between" vAlign="center" wrap="wrap">
               <Connected c={c} />
               <HStack gap={2}>
-                <Button label="Replace" variant="ghost" onClick={() => setReplacing(true)} />
+                {c.provider === 'ramp' && <RenewRamp connectionId={c.id} />}
+                <Button label="Replace with Mercury" variant="ghost" onClick={() => setReplacing(true)} />
                 <Disconnect
                   c={c}
-                  consequence="No new payments go through Mercury. Payments already sent are still tracked until they finish. Bills released afterwards are paid outside Payvy."
+                  consequence={c.provider === 'ramp' ? 'Ramp setup is disconnected. Bills released afterwards are paid outside Payvy.' : 'No new payments go through Mercury. Payments already sent are still tracked until they finish. Bills released afterwards are paid outside Payvy.'}
                   onDone={onChange}
                 />
               </HStack>
@@ -375,4 +379,15 @@ function ConnectRho({ onConnected }: { onConnected: () => void }) {
       </HStack>
     </VStack>
   );
+}
+
+function RenewRamp({ connectionId }: { connectionId: string }) {
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  return <Button label="Renew Ramp access" variant="ghost" isDisabled={busy} onClick={async () => {
+    setBusy(true);
+    try { await run('bank.renew', { connection_id: connectionId }); toast({ body: 'Ramp access renewed' }); }
+    catch (e) { toast({ body: message(e), type: 'error' }); }
+    finally { setBusy(false); }
+  }} />;
 }

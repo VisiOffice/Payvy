@@ -463,6 +463,9 @@ pub async fn release(cx: &mut Cx<'_>, input: Release) -> Result<Value, CommandEr
     let connection = store::live_paying_connection(&mut cx.tx).await?;
     let pay = match (&connection, input.pay_elsewhere) {
         (Some(c), false) => {
+            if c.provider == "ramp" {
+                return Err(CommandError::Conflict("Ramp payments are not enabled. Pay outside Payvy and use pay_elsewhere, or reconnect Mercury.".into()));
+            }
             let vendor = store::get_vendor(&mut cx.tx, bill.vendor_id)
                 .await?
                 .ok_or(CommandError::NotFound("vendor"))?;

@@ -95,6 +95,12 @@ export default async function globalSetup() {
     PAYVY_INBOUND_SECRET: randomBytes(32).toString('hex'),
     PAYVY_MERCURY_SANDBOX_URL: `http://127.0.0.1:${BANK_PORT}/mercury`,
     PAYVY_RHO_SANDBOX_URL: `http://127.0.0.1:${BANK_PORT}/rho`,
+    PAYVY_RAMP_CLIENT_ID: 'fake-client',
+    PAYVY_RAMP_CLIENT_SECRET: 'fake-secret',
+    PAYVY_RAMP_REDIRECT_URI: `${BASE_URL}/settings/bank`,
+    PAYVY_RAMP_ENVIRONMENT: 'sandbox',
+    PAYVY_RAMP_SANDBOX_URL: `http://127.0.0.1:${BANK_PORT}`,
+
   };
   // The bank-only run needs no document store. Full suites still use real S3.
   if (process.env.PAYVY_E2E_BANK_ONLY === 'true') {

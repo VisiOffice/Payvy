@@ -51,6 +51,27 @@ export function startFakeBank(port: number): Promise<http.Server> {
   const server = http.createServer(async (req, res) => {
     const path = new URL(req.url ?? '/', 'http://bank').pathname;
 
+    if (path.startsWith('/developer/v1/')) {
+      const id = '00000000-0000-4000-8000-000000000001';
+      const second = '00000000-0000-4000-8000-000000000002';
+      const page = (data: unknown) => ({ data, page: { next: null } });
+      if (path === '/developer/v1/token' && req.method === 'POST') return send(res, 200, {
+        access_token: 'fake-ramp-access', refresh_token: 'fake-ramp-refresh', expires_in: 3600,
+        token_type: 'Bearer', scope: 'business:read entities:read bank_accounts:read vendors:read payments:read',
+      });
+      if (req.method !== 'GET') return send(res, 405, { error: 'Ramp writes are forbidden' });
+      if (req.headers.authorization !== 'Bearer fake-ramp-access') return send(res, 401, {});
+      if (path.endsWith('/business')) return send(res, 200, { id, business_name_legal: 'Ramp Test Company', active: true });
+      if (path.endsWith('/entities')) return send(res, 200, page([{ id, entity_name: 'US Operations', currency: 'USD', payment_accounts: [{ id, account_name: 'Operating', account_number_last_four: '0042', currency: 'USD' }] }]));
+      if (path.endsWith('/bank-accounts')) return send(res, 200, page([{ id, account_name: 'Operating', account_number_last_four: '0042', has_ach_details: true }]));
+      if (path.endsWith('/vendors')) return send(res, 200, page([{ id, name: 'Ramp Supplier', is_active: true }]));
+      if (path.endsWith('/payment-methods')) return send(res, 200, page([
+        { id, type: 'ACH', account_number_last_four: '1234', fee: { amount: 0, currency_code: 'USD', minor_unit_conversion_rate: 100 } },
+        { id: second, type: 'ACH', account_number_last_four: '5678', fee: { amount: 100, currency_code: 'USD', minor_unit_conversion_rate: 100 } },
+      ]));
+      return send(res, 404, {});
+    }
+
     // Test controls: how many invitations were sent; complete them all.
     if (path === '/mercury/test/posts') return send(res, 200, { posts, recipientPosts });
     if (path === '/mercury/test/complete') {

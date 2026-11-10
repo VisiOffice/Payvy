@@ -26,6 +26,7 @@ type State =
   | { kind: 'loading' }
   | { kind: 'ready'; token: string; plan: Plan | null }
   | { kind: 'needs_payee'; message: string }
+  | { kind: 'ramp_setup' }
   | { kind: 'error'; message: string };
 
 /**
@@ -56,7 +57,9 @@ export function ReleaseDialog({
       )
       .catch((e: unknown) => {
         const message = e instanceof Error ? e.message : String(e);
-        if (e instanceof ApiError && e.code === 'conflict' && message.includes('payee')) {
+        if (e instanceof ApiError && e.code === 'conflict' && message.includes('Ramp payments are not enabled')) {
+          setState({ kind: 'ramp_setup' });
+        } else if (e instanceof ApiError && e.code === 'conflict' && message.includes('payee')) {
           setState({ kind: 'needs_payee', message });
         } else {
           setState({ kind: 'error', message });
@@ -98,12 +101,12 @@ export function ReleaseDialog({
       <VStack gap={4} padding={4}>
         {state.kind === 'loading' && <Spinner label="Checking what will be sent" />}
         {state.kind === 'error' && <Banner status="error" title={state.message} />}
-        {state.kind === 'needs_payee' && (
+        {(state.kind === 'needs_payee' || state.kind === 'ramp_setup') && (
           <VStack gap={3}>
             <Banner
               status="warning"
-              title="This vendor has no bank details in Payvy yet"
-              description="Link them to a recipient in Mercury first, or release it and pay it another way."
+              title={state.kind === 'ramp_setup' ? 'Ramp payments are not enabled yet' : 'This vendor has no bank details in Payvy yet'}
+              description={state.kind === 'ramp_setup' ? 'You can release this bill to pay outside Payvy, then mark it paid.' : 'Link them to a recipient in Mercury first, or release it and pay it another way.'}
             />
             <HStack gap={2} hAlign="end">
               <Button label="Cancel" variant="ghost" onClick={onClose} />

@@ -202,6 +202,22 @@ pub struct Ramp {
     http: Client,
 }
 
+fn loopback(origin: &str) -> Result<Url, Error> {
+    let url = Url::parse(origin).map_err(|_| Error::InvalidInput)?;
+    if !cfg!(debug_assertions)
+        || url.scheme() != "http"
+        || url.host_str() != Some("127.0.0.1")
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || url.path() != "/"
+    {
+        return Err(Error::InvalidInput);
+    }
+    Ok(url)
+}
+
 fn http_client() -> Result<Client, Error> {
     Client::builder()
         .timeout(Duration::from_secs(30))
@@ -219,7 +235,12 @@ impl Ramp {
         Self::at(Url::parse(environment.origin()).unwrap(), token)
     }
 
-    // Private: only the in-module fake can supply a non-Ramp origin.
+    /// Local fake only; release builds refuse overrides.
+    pub fn sandbox_at(origin: &str, token: &str) -> Result<Self, Error> {
+        Self::at(loopback(origin)?, token)
+    }
+
+    // Non-Ramp origins are confined to debug loopback fakes.
     fn at(origin: Url, token: &str) -> Result<Self, Error> {
         if !secret_present(token) {
             return Err(Error::InvalidInput);
@@ -430,6 +451,61 @@ impl OAuth {
             client_secret: client_secret.to_owned(),
             http: http_client()?,
         })
+    }
+
+    pub fn sandbox_at(origin: &str, client_id: &str, client_secret: &str) -> Result<Self, Error> {
+        let mut client = Self::new(Environment::Sandbox, client_id, client_secret)?;
+        client.origin = loopback(origin)?;
+        Ok(client)
+    }
+
+    pub fn authorize_url(
+        &self,
+        environment: Environment,
+        redirect_uri: &str,
+        state: &str,
+    ) -> Result<String, Error> {
+        let redirect = Url::parse(redirect_uri).map_err(|_| Error::InvalidInput)?;
+        if (redirect.scheme() != "https"
+            && !(redirect.scheme() == "http"
+                && matches!(redirect.host_str(), Some("localhost" | "127.0.0.1"))))
+            || !redirect.username().is_empty()
+            || redirect.password().is_some()
+            || redirect.fragment().is_some()
+            || redirect.query().is_some()
+            || !secret_present(state)
+        {
+            return Err(Error::InvalidInput);
+        }
+        let mut url = Url::parse(match environment {
+            Environment::Production => "https://app.ramp.com/v1/authorize",
+            Environment::Sandbox => "https://demo.ramp.com/v1/authorize",
+        })
+        .unwrap();
+        url.query_pairs_mut().extend_pairs([
+            ("response_type", "code"),
+            ("client_id", self.client_id.as_str()),
+            ("scope", DISCOVERY_SCOPES),
+            ("redirect_uri", redirect_uri),
+            ("state", state),
+        ]);
+        Ok(url.into())
+    }
+
+    pub async fn authorization_code(
+        &self,
+        code: &str,
+        redirect_uri: &str,
+    ) -> Result<Tokens, Error> {
+        if !secret_present(code) {
+            return Err(Error::InvalidInput);
+        }
+        self.exchange(&[
+            ("grant_type", "authorization_code"),
+            ("code", code),
+            ("redirect_uri", redirect_uri),
+        ])
+        .await
     }
 
     async fn exchange(&self, fields: &[(&str, &str)]) -> Result<Tokens, Error> {

@@ -372,6 +372,7 @@ async fn main() -> anyhow::Result<()> {
                 Some(key) => {
                     let sealer = payvy_server::secrets::Sealer::from_hex(key)?;
                     let mut bank = payvy_server::Bank::new(sealer);
+                    bank.ramp = payvy_server::ramp::Config::from_env()?;
                     // Browser tests point sandbox connections at a local fake
                     // bank. Only debug builds accept it, and only on loopback;
                     // production connections always reach the real bank.

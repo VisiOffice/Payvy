@@ -129,7 +129,9 @@ Use exact configured redirect URIs, one-use state, strict environment checks and
 PKCE if supported by the registered app. Prevent concurrent token renewals with a
 connection lock; refresh failure disables new sends without erasing pending attempts.
 
-Use a callback under `/auth/ramp/…`, already covered by the frontend Worker proxy.
+The setup slice returns to `/settings/bank`, where the signed-in web app removes
+the OAuth query parameters and completes authorization through the command API.
+The redirect URI must exactly match the Ramp app configuration.
 Register webhooks on the public Rust API origin under `/webhooks/ramp/…`.
 Disconnect stops new sends immediately. Retain monitoring access until outstanding
 payments and the supported return window are resolved, then revoke credentials;

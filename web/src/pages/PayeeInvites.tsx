@@ -51,7 +51,7 @@ export function PayeeInvites({ vendor, invites, payees, onChanged }: {
   return <VStack gap={3}>
     {error && <Banner status="error" title={error} />}
     {current.map(invite => <InviteStatus key={invite.id} invite={invite} proposalStatus={payees.find(p => p.id === invite.proposal_id)?.status} onChanged={onChanged} />)}
-    {loaded && connection?.provider !== 'mercury' && <Text type="supporting">Connect Mercury to invite this vendor to supply payment details.</Text>}
+    {loaded && !connection && <Text type="supporting">Connect Mercury to invite this vendor to supply payment details.</Text>}
     {connection?.provider === 'mercury' && !pending && <HStack gap={2} wrap="wrap">
       <Button label="Invite payment details…" variant="secondary" onClick={() => setOpen(true)} />
       <Button label="Enter bank details…" variant="ghost" onClick={() => setEntering(true)} />

@@ -95,6 +95,7 @@ pub struct AppState {
 /// and where each bank's API is (tests point these at a fake).
 pub struct Bank {
     pub sealer: secrets::Sealer,
+    pub ramp: Option<ramp::Config>,
     pub mercury_production: String,
     pub mercury_sandbox: String,
     pub rho_production: String,
@@ -110,6 +111,7 @@ impl Bank {
     pub fn new(sealer: secrets::Sealer) -> Self {
         Self {
             sealer,
+            ramp: None,
             mercury_production: payvy_pay::MERCURY_PRODUCTION.into(),
             mercury_sandbox: payvy_pay::MERCURY_SANDBOX.into(),
             rho_production: payvy_pay::RHO_PRODUCTION.into(),
@@ -384,3 +386,5 @@ impl IntoResponse for CommandError {
             .into_response()
     }
 }
+
+pub mod ramp;

@@ -127,6 +127,7 @@ async fn db() -> Option<TestDb> {
     .await;
     let mercury_base = spawn(axum::Router::new().route("/accounts", get(mercury_accounts))).await;
     db.state = db.state.clone().with_bank(Bank {
+        ramp: None,
         sealer: Sealer::from_hex(&"5a".repeat(32)).unwrap(),
         mercury_production: mercury_base.clone(),
         mercury_sandbox: mercury_base,

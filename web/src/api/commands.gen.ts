@@ -67,6 +67,9 @@ export interface VendorProposePayeeInput {
    * Why, for the person reviewing it, e.g. where the new details came from
    */
   reason?: string;
+  connection_id?: string;
+  instrument_id?: string;
+  instrument_fingerprint?: string;
 }
 
 export interface VendorCreateRecipientInput {
@@ -342,6 +345,29 @@ export interface PersonRemoveInput {
   actor: string;
 }
 
+export interface BankAuthorizeInput {}
+
+export interface BankCompleteAuthorizationInput {
+  state: string;
+  code: string;
+}
+
+export interface BankAuthorizationInput {
+  authorization_id: string;
+}
+
+export interface BankActivateInput {
+  authorization_id: string;
+  entity_id: string;
+  account_id: string;
+  fingerprint: string;
+  replacing_connection_id: string | null;
+}
+
+export interface BankRenewInput {
+  connection_id: string;
+}
+
 export interface BankConnectInput {
   provider: "mercury" | "rho";
   token: string;
@@ -359,7 +385,7 @@ export interface BankConnectInput {
 export interface BankGetInput {}
 
 export interface BankDisconnectInput {
-  provider?: "mercury" | "rho";
+  provider?: "mercury" | "rho" | "ramp";
 }
 
 export interface BankAccountsInput {}
@@ -388,6 +414,7 @@ export interface BankRecipientsInput {
    * Part of the name
    */
   search?: string;
+  recipient_id?: string;
 }
 
 export interface PaymentListInput {
@@ -488,6 +515,11 @@ export interface CommandInputs {
   "person.list": PersonListInput;
   "person.add": PersonAddInput;
   "person.remove": PersonRemoveInput;
+  "bank.authorize": BankAuthorizeInput;
+  "bank.complete_authorization": BankCompleteAuthorizationInput;
+  "bank.authorization": BankAuthorizationInput;
+  "bank.activate": BankActivateInput;
+  "bank.renew": BankRenewInput;
   "bank.connect": BankConnectInput;
   "bank.get": BankGetInput;
   "bank.disconnect": BankDisconnectInput;
@@ -544,12 +576,17 @@ export const COMMANDS: Record<CommandName, { tier: Tier; personOnly: boolean; su
   "person.list": { tier: "read", personOnly: false, summary: "Everyone who can sign in to the web app, with the actor name their actions are recorded under." },
   "person.add": { tier: "routine", personOnly: true, summary: "Let someone sign in to the web app with a link sent to their email. They act as the person named by actor, with every right a person has: approving, releasing payments, accepting payees and workflows." },
   "person.remove": { tier: "routine", personOnly: true, summary: "Stop someone signing in, and sign them out everywhere. Their past actions stay on the record." },
+  "bank.authorize": { tier: "routine", personOnly: true, summary: "Begin Ramp OAuth with read scopes. Returns a consent URL; the current bank remains active. Authorization expires after ten minutes." },
+  "bank.complete_authorization": { tier: "routine", personOnly: true, summary: "Complete Ramp OAuth for the same person and company. Seals credentials but does not activate a connection. Never retry an unclear code exchange; start authorization again." },
+  "bank.authorization": { tier: "read", personOnly: true, summary: "Read fresh Ramp entity and funding choices for your staged authorization. Choose an exact account and fingerprint before activation." },
+  "bank.activate": { tier: "confirmed", personOnly: true, summary: "Select a staged Ramp connection for setup and payee mapping, explicitly replacing the current paying bank. Preview and confirm the exact account fingerprint and previous connection ID (null if none). Ramp sending and auto-pay remain disabled." },
+  "bank.renew": { tier: "routine", personOnly: true, summary: "Renew access for a live Ramp connection using its sealed refresh grant. Renewal is serialized and preserves the original refresh expiry. Preview sends nothing." },
   "bank.connect": { tier: "routine", personOnly: true, summary: "Connect a bank with an API token from its dashboard. Mercury pays bills: mode request (default) waits in Mercury for a Mercury admin (Custom token, RequestSendMoney scope); mode direct sends at once (Read and Write token, server IP allowlisted). Rho is always read-only (no mode to choose): it never pays and never replaces the paying bank; create its token in Rho Settings > API > Access Tokens with accounts:read and transactions:read. Payvy keeps tokens encrypted and never holds money or account numbers." },
   "bank.get": { tier: "read", personOnly: false, summary: "The connected banks: connection is the paying bank (Mercury) or null, connections lists every live connection with its capability (pay or read_only)." },
   "bank.disconnect": { tier: "routine", personOnly: true, summary: "Disconnect a bank (the paying one by default, or provider rho for the read-only one). No new payments are sent through a disconnected paying bank; ones already sent are still tracked." },
   "bank.accounts": { tier: "read", personOnly: false, summary: "Accounts at the read-only Rho connection, with balances in cents. Empty object input; refuses when no Rho connection is live." },
   "bank.transactions": { tier: "read", personOnly: false, summary: "Transactions from the read-only Rho connection: signed amounts in cents (negative is money out), counterparty, status and posted time. Filter by account, date and search text." },
-  "bank.recipients": { tier: "read", personOnly: false, summary: "Recipients set up in the connected bank, with the ways each can be paid and the last four digits of each account. Use one with vendor.propose_payee." },
+  "bank.recipients": { tier: "read", personOnly: false, summary: "Discover existing bank payees. Ramp lists vendors first; pass recipient_id to list specific ACH instruments, masked destinations and fingerprints for vendor.propose_payee. Never guess an instrument or enter bank numbers here." },
   "payment.list": { tier: "read", personOnly: false, summary: "Payments sent through the bank, newest first, or only those still waiting on the bank." },
   "payment.refresh": { tier: "routine", personOnly: false, summary: "Ask the bank where a payment stands now and record it: sent marks the bill paid; failed, cancelled or rejected sends the bill back for release; returned reopens a paid bill. Payvy does this on its own every minute or two." },
   "document.upload": { tier: "routine", personOnly: false, summary: "Add a file to the inbox: a PDF or image (PNG, JPEG, GIF, WebP, TIFF) of a bill, up to 25 MB, as base64. Its type is read from the file itself. Refused if the same file is already here, naming the existing document." },
