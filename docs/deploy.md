@@ -63,6 +63,18 @@ includes the frontend for self-hosters and rollback. Hosted frontend-only change
 need only a GitHub push after the Builds connection is enabled; API changes still
 need `kamal deploy`. Deploy compatible API additions before frontend code that uses them.
 
+For the initial cutover, Cloudflare may reject the custom domain with error `100117`
+while beta's existing DNS-only A record exists. Record its value, remove only the
+`beta.payvy.com` A record, then immediately attach `beta.payvy.com` under the Worker's
+**Settings → Domains & Routes → Add → Custom Domain** (or rerun `pnpm --dir web deploy`).
+Do not remove `dev.payvy.com`, which the proxy still needs.
+
+After cutover, update the origin's Certbot certificate to cover only `dev.payvy.com`
+(`certbot certonly --webroot -w /var/www/payvy-acme --cert-name dev.payvy.com -d dev.payvy.com`,
+then `nginx -t && systemctl reload nginx`). Its existing certificate also covers beta;
+leaving beta in that certificate would make future HTTP-01 renewals contact the Worker
+instead of the origin's challenge directory. Cloudflare manages beta's new certificate.
+
 To roll back a frontend release, use the Worker's deployment history. To move beta
 back to Hetzner, remove its Worker custom domain and restore its DNS-only A record
 to `5.78.94.150`; the existing nginx/Kamal host configuration still serves it.
