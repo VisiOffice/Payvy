@@ -125,6 +125,27 @@ the same check on demand; `payment.list` shows them):
 | Failed, cancelled, rejected | `failed` / `cancelled` / `rejected` | back to waiting for release, with the reason |
 | ACH returned (watched for 14 days after sending) | `returned` | reopened, waiting for release |
 
+### Updates as they happen
+
+With `PAYVY_WEBHOOK_URL` set (where Mercury can reach this server, e.g.
+`https://dev.payvy.com`), connecting a production Mercury account registers a
+webhook for `transaction.created` and `transaction.updated` at
+`{PAYVY_WEBHOOK_URL}/webhooks/mercury/{org}/{connection}`. Mercury returns the
+signing secret only then; Payvy seals it like the token. Replacing or
+disconnecting the connection deletes the webhook.
+
+Each delivery must carry a valid `Mercury-Signature` (HMAC-SHA256 over
+`{t}.{raw body}`, signed within 5 minutes), or it's refused. A valid one is only
+a nudge: Payvy runs `payment.refresh` for the payments it may concern (the one
+with that transaction, and any still waiting for theirs), asking Mercury itself.
+So a duplicate or out-of-order event changes nothing, and a missed one is caught
+by the checker, which keeps polling every minute.
+
+The token needs permission to create webhooks. Without it, or without
+`PAYVY_WEBHOOK_URL`, or in Mercury's sandbox (no webhooks there), connecting
+still works and the result says updates are checked every minute. Settings >
+Bank shows which.
+
 While a payment is open, the bill can't be marked paid by hand, rejected or voided. Cancel it in
 the bank first.
 

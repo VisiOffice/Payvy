@@ -1432,11 +1432,16 @@ pub struct BankConnection {
     pub created_at: DateTime<Utc>,
     pub created_by: String,
     pub retired_at: Option<DateTime<Utc>>,
+    /// Mercury's id for the webhook Payvy registered, if it has one.
+    pub webhook_id: Option<String>,
+    #[serde(skip)]
+    pub webhook_secret_sealed: Option<Vec<u8>>,
 }
 
 macro_rules! connection_cols {
     () => {
-        "id, provider, environment, mode, account_id, account_name, token_sealed, created_at, created_by, retired_at"
+        "id, provider, environment, mode, account_id, account_name, token_sealed, created_at, created_by, retired_at,
+         webhook_id, webhook_secret_sealed"
     };
 }
 
@@ -1452,7 +1457,48 @@ fn connection(r: &PgRow) -> BankConnection {
         created_at: r.get("created_at"),
         created_by: r.get("created_by"),
         retired_at: r.get("retired_at"),
+        webhook_id: r.get("webhook_id"),
+        webhook_secret_sealed: r.get("webhook_secret_sealed"),
     }
+}
+
+pub async fn set_connection_webhook(
+    tx: &mut Tx,
+    id: Uuid,
+    webhook_id: &str,
+    secret_sealed: &[u8],
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "UPDATE bank_connections SET webhook_id = $2, webhook_secret_sealed = $3 WHERE id = $1",
+    )
+    .bind(id)
+    .bind(webhook_id)
+    .bind(secret_sealed)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// Payments a Mercury transaction event may be about: the one with that
+/// transaction, and any on the connection still waiting for theirs (an
+/// approved request becomes a transaction Payvy hasn't seen yet).
+pub async fn payments_for_transaction(
+    tx: &mut Tx,
+    connection_id: Uuid,
+    transaction_id: &str,
+) -> anyhow::Result<Vec<Uuid>> {
+    let rows = sqlx::query(
+        "SELECT id FROM payments WHERE connection_id = $1
+           AND (transaction_id = $2
+                OR (transaction_id IS NULL
+                    AND status IN ('submitting', 'awaiting_bank_approval', 'pending')))
+         ORDER BY created_at",
+    )
+    .bind(connection_id)
+    .bind(transaction_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    Ok(rows.iter().map(|r| r.get("id")).collect())
 }
 
 pub struct NewConnection<'a> {

@@ -46,6 +46,11 @@ enum Command {
         /// The same for a sandbox Rho connection.
         #[arg(long, env = "PAYVY_RHO_SANDBOX_URL")]
         rho_sandbox_url: Option<String>,
+        /// Where Mercury can reach this server, e.g. https://dev.payvy.com.
+        /// Connecting Mercury then registers a webhook at
+        /// {url}/webhooks/mercury/… so payment updates arrive at once.
+        #[arg(long, env = "PAYVY_WEBHOOK_URL")]
+        webhook_url: Option<String>,
         #[command(flatten)]
         web: WebArgs,
     },
@@ -320,6 +325,7 @@ async fn main() -> anyhow::Result<()> {
             ref secrets_key,
             ref mercury_sandbox_url,
             ref rho_sandbox_url,
+            ref webhook_url,
             ref web,
         } => {
             let api_key = api_key.clone();
@@ -392,6 +398,15 @@ async fn main() -> anyhow::Result<()> {
                             "{name} must be an http://127.0.0.1 URL"
                         );
                         *slot = url.clone();
+                    }
+                    if let Some(url) = webhook_url {
+                        let parsed = reqwest::Url::parse(url)?;
+                        anyhow::ensure!(
+                            parsed.scheme() == "https",
+                            "PAYVY_WEBHOOK_URL must be an https URL Mercury can reach"
+                        );
+                        bank.webhook_base = Some(url.trim_end_matches('/').to_owned());
+                        tracing::info!(%url, "Mercury webhooks");
                     }
                     state = state.with_bank(bank);
                     tokio::spawn(payvy_server::payment_worker::run(state.clone()));

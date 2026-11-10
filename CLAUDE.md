@@ -68,6 +68,9 @@ Conventions follow Visirent (`~/Code/visirent`).
   agent `workflow`) pays only `ready_to_pay` bills, only through Mercury, only to an accepted payee,
   via the same `payments::submit`. A payment that doesn't go sets `bills.release_by_person`, which
   turns the auto pay step into `awaiting_release` (`workflow::Facts`); auto-pay never retries.
+- **Mercury webhooks are nudges, not truth.** `bank.connect` registers one (`PAYVY_WEBHOOK_URL`,
+  production only, never fails the connection); `mercury_webhook.rs` verifies `Mercury-Signature`
+  and then runs `payment.refresh`, which asks Mercury. Never take a payment's state from the payload.
 - **Rho is a read-only connection** (`payvy-pay`'s `Rho`, mode `read_only`): it coexists with
   the paying bank (one live paying connection per org, plus one read-only connection per
   provider), its client has no pay method, and `bill.release` with only Rho behaves exactly

@@ -232,6 +232,13 @@ pub struct RecipientInvite {
     pub recipient_id: Option<String>,
 }
 
+/// A webhook endpoint registered at Mercury. The secret signs deliveries
+/// and is returned only when the endpoint is created.
+pub struct Webhook {
+    pub id: String,
+    pub secret: String,
+}
+
 pub struct Mercury {
     base: String,
     token: String,
@@ -510,6 +517,48 @@ impl Mercury {
             });
         }
         Err(Self::error(status, &body))
+    }
+
+    /// Registers `url` for transaction events. Mercury returns the signing
+    /// secret only here.
+    pub async fn create_webhook(&self, url: &str) -> Result<Webhook, BankError> {
+        let (status, body) = self
+            .call(
+                self.http
+                    .post(format!("{}/webhooks", self.base))
+                    .json(&json!({
+                        "url": url, "eventTypes": ["transaction.created", "transaction.updated"]
+                    })),
+            )
+            .await?;
+        if !(200..300).contains(&status) {
+            return Err(Self::error(status, &body));
+        }
+        match (body["id"].as_str(), body["secret"].as_str()) {
+            (Some(id), Some(secret)) if !id.is_empty() && !secret.is_empty() => Ok(Webhook {
+                id: id.to_owned(),
+                secret: secret.to_owned(),
+            }),
+            _ => Err(BankError::Unclear(
+                "Mercury didn't return the webhook's id and secret".into(),
+            )),
+        }
+    }
+
+    /// Removes a webhook endpoint. One that's already gone counts as removed.
+    pub async fn delete_webhook(&self, id: &str) -> Result<(), BankError> {
+        let mut url = reqwest::Url::parse(&format!("{}/webhooks/", self.base))
+            .map_err(|_| BankError::Refused("invalid Mercury URL".into()))?;
+        url.path_segments_mut()
+            .map_err(|_| BankError::Refused("invalid Mercury URL".into()))?
+            .pop_if_empty()
+            .push(id);
+        let (status, body) = self.call(self.http.delete(url)).await?;
+        if (200..300).contains(&status) || status == 404 {
+            Ok(())
+        } else {
+            Err(Self::error(status, &body))
+        }
     }
 
     /// Where a payment stands now. In request mode, once approved, the

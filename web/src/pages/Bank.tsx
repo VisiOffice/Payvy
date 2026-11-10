@@ -30,6 +30,7 @@ interface Connection {
   account_name: string;
   created_at: string;
   created_by: string;
+  webhook_id?: string | null;
 }
 
 interface BankState {
@@ -146,6 +147,9 @@ function PayingBank({ connection, onChange }: { connection: Connection | null; o
             <MetadataList>
               <MetadataListItem label="Pays from">{c.account_name}</MetadataListItem>
               <MetadataListItem label="Payments">{MODE[c.mode] ?? c.mode}</MetadataListItem>
+              <MetadataListItem label="Updates">
+                {c.webhook_id ? 'As they happen' : 'Checked every minute'}
+              </MetadataListItem>
             </MetadataList>
             <HStack gap={2} hAlign="between" vAlign="center" wrap="wrap">
               <Connected c={c} />

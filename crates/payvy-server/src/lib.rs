@@ -6,6 +6,7 @@ pub mod extract_worker;
 pub mod inbound;
 pub mod mailer;
 pub mod mcp;
+pub mod mercury_webhook;
 pub mod payment_worker;
 pub mod secrets;
 pub mod sigv4;
@@ -98,6 +99,11 @@ pub struct Bank {
     pub mercury_sandbox: String,
     pub rho_production: String,
     pub rho_sandbox: String,
+    /// Where Mercury can reach this server (PAYVY_WEBHOOK_URL, e.g.
+    /// https://dev.payvy.com). With it, connecting Mercury registers a
+    /// webhook so payment updates arrive at once; without it the payment
+    /// checker's polling is the only path.
+    pub webhook_base: Option<String>,
 }
 
 impl Bank {
@@ -108,6 +114,7 @@ impl Bank {
             mercury_sandbox: payvy_pay::MERCURY_SANDBOX.into(),
             rho_production: payvy_pay::RHO_PRODUCTION.into(),
             rho_sandbox: payvy_pay::RHO_SANDBOX.into(),
+            webhook_base: None,
         }
     }
 }
@@ -193,6 +200,10 @@ pub fn router(state: AppState) -> Router {
     // Signed by the mail front end instead of an API key; see `inbound`.
     let webhooks = Router::new()
         .route("/webhooks/email", post(inbound::webhook))
+        .route(
+            "/webhooks/mercury/{org}/{connection}",
+            post(mercury_webhook::webhook),
+        )
         .layer(axum::extract::DefaultBodyLimit::max(
             email::MAX_RAW_BYTES + 1024,
         ));

@@ -57,6 +57,8 @@ env:
     PAYVY_EXTRACT_PROVIDER: anthropic
     # Sign-in links open the app here. The image serves the app itself.
     PAYVY_PUBLIC_URL: https://beta.payvy.com
+    # Mercury posts payment updates here; connecting Mercury registers it.
+    PAYVY_WEBHOOK_URL: https://dev.payvy.com
     # Sign-in links and notifications go out through Amazon SES, where
     # payvy.com is already verified (the legacy app sends from it too).
     PAYVY_MAIL_FROM: Payvy <noreply@payvy.com>

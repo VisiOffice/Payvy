@@ -20,6 +20,7 @@ use common::{TestDb, agent, commit, confirm, person, set_workflow, status, vendo
 const TOKEN: &str = "secret-token:mercury_sandbox_good";
 const CHECKING: &str = "acc-checking";
 const KING: &str = "rcp-king";
+const WEBHOOK_SECRET: &str = "whsec-test-secret";
 
 #[derive(Default)]
 struct Bank0 {
@@ -34,6 +35,10 @@ struct Bank0 {
     invite_posts: Vec<Value>,
     invite_failure: Option<u16>,
     invite_gets: usize,
+    /// Registered webhook endpoints, by id: (url, event types).
+    webhooks: HashMap<String, (String, Value)>,
+    webhook_deletes: Vec<String>,
+    refuse_webhooks: bool,
 }
 
 #[derive(Clone, Default)]
@@ -271,6 +276,49 @@ async fn get_request(State(f): State<Fake>, Path(id): Path<String>) -> Reply {
     }
 }
 
+async fn create_webhook(State(f): State<Fake>, h: HeaderMap, Json(body): Json<Value>) -> Reply {
+    if !authed(&h) {
+        return unauthorized();
+    }
+    let mut b = f.0.lock().unwrap();
+    if b.refuse_webhooks {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"errors": {"message": "token can't manage webhooks"}})),
+        );
+    }
+    let id = format!(
+        "00000000-0000-0000-0000-00000000000{}",
+        b.webhooks.len() + b.webhook_deletes.len() + 1
+    );
+    b.webhooks.insert(
+        id.clone(),
+        (
+            body["url"].as_str().unwrap().to_owned(),
+            body["eventTypes"].clone(),
+        ),
+    );
+    (
+        StatusCode::OK,
+        Json(
+            json!({"id": id, "url": body["url"], "status": "active", "eventTypes": body["eventTypes"],
+        "filterPaths": null, "secret": WEBHOOK_SECRET, "createdAt": "2027-01-15T00:00:00Z", "updatedAt": "2027-01-15T00:00:00Z"}),
+        ),
+    )
+}
+
+async fn delete_webhook(State(f): State<Fake>, h: HeaderMap, Path(id): Path<String>) -> StatusCode {
+    if !authed(&h) {
+        return StatusCode::UNAUTHORIZED;
+    }
+    let mut b = f.0.lock().unwrap();
+    b.webhook_deletes.push(id.clone());
+    match b.webhooks.remove(&id) {
+        Some(_) => StatusCode::NO_CONTENT,
+        None => StatusCode::NOT_FOUND,
+    }
+}
+
 async fn fake_mercury() -> (Fake, String) {
     let fake = Fake::default();
     let app = axum::Router::new()
@@ -286,6 +334,8 @@ async fn fake_mercury() -> (Fake, String) {
         .route("/account/{account}/request-send-money", post(request))
         .route("/account/{account}/transaction/{id}", get(transaction))
         .route("/request-send-money/{id}", get(get_request))
+        .route("/webhooks", post(create_webhook))
+        .route("/webhooks/{id}", axum::routing::delete(delete_webhook))
         .with_state(fake.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -302,6 +352,7 @@ async fn db() -> Option<(TestDb, Fake)> {
         mercury_sandbox: base.clone(),
         rho_production: base.clone(),
         rho_sandbox: base,
+        webhook_base: Some("https://payvy.test".into()),
     });
     Some((db, fake))
 }
@@ -1268,5 +1319,149 @@ async fn a_failed_automatic_payment_waits_for_a_person_and_is_not_retried() {
     let out = release(&db, &b).await;
     assert_eq!(out["payments"][0]["status"], "pending");
     assert_eq!(fake.posts().len(), 2);
+    db.drop().await;
+}
+
+/// The registered webhook's (url, org, connection).
+fn registered(fake: &Fake) -> (String, String, String) {
+    let b = fake.0.lock().unwrap();
+    assert_eq!(b.webhooks.len(), 1, "{:?}", b.webhooks);
+    let url = b.webhooks.values().next().unwrap().0.clone();
+    let parts: Vec<&str> = url.rsplitn(3, '/').collect();
+    (url.clone(), parts[1].to_owned(), parts[0].to_owned())
+}
+
+async fn deliver(db: &TestDb, path: &str, signature: &str, body: &str) -> StatusCode {
+    use tower::ServiceExt;
+    let req = axum::http::Request::post(path)
+        .header("content-type", "application/json")
+        .header("mercury-signature", signature)
+        .body(axum::body::Body::from(body.to_owned()))
+        .unwrap();
+    payvy_server::router(db.state.clone())
+        .oneshot(req)
+        .await
+        .unwrap()
+        .status()
+}
+
+#[tokio::test]
+async fn connecting_mercury_registers_a_webhook_and_disconnecting_removes_it() {
+    let Some((db, fake)) = db().await else { return };
+    connect(&db, "direct").await;
+    let (url, org, connection) = registered(&fake);
+    assert!(
+        url.starts_with("https://payvy.test/webhooks/mercury/"),
+        "{url}"
+    );
+    assert_eq!(
+        fake.0.lock().unwrap().webhooks.values().next().unwrap().1,
+        json!(["transaction.created", "transaction.updated"])
+    );
+    let got = commit(&db.state, &person("robert"), "bank.get", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(got["result"]["connection"]["id"], connection.as_str());
+    assert!(got["result"]["connection"]["webhook_id"].is_string());
+    let events = commit(&db.state, &person("robert"), "event.list", json!({}))
+        .await
+        .unwrap();
+    assert!(!format!("{got}{events}").contains(WEBHOOK_SECRET));
+    assert!(!org.is_empty());
+
+    // Replacing the connection swaps the webhook.
+    connect(&db, "request").await;
+    assert_eq!(fake.0.lock().unwrap().webhook_deletes.len(), 1);
+    let (_, _, replacement) = registered(&fake);
+    assert_ne!(replacement, connection);
+
+    commit(&db.state, &person("robert"), "bank.disconnect", json!({}))
+        .await
+        .unwrap();
+    {
+        let b = fake.0.lock().unwrap();
+        assert!(b.webhooks.is_empty());
+        assert_eq!(b.webhook_deletes.len(), 2);
+    }
+    db.drop().await;
+}
+
+#[tokio::test]
+async fn without_webhook_permission_the_connection_still_works() {
+    let Some((db, fake)) = db().await else { return };
+    fake.0.lock().unwrap().refuse_webhooks = true;
+    let out = commit(
+        &db.state,
+        &person("robert"),
+        "bank.connect",
+        json!({ "provider": "mercury", "token": TOKEN, "mode": "direct", "account_id": CHECKING }),
+    )
+    .await
+    .unwrap();
+    assert!(out["result"]["connection"]["webhook_id"].is_null());
+    assert!(
+        out["result"]["payment_updates"]
+            .as_str()
+            .unwrap()
+            .contains("every minute"),
+        "{out:#}"
+    );
+    db.drop().await;
+}
+
+#[tokio::test]
+async fn a_signed_mercury_event_marks_the_payment_paid_at_once() {
+    let Some((db, fake)) = db().await else { return };
+    connect(&db, "direct").await;
+    let v = king_vendor(&db).await;
+    let b = bill(&db, &v).await;
+    release(&db, &b).await;
+    let (url, org, connection) = registered(&fake);
+    let path = url.trim_start_matches("https://payvy.test");
+    fake.set_transaction("txn-1", "sent");
+    let body = json!({"id": "evt-1", "resourceType": "transaction", "resourceId": "txn-1",
+        "operationType": "update", "changedPaths": ["status"], "mergePatch": {"status": "sent"}})
+    .to_string();
+    let now = (db.state.clock)().timestamp();
+
+    // Forged, stale, or for a connection that doesn't exist: refused, nothing looked at.
+    let forged = payvy_server::mercury_webhook::sign("wrong", now, body.as_bytes());
+    assert_eq!(
+        deliver(&db, path, &forged, &body).await,
+        StatusCode::UNAUTHORIZED
+    );
+    let stale = payvy_server::mercury_webhook::sign(WEBHOOK_SECRET, now - 600, body.as_bytes());
+    assert_eq!(
+        deliver(&db, path, &stale, &body).await,
+        StatusCode::UNAUTHORIZED
+    );
+    let good = payvy_server::mercury_webhook::sign(WEBHOOK_SECRET, now, body.as_bytes());
+    let elsewhere = format!("/webhooks/mercury/{org}/{}", uuid::Uuid::new_v4());
+    assert_eq!(
+        deliver(&db, &elsewhere, &good, &body).await,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(status(&db.state, &person("robert"), &b).await, "released");
+
+    // The real one: Payvy asks Mercury, which says sent.
+    assert_eq!(deliver(&db, path, &good, &body).await, StatusCode::OK);
+    let mut paid = false;
+    for _ in 0..50 {
+        if get_bill(&db, &b).await["bill"]["state"] == "paid" {
+            paid = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(paid, "the bill wasn't marked paid after the webhook");
+    // A duplicate delivery changes nothing.
+    let org: uuid::Uuid = org.parse().unwrap();
+    let connection: uuid::Uuid = connection.parse().unwrap();
+    assert_eq!(
+        payvy_server::mercury_webhook::refresh(&db.state, org, connection, "txn-1")
+            .await
+            .unwrap(),
+        0
+    );
     db.drop().await;
 }

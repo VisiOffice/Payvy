@@ -28,6 +28,74 @@ fn sealed_as(connection: Uuid) -> String {
     format!("bank:{connection}")
 }
 
+/// Registers a webhook for a new production Mercury connection, so payment
+/// updates arrive as they happen. Never fails the connection: without it,
+/// the payment checker still asks Mercury every minute.
+async fn register_webhook(cx: &mut Cx<'_>, c: &BankConnection, client: &Mercury) -> Value {
+    let Some(base) = cx.bank().ok().and_then(|b| b.webhook_base.clone()) else {
+        return json!(
+            "Payvy checks payments with Mercury every minute (no webhook address is configured)."
+        );
+    };
+    if c.environment != "production" {
+        return json!(
+            "Payvy checks payments with Mercury every minute (Mercury's sandbox has no webhooks)."
+        );
+    }
+    let url = format!("{base}/webhooks/mercury/{}/{}", cx.org, c.id);
+    let result = match client.create_webhook(&url).await {
+        Ok(w) => match cx.bank() {
+            Ok(bank) => {
+                match bank
+                    .sealer
+                    .seal(cx.org, &crate::mercury_webhook::sealed_as(c.id), &w.secret)
+                {
+                    Ok(sealed) => store::set_connection_webhook(&mut cx.tx, c.id, &w.id, &sealed)
+                        .await
+                        .map(|()| w.id)
+                        .map_err(|e| format!("{e:#}")),
+                    Err(e) => Err(format!("{e:#}")),
+                }
+            }
+            Err(_) => Err("bank settings unavailable".into()),
+        },
+        Err(BankError::Unauthorized(m) | BankError::Refused(m) | BankError::Unclear(m)) => Err(m),
+    };
+    match result {
+        Ok(id) => {
+            tracing::info!(connection = %c.id, webhook = %id, "Mercury webhook registered");
+            json!(
+                "Mercury tells Payvy about payments as they happen; Payvy also checks every minute."
+            )
+        }
+        Err(m) => {
+            tracing::warn!(connection = %c.id, "Mercury webhook not registered: {m}");
+            json!(format!(
+                "Payvy checks payments with Mercury every minute. Mercury didn't accept a webhook ({m}); a token allowed to manage webhooks gets updates as they happen."
+            ))
+        }
+    }
+}
+
+/// Removes the webhook of a connection being retired. Best effort: a
+/// leftover endpoint's deliveries are refused once its connection is gone.
+async fn remove_webhook(cx: &Cx<'_>, c: &BankConnection) {
+    let Some(id) = &c.webhook_id else { return };
+    if cx.preview {
+        return;
+    }
+    let result = match mercury(cx, c) {
+        Ok(client) => client
+            .delete_webhook(id)
+            .await
+            .map_err(|e| format!("{e:?}")),
+        Err(e) => Err(format!("{e:?}")),
+    };
+    if let Err(e) = result {
+        tracing::warn!(connection = %c.id, webhook = %id, "couldn't remove Mercury webhook: {e}");
+    }
+}
+
 /// A client for this connection, with its token unsealed.
 pub(super) fn mercury(cx: &Cx<'_>, c: &BankConnection) -> Result<Mercury, CommandError> {
     let bank = cx.bank()?;
@@ -233,7 +301,11 @@ pub async fn connect(cx: &mut Cx<'_>, input: Connect) -> Result<Value, CommandEr
     };
     let id = Uuid::new_v4();
     let sealed = bank.sealer.seal(cx.org, &sealed_as(id), token)?;
+    let previous = store::live_paying_connection(&mut cx.tx).await?;
     let replaced = store::retire_paying_connection(&mut cx.tx, cx.now, &cx.actor.name).await?;
+    if let Some(old) = &previous {
+        remove_webhook(cx, old).await;
+    }
     let c = store::insert_connection(
         &mut cx.tx,
         cx.org,
@@ -257,6 +329,12 @@ pub async fn connect(cx: &mut Cx<'_>, input: Connect) -> Result<Value, CommandEr
                 "mode": mode.as_str(), "account_name": account.name, "replaced_previous": replaced }),
     )
     .await?;
+    let updates = if cx.preview {
+        json!("On connecting, Payvy asks Mercury to tell it about payments as they happen.")
+    } else {
+        register_webhook(cx, &c, &client).await
+    };
+    let c = store::get_connection(&mut cx.tx, c.id).await?.unwrap_or(c);
     let how = match mode {
         Mode::Request => {
             "Payments wait in Mercury for approval by a Mercury admin other than the token's creator. The token needs the RequestSendMoney scope."
@@ -265,7 +343,7 @@ pub async fn connect(cx: &mut Cx<'_>, input: Connect) -> Result<Value, CommandEr
             "Mercury sends payments as soon as a person releases them in Payvy. The token must allow this server's IP address."
         }
     };
-    Ok(json!({ "connection": c, "how_payments_work": how }))
+    Ok(json!({ "connection": c, "how_payments_work": how, "payment_updates": updates }))
 }
 
 fn capability(c: &BankConnection) -> &'static str {
@@ -309,6 +387,7 @@ pub async fn disconnect(cx: &mut Cx<'_>, input: Disconnect) -> Result<Value, Com
         }
     };
     store::retire_connection_by_id(&mut cx.tx, c.id, cx.now, &cx.actor.name).await?;
+    remove_webhook(cx, &c).await;
     cx.emit(
         "bank.disconnected",
         c.id,

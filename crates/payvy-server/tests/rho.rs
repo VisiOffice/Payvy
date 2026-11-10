@@ -132,6 +132,7 @@ async fn db() -> Option<TestDb> {
         mercury_sandbox: mercury_base,
         rho_production: rho_base.clone(),
         rho_sandbox: rho_base,
+        webhook_base: None,
     });
     Some(db)
 }
