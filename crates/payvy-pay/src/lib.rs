@@ -232,6 +232,60 @@ pub struct RecipientInvite {
     pub recipient_id: Option<String>,
 }
 
+/// A legal address, as Mercury wants it on a recipient.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Address {
+    pub address1: String,
+    #[serde(default)]
+    pub address2: Option<String>,
+    pub city: String,
+    pub region: String,
+    pub postal_code: String,
+    #[serde(default = "us")]
+    pub country: String,
+}
+
+fn us() -> String {
+    "US".into()
+}
+
+/// A recipient to create from details a person typed. The numbers pass
+/// straight through to Mercury and are never kept or logged.
+pub struct NewRecipient<'a> {
+    pub name: &'a str,
+    pub email: &'a str,
+    pub method: Method,
+    pub account_number: &'a str,
+    pub routing_number: &'a str,
+    /// Mercury's electronicAccountType, for ACH (e.g. businessChecking).
+    pub account_type: &'a str,
+    pub address: &'a Address,
+}
+
+/// Replaces every run of four or more digits, so an error Mercury echoes
+/// can't carry an account or routing number.
+pub fn redact_numbers(s: &str) -> String {
+    let mut out = String::new();
+    let mut run = String::new();
+    for ch in s.chars().chain(std::iter::once('\0')) {
+        if ch.is_ascii_digit() {
+            run.push(ch);
+            continue;
+        }
+        if run.len() >= 4 {
+            out.push_str("[number]");
+        } else {
+            out.push_str(&run);
+        }
+        run.clear();
+        if ch != '\0' {
+            out.push(ch);
+        }
+    }
+    out
+}
+
 /// A webhook endpoint registered at Mercury. The secret signs deliveries
 /// and is returned only when the endpoint is created.
 pub struct Webhook {
@@ -517,6 +571,59 @@ impl Mercury {
             });
         }
         Err(Self::error(status, &body))
+    }
+
+    /// Creates a recipient. Mercury has no idempotency key here, so a POST is
+    /// never retried: an unclear answer means "look in Mercury first".
+    /// Errors never carry Mercury's body unredacted.
+    pub async fn create_recipient(&self, r: &NewRecipient<'_>) -> Result<Recipient, BankError> {
+        let a = r.address;
+        let address = json!({
+            "address1": a.address1, "address2": a.address2, "city": a.city,
+            "region": a.region, "postalCode": a.postal_code, "country": a.country,
+        });
+        let mut body = json!({ "name": r.name, "emails": [r.email], "contactEmail": r.email });
+        let routing = json!({ "accountNumber": r.account_number, "routingNumber": r.routing_number,
+                              "address": address });
+        match r.method {
+            Method::Check => body["checkInfo"] = json!({ "address": address }),
+            Method::Ach => {
+                let mut info = routing;
+                info["electronicAccountType"] = json!(r.account_type);
+                body["electronicRoutingInfo"] = info;
+            }
+            Method::DomesticWire => body["domesticWireRoutingInfo"] = routing,
+            Method::RealTimePayment => body["realTimePaymentRoutingInfo"] = routing,
+        }
+        let (status, reply) = self
+            .call(
+                self.http
+                    .post(format!("{}/recipients", self.base))
+                    .json(&body),
+            )
+            .await
+            .map_err(|_| {
+                BankError::Unclear(
+                    "couldn't reach Mercury; check Mercury's recipients before trying again".into(),
+                )
+            })?;
+        if !(200..300).contains(&status) {
+            let e = Self::error(status, &reply);
+            return Err(match e {
+                BankError::Refused(m) => BankError::Refused(redact_numbers(&m)),
+                BankError::Unauthorized(m) => BankError::Unauthorized(redact_numbers(&m)),
+                BankError::Unclear(_) => BankError::Unclear(format!(
+                    "Mercury answered HTTP {status}; check Mercury's recipients before trying again"
+                )),
+            });
+        }
+        let made = Self::recipient(&reply);
+        if made.id.is_empty() {
+            return Err(BankError::Unclear(
+                "Mercury didn't return the new recipient; check Mercury's recipients before trying again".into(),
+            ));
+        }
+        Ok(made)
     }
 
     /// Registers `url` for transaction events. Mercury returns the signing
@@ -879,5 +986,19 @@ mod tests {
         assert_eq!(n.to_string(), "459.0");
         let n = serde_json::Number::from_f64(123_456_f64 / 100.0).unwrap();
         assert_eq!(n.to_string(), "1234.56");
+    }
+}
+
+#[cfg(test)]
+mod redact_tests {
+    use super::redact_numbers;
+
+    #[test]
+    fn long_digit_runs_are_hidden() {
+        assert_eq!(
+            redact_numbers("routing 121000248 bad, account 000123456789; field 12"),
+            "routing [number] bad, account [number]; field 12"
+        );
+        assert_eq!(redact_numbers("4410"), "[number]");
     }
 }

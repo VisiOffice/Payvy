@@ -46,12 +46,13 @@ async function json(req: http.IncomingMessage): Promise<Record<string, unknown>>
 export function startFakeBank(port: number): Promise<http.Server> {
   const invites = new Map<string, Record<string, unknown>>();
   let posts = 0;
+  let recipientPosts = 0;
 
   const server = http.createServer(async (req, res) => {
     const path = new URL(req.url ?? '/', 'http://bank').pathname;
 
     // Test controls: how many invitations were sent; complete them all.
-    if (path === '/mercury/test/posts') return send(res, 200, { posts });
+    if (path === '/mercury/test/posts') return send(res, 200, { posts, recipientPosts });
     if (path === '/mercury/test/complete') {
       for (const invite of invites.values()) Object.assign(invite, { status: 'completed', recipientId: INVITED_RECIPIENT.id });
       return send(res, 200, {});
@@ -65,6 +66,11 @@ export function startFakeBank(port: number): Promise<http.Server> {
       const accounts =
         req.headers.authorization === `Bearer ${TWO_ACCOUNT_TOKEN}` ? MERCURY_ACCOUNTS : MERCURY_ACCOUNTS.slice(0, 1);
       return send(res, 200, { accounts });
+    }
+    if (path === '/mercury/recipients' && req.method === 'POST') {
+      const body = await json(req);
+      recipientPosts++;
+      return send(res, 200, { ...body, id: `recipient-entered-${recipientPosts}`, status: 'active', defaultPaymentMethod: 'ach' });
     }
     if (path === '/mercury/recipients') return send(res, 200, { recipients: [] });
     if (path === '/mercury/recipients/invites' && req.method === 'POST') {

@@ -107,6 +107,33 @@ account. A debug server can point **only sandbox** connections at an HTTP
 loopback fake with `PAYVY_MERCURY_SANDBOX_URL` (and Rho with `PAYVY_RHO_SANDBOX_URL`);
 a release build refuses to start with either set.
 
+## Entering a vendor's bank details
+
+When a vendor has already sent their details, a person can enter them on the
+vendor page (**Enter bank details…**) or run:
+
+```
+vendor.create_recipient { "vendor_id": "…", "method": "ach", "email": "ar@vendor.com",
+  "routing_number": "121000248", "account_number": "…", "account_type": "business_checking",
+  "address": { "address1": "1 Main St", "city": "Mesa", "region": "AZ", "postal_code": "85201" } }
+```
+
+It is **person-only and confirmed**. Payvy checks the routing number's check
+digit and the account number's shape first; the preview shows only the last
+four and sends nothing. On commit, Payvy creates the recipient in Mercury
+(`POST /recipients`, with the legal address Mercury requires; a check needs only
+the mailing address) and proposes it as the vendor's payee. A person still
+accepts it in Waiting on you, ideally after confirming the details with the
+vendor by phone. The numbers go to Mercury and are never stored, logged, or put
+in a result or event; Mercury errors are passed on with any long numbers
+replaced by `[number]`.
+
+Mercury has no idempotency key for creating recipients, so Payvy never retries
+one. If the answer is unclear, look in Mercury's recipients before entering the
+details again; if it's there, propose it with `vendor.propose_payee`. The token
+needs permission to create recipients. Prefer invitations where you can: they
+keep the numbers out of Payvy entirely.
+
 ## Paying
 
 `bill.release` previews the payment (bank, account, recipient, last four, method, amount) and
@@ -210,7 +237,6 @@ built yet — reads are live from Rho each time.
 
 - An amount ceiling on automatic payments (today the controls are the workflow a person accepted,
   any approval steps before it, and Mercury's own approval in `request` mode).
-- Direct recipient creation inside Payvy; invitations are supported.
 - Bills in other currencies, and Wise and Airwallex for international payments.
 - Ramp and Brex.
 - Paying through Rho (its current API doesn't offer it to us), and stored

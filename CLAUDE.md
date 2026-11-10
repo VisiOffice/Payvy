@@ -68,6 +68,9 @@ Conventions follow Visirent (`~/Code/visirent`).
   agent `workflow`) pays only `ready_to_pay` bills, only through Mercury, only to an accepted payee,
   via the same `payments::submit`. A payment that doesn't go sets `bills.release_by_person`, which
   turns the auto pay step into `awaiting_release` (`workflow::Facts`); auto-pay never retries.
+- **Typed bank details pass through.** `vendor.create_recipient` (person-only, confirmed) sends
+  account and routing numbers to Mercury and keeps only the recipient id and last four; never put
+  them in a result, event, error or log (`payvy_pay::redact_numbers`). It never retries a POST.
 - **Mercury webhooks are nudges, not truth.** `bank.connect` registers one (`PAYVY_WEBHOOK_URL`,
   production only, never fails the connection); `mercury_webhook.rs` verifies `Mercury-Signature`
   and then runs `payment.refresh`, which asks Mercury. Never take a payment's state from the payload.

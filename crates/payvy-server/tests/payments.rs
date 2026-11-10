@@ -39,6 +39,9 @@ struct Bank0 {
     webhooks: HashMap<String, (String, Value)>,
     webhook_deletes: Vec<String>,
     refuse_webhooks: bool,
+    recipient_posts: Vec<Value>,
+    /// The next recipient creation gets this status and echoes the body back.
+    recipient_failure: Option<u16>,
 }
 
 #[derive(Clone, Default)]
@@ -319,11 +322,33 @@ async fn delete_webhook(State(f): State<Fake>, h: HeaderMap, Path(id): Path<Stri
     }
 }
 
+async fn create_recipient(State(f): State<Fake>, h: HeaderMap, Json(body): Json<Value>) -> Reply {
+    if !authed(&h) {
+        return unauthorized();
+    }
+    let mut b = f.0.lock().unwrap();
+    b.recipient_posts.push(body.clone());
+    if let Some(status) = b.recipient_failure.take() {
+        // Mercury may echo what it was sent.
+        return (
+            StatusCode::from_u16(status).unwrap(),
+            Json(
+                json!({"errors": {"message": format!("invalid routing number {}", body["electronicRoutingInfo"]["routingNumber"])}}),
+            ),
+        );
+    }
+    let mut made = body.clone();
+    made["id"] = json!(format!("rcp-new-{}", b.recipient_posts.len()));
+    made["status"] = json!("active");
+    made["defaultPaymentMethod"] = json!("ach");
+    (StatusCode::OK, Json(made))
+}
+
 async fn fake_mercury() -> (Fake, String) {
     let fake = Fake::default();
     let app = axum::Router::new()
         .route("/accounts", get(accounts))
-        .route("/recipients", get(recipients))
+        .route("/recipients", get(recipients).post(create_recipient))
         .route("/recipients/invites", post(invite_recipient))
         .route("/recipients/invites/{id}", get(get_invite))
         .route("/recipient/{id}", get(recipient))
@@ -1463,5 +1488,176 @@ async fn a_signed_mercury_event_marks_the_payment_paid_at_once() {
             .unwrap(),
         0
     );
+    db.drop().await;
+}
+
+fn new_recipient(v: &str) -> Value {
+    json!({ "vendor_id": v, "method": "ach", "email": "ar@acme.com",
+            "account_number": "000987654321", "routing_number": "121000248",
+            "address": { "address1": "1 Main St", "city": "Mesa", "region": "AZ", "postal_code": "85201" } })
+}
+
+#[tokio::test]
+async fn a_person_enters_bank_details_and_a_person_accepts_the_payee() {
+    let Some((db, fake)) = db().await else { return };
+    connect(&db, "direct").await;
+    let robert = person("robert");
+    let v = vendor(&db.state, &robert, "Acme Supply").await;
+    let input = new_recipient(&v);
+
+    let denied = confirm(
+        &db.state,
+        &agent("bot"),
+        "vendor.create_recipient",
+        input.clone(),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(denied, CommandError::PersonOnly(_)));
+    assert!(matches!(
+        commit(&db.state, &robert, "vendor.create_recipient", input.clone())
+            .await
+            .unwrap_err(),
+        CommandError::NeedsConfirmation(_)
+    ));
+    // A mistyped routing number is caught before Mercury.
+    let mut bad = input.clone();
+    bad["routing_number"] = json!("121000249");
+    assert!(matches!(
+        confirm(&db.state, &robert, "vendor.create_recipient", bad)
+            .await
+            .unwrap_err(),
+        CommandError::Invalid(_)
+    ));
+    let preview = payvy_server::commands::run(
+        &db.state,
+        &robert,
+        "vendor.create_recipient",
+        input.clone(),
+        payvy_server::commands::Mode::Preview,
+    )
+    .await
+    .unwrap();
+    assert_eq!(preview["result"]["destination"], "…4321");
+    assert!(!preview.to_string().contains("000987654321"));
+    assert!(fake.0.lock().unwrap().recipient_posts.is_empty());
+
+    let out = confirm(&db.state, &robert, "vendor.create_recipient", input)
+        .await
+        .unwrap();
+    let sent = fake.0.lock().unwrap().recipient_posts[0].clone();
+    assert_eq!(sent["name"], "Acme Supply");
+    assert_eq!(sent["emails"], json!(["ar@acme.com"]));
+    assert_eq!(
+        sent["electronicRoutingInfo"]["accountNumber"],
+        "000987654321"
+    );
+    assert_eq!(
+        sent["electronicRoutingInfo"]["electronicAccountType"],
+        "businessChecking"
+    );
+    assert_eq!(
+        sent["electronicRoutingInfo"]["address"]["postalCode"],
+        "85201"
+    );
+    assert_eq!(sent["electronicRoutingInfo"]["address"]["country"], "US");
+    let proposal = out["result"]["proposal"].clone();
+    assert_eq!(proposal["status"], "proposed");
+    assert_eq!(proposal["destination"], "…4321");
+    assert_eq!(proposal["recipient_id"], "rcp-new-1");
+    let events = commit(&db.state, &robert, "event.list", json!({"entity_id": v}))
+        .await
+        .unwrap();
+    for leaked in [out.to_string(), events.to_string()] {
+        assert!(!leaked.contains("000987654321") && !leaked.contains("121000248"));
+    }
+    assert!(events.to_string().contains("vendor.recipient_created"));
+
+    // Still needs a person to accept it.
+    assert!(
+        commit(
+            &db.state,
+            &agent("bot"),
+            "vendor.accept_payee",
+            json!({"proposal_id": proposal["id"]})
+        )
+        .await
+        .is_err()
+    );
+    commit(
+        &db.state,
+        &robert,
+        "vendor.accept_payee",
+        json!({"proposal_id": proposal["id"]}),
+    )
+    .await
+    .unwrap();
+    db.drop().await;
+}
+
+#[tokio::test]
+async fn mercury_refusals_hide_numbers_and_unclear_answers_are_not_retried() {
+    let Some((db, fake)) = db().await else { return };
+    connect(&db, "direct").await;
+    let robert = person("robert");
+    let v = vendor(&db.state, &robert, "Acme Supply").await;
+
+    fake.0.lock().unwrap().recipient_failure = Some(400);
+    let refused = confirm(
+        &db.state,
+        &robert,
+        "vendor.create_recipient",
+        new_recipient(&v),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(refused.contains("refused"), "{refused}");
+    assert!(!refused.contains("121000248"), "{refused}");
+
+    fake.0.lock().unwrap().recipient_failure = Some(503);
+    let unclear = confirm(
+        &db.state,
+        &robert,
+        "vendor.create_recipient",
+        new_recipient(&v),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(unclear.contains("vendor.propose_payee"), "{unclear}");
+    assert_eq!(fake.0.lock().unwrap().recipient_posts.len(), 2);
+    let detail = commit(&db.state, &robert, "vendor.get", json!({"vendor_id": v}))
+        .await
+        .unwrap();
+    assert!(detail["result"]["payees"].as_array().unwrap().is_empty());
+    db.drop().await;
+}
+
+#[tokio::test]
+async fn a_check_recipient_needs_only_the_mailing_address() {
+    let Some((db, fake)) = db().await else { return };
+    connect(&db, "direct").await;
+    let robert = person("robert");
+    let v = vendor(&db.state, &robert, "Acme Supply").await;
+    let mut input = new_recipient(&v);
+    input["method"] = json!("check");
+    assert!(
+        confirm(&db.state, &robert, "vendor.create_recipient", input.clone())
+            .await
+            .is_err()
+    );
+    input.as_object_mut().unwrap().remove("account_number");
+    input.as_object_mut().unwrap().remove("routing_number");
+    let out = confirm(&db.state, &robert, "vendor.create_recipient", input)
+        .await
+        .unwrap();
+    assert_eq!(
+        out["result"]["proposal"]["destination"],
+        "check to Mesa, AZ"
+    );
+    let sent = fake.0.lock().unwrap().recipient_posts[0].clone();
+    assert_eq!(sent["checkInfo"]["address"]["city"], "Mesa");
+    assert!(sent.get("electronicRoutingInfo").is_none());
     db.drop().await;
 }

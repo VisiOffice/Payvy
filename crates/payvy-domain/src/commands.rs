@@ -89,6 +89,13 @@ pub const COMMANDS: &[CommandSpec] = &[
         input_schema: r#"{"type":"object","required":["vendor_id","recipient_id","method"],"properties":{"vendor_id":{"type":"string","format":"uuid"},"recipient_id":{"type":"string","description":"The recipient's id in the bank"},"method":{"type":"string","enum":["ach","check","domestic_wire","real_time_payment"]},"reason":{"type":"string","description":"Why, for the person reviewing it, e.g. where the new details came from"}}}"#,
     },
     CommandSpec {
+        name: "vendor.create_recipient",
+        summary: "Create this vendor as a recipient in the connected Mercury account from bank details a person has, and propose it as the vendor's payee (a person still accepts it). Only a person may run it. Preview shows the last four and sends nothing. The numbers go to Mercury and are never stored. Prefer vendor.invite_payee, which keeps the numbers out of Payvy entirely. An unclear answer is never retried: check Mercury's recipients first.",
+        tier: RiskTier::Confirmed,
+        person_only: true,
+        input_schema: r#"{"type":"object","required":["vendor_id","method","address"],"properties":{"vendor_id":{"type":"string","format":"uuid"},"method":{"type":"string","enum":["ach","check","domestic_wire","real_time_payment"]},"name":{"type":"string","description":"Defaults to the vendor's name"},"email":{"type":"string","format":"email","description":"Defaults to the vendor's email"},"account_number":{"type":"string","description":"Not for check"},"routing_number":{"type":"string","description":"9-digit ABA routing number; not for check"},"account_type":{"type":"string","enum":["business_checking","business_savings","personal_checking","personal_savings"],"description":"ACH only; default business_checking"},"address":{"type":"object","required":["address1","city","region","postal_code"],"description":"The vendor's legal address (the mailing address for a check)","properties":{"address1":{"type":"string"},"address2":{"type":"string"},"city":{"type":"string"},"region":{"type":"string","description":"State, e.g. AZ"},"postal_code":{"type":"string"},"country":{"type":"string","description":"ISO 3166 alpha-2; default US"}}}}}"#,
+    },
+    CommandSpec {
         name: "vendor.accept_payee",
         summary: "Accept a payee proposal: this vendor's bills are paid to it from now on. Check the destination with the vendor first; changed bank details are the most common way AP fraud happens.",
         tier: RiskTier::Routine,

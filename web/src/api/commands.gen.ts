@@ -51,6 +51,48 @@ export interface VendorProposePayeeInput {
   reason?: string;
 }
 
+export interface VendorCreateRecipientInput {
+  vendor_id: string;
+  method: "ach" | "check" | "domestic_wire" | "real_time_payment";
+  /**
+   * Defaults to the vendor's name
+   */
+  name?: string;
+  /**
+   * Defaults to the vendor's email
+   */
+  email?: string;
+  /**
+   * Not for check
+   */
+  account_number?: string;
+  /**
+   * 9-digit ABA routing number; not for check
+   */
+  routing_number?: string;
+  /**
+   * ACH only; default business_checking
+   */
+  account_type?: "business_checking" | "business_savings" | "personal_checking" | "personal_savings";
+  /**
+   * The vendor's legal address (the mailing address for a check)
+   */
+  address: {
+    address1: string;
+    address2?: string;
+    city: string;
+    /**
+     * State, e.g. AZ
+     */
+    region: string;
+    postal_code: string;
+    /**
+     * ISO 3166 alpha-2; default US
+     */
+    country?: string;
+  };
+}
+
 export interface VendorAcceptPayeeInput {
   proposal_id: string;
   reason?: string;
@@ -405,6 +447,7 @@ export interface CommandInputs {
   "vendor.invite_payee": VendorInvitePayeeInput;
   "vendor.refresh_payee_invite": VendorRefreshPayeeInviteInput;
   "vendor.propose_payee": VendorProposePayeeInput;
+  "vendor.create_recipient": VendorCreateRecipientInput;
   "vendor.accept_payee": VendorAcceptPayeeInput;
   "vendor.decline_payee": VendorDeclinePayeeInput;
   "workflow.get": WorkflowGetInput;
@@ -458,6 +501,7 @@ export const COMMANDS: Record<CommandName, { tier: Tier; personOnly: boolean; su
   "vendor.invite_payee": { tier: "confirmed", personOnly: true, summary: "Ask Mercury to email this vendor an invitation to supply payment details. Only a person may send it. Preview sends nothing. Completion proposes a payee; a person must still accept it. Uncertain delivery is never automatically retried." },
   "vendor.refresh_payee_invite": { tier: "routine", personOnly: false, summary: "Check a Mercury invitation. Once completed, propose its recipient for the vendor without accepting it. Payvy also checks open invitations itself every few minutes. If delivery was uncertain, a person can recover it by supplying the invitation ID from Mercury; the email and method must match." },
   "vendor.propose_payee": { tier: "routine", personOnly: false, summary: "Propose who this vendor's bills are paid to: a recipient already set up in the connected bank (see bank.recipients) and a method. The account's last four digits are shown for checking. Nothing changes until a person accepts it with vendor.accept_payee. Use this when a vendor's bank details change." },
+  "vendor.create_recipient": { tier: "confirmed", personOnly: true, summary: "Create this vendor as a recipient in the connected Mercury account from bank details a person has, and propose it as the vendor's payee (a person still accepts it). Only a person may run it. Preview shows the last four and sends nothing. The numbers go to Mercury and are never stored. Prefer vendor.invite_payee, which keeps the numbers out of Payvy entirely. An unclear answer is never retried: check Mercury's recipients first." },
   "vendor.accept_payee": { tier: "routine", personOnly: true, summary: "Accept a payee proposal: this vendor's bills are paid to it from now on. Check the destination with the vendor first; changed bank details are the most common way AP fraud happens." },
   "vendor.decline_payee": { tier: "routine", personOnly: true, summary: "Decline a payee proposal." },
   "workflow.get": { tier: "read", personOnly: false, summary: "The workflow a vendor's bills follow (or, without vendor_id, the organization default): its steps, a Mermaid chart, where it comes from, and open proposals." },

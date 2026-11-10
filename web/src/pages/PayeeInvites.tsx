@@ -10,6 +10,7 @@ import { VStack } from '@astryxdesign/core/VStack';
 import { preview, run } from '../api/client';
 import type { CommandInputs } from '../api/commands.gen';
 import { METHOD } from '../inbox/types';
+import { RecipientDialog } from './RecipientDialog';
 
 export interface PayeeInvite {
   id: string;
@@ -36,6 +37,7 @@ export function PayeeInvites({ vendor, invites, payees, onChanged }: {
   const [connection, setConnection] = useState<{ id: string; provider: string } | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [open, setOpen] = useState(false);
+  const [entering, setEntering] = useState(false);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     let active = true;
@@ -50,7 +52,11 @@ export function PayeeInvites({ vendor, invites, payees, onChanged }: {
     {error && <Banner status="error" title={error} />}
     {current.map(invite => <InviteStatus key={invite.id} invite={invite} proposalStatus={payees.find(p => p.id === invite.proposal_id)?.status} onChanged={onChanged} />)}
     {loaded && connection?.provider !== 'mercury' && <Text type="supporting">Connect Mercury to invite this vendor to supply payment details.</Text>}
-    {connection?.provider === 'mercury' && !pending && <Button label="Invite payment details…" variant="secondary" onClick={() => setOpen(true)} />}
+    {connection?.provider === 'mercury' && !pending && <HStack gap={2} wrap="wrap">
+      <Button label="Invite payment details…" variant="secondary" onClick={() => setOpen(true)} />
+      <Button label="Enter bank details…" variant="ghost" onClick={() => setEntering(true)} />
+    </HStack>}
+    {entering && <RecipientDialog vendor={vendor} onClose={() => setEntering(false)} onChanged={onChanged} />}
     {open && <InviteDialog vendor={vendor} onClose={() => setOpen(false)} onChanged={onChanged} />}
   </VStack>;
 }

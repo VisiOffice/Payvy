@@ -185,6 +185,7 @@ async fn execute(cx: &mut Cx<'_>, name: &str, input: &Value) -> Result<Value, Co
         "vendor.invite_payee" => payee_invites::invite(cx, parse(input)?).await,
         "vendor.refresh_payee_invite" => payee_invites::refresh(cx, parse(input)?).await,
         "vendor.propose_payee" => bank::propose_payee(cx, parse(input)?).await,
+        "vendor.create_recipient" => bank::create_recipient(cx, parse(input)?).await,
         "vendor.accept_payee" => bank::decide_payee(cx, parse(input)?, true).await,
         "vendor.decline_payee" => bank::decide_payee(cx, parse(input)?, false).await,
         "inbox.get" => inbox::get(cx).await,

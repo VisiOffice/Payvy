@@ -538,6 +538,183 @@ pub async fn propose_payee(cx: &mut Cx<'_>, input: ProposePayee) -> Result<Value
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct CreateRecipient {
+    vendor_id: Uuid,
+    method: String,
+    /// Defaults to the vendor's name.
+    name: Option<String>,
+    /// Defaults to the vendor's email; Mercury requires one.
+    email: Option<String>,
+    #[serde(default)]
+    account_number: String,
+    #[serde(default)]
+    routing_number: String,
+    /// ACH only: business_checking (default), business_savings,
+    /// personal_checking or personal_savings.
+    account_type: Option<String>,
+    address: payvy_pay::Address,
+}
+
+/// ABA routing numbers carry a check digit: 3·(d1+d4+d7) + 7·(d2+d5+d8) +
+/// (d3+d6+d9) is a multiple of 10.
+fn routing_ok(r: &str) -> bool {
+    let d: Vec<u32> = r.chars().filter_map(|c| c.to_digit(10)).collect();
+    r.len() == 9
+        && d.len() == 9
+        && (3 * (d[0] + d[3] + d[6]) + 7 * (d[1] + d[4] + d[7]) + (d[2] + d[5] + d[8]))
+            .is_multiple_of(10)
+}
+
+fn last4(n: &str) -> String {
+    format!("…{}", &n[n.len().saturating_sub(4)..])
+}
+
+/// A person types a vendor's bank details; Payvy creates the recipient in
+/// Mercury and proposes it as the vendor's payee, which a person still
+/// accepts. The numbers go straight to Mercury: they are never stored,
+/// logged, or put in a result or event. Mercury has no idempotency key for
+/// this, so an unclear answer is never retried.
+pub async fn create_recipient(
+    cx: &mut Cx<'_>,
+    input: CreateRecipient,
+) -> Result<Value, CommandError> {
+    let method = Method::parse(&input.method).ok_or_else(|| {
+        CommandError::Invalid("method is ach, check, domestic_wire or real_time_payment".into())
+    })?;
+    let vendor = store::get_vendor(&mut cx.tx, input.vendor_id)
+        .await?
+        .ok_or(CommandError::NotFound("vendor"))?;
+    let name = text(input.name).unwrap_or_else(|| vendor.name.clone());
+    let email = text(input.email)
+        .or_else(|| vendor.email.clone())
+        .ok_or_else(|| CommandError::Invalid("Mercury needs the vendor's email".into()))?;
+    if !email
+        .split_once('@')
+        .is_some_and(|(l, d)| !l.is_empty() && d.contains('.'))
+    {
+        return Err(CommandError::Invalid(
+            "enter the vendor's email address".into(),
+        ));
+    }
+    let account = input.account_number.trim().to_owned();
+    let routing = input.routing_number.trim().to_owned();
+    if method != Method::Check {
+        if !(4..=17).contains(&account.len()) || !account.chars().all(|c| c.is_ascii_digit()) {
+            return Err(CommandError::Invalid(
+                "the account number is 4 to 17 digits".into(),
+            ));
+        }
+        if !routing_ok(&routing) {
+            return Err(CommandError::Invalid(
+                "that isn't a valid 9-digit routing number; check it with the vendor".into(),
+            ));
+        }
+    } else if !account.is_empty() || !routing.is_empty() {
+        return Err(CommandError::Invalid(
+            "a check needs only the mailing address".into(),
+        ));
+    }
+    let account_type = match input.account_type.as_deref().unwrap_or("business_checking") {
+        "business_checking" => "businessChecking",
+        "business_savings" => "businessSavings",
+        "personal_checking" => "personalChecking",
+        "personal_savings" => "personalSavings",
+        _ => {
+            return Err(CommandError::Invalid(
+                "account_type is business_checking, business_savings, personal_checking or personal_savings".into(),
+            ));
+        }
+    };
+    let a = &input.address;
+    if [&a.address1, &a.city, &a.region, &a.postal_code, &a.country]
+        .iter()
+        .any(|f| f.trim().is_empty())
+    {
+        return Err(CommandError::Invalid(
+            "the address needs a street, city, state, ZIP and country".into(),
+        ));
+    }
+    let c = live(cx).await?;
+    if c.provider != "mercury" {
+        return Err(CommandError::Invalid(
+            "creating recipients requires Mercury".into(),
+        ));
+    }
+    let client = mercury(cx, &c)?;
+    let destination = if method == Method::Check {
+        format!("check to {}, {}", a.city.trim(), a.region.trim())
+    } else {
+        last4(&account)
+    };
+    let summary = json!({ "vendor_name": vendor.name, "recipient_name": name, "email": email,
+        "method": method, "destination": destination, "bank": c.account_name,
+        "next": "Mercury creates the recipient; a person accepts it as this vendor's payee before it's paid" });
+    if cx.preview {
+        return Ok(summary);
+    }
+    let made = client
+        .create_recipient(&payvy_pay::NewRecipient {
+            name: &name,
+            email: &email,
+            method,
+            account_number: &account,
+            routing_number: &routing,
+            account_type,
+            address: a,
+        })
+        .await
+        .map_err(|e| match e {
+            BankError::Refused(m) | BankError::Unauthorized(m) => {
+                CommandError::Bank(format!("Mercury refused the recipient: {m}"))
+            }
+            BankError::Unclear(m) => CommandError::Bank(format!(
+                "{m}. Mercury may have created it: if it's there, propose it with vendor.propose_payee instead of entering the details again"
+            )),
+        })?;
+    // Check what Mercury made against what was typed, by its last four.
+    let destination = made.destination(method).map(str::to_owned).ok_or_else(|| {
+        CommandError::Bank(format!(
+            "Mercury created recipient {} without {} details; look at it in Mercury",
+            made.id,
+            method.as_str()
+        ))
+    })?;
+    let p = store::insert_payee_proposal(
+        &mut cx.tx,
+        cx.org,
+        &NewPayee {
+            vendor_id: vendor.id,
+            connection_id: c.id,
+            recipient_id: &made.id,
+            recipient_name: &made.name,
+            method: method.as_str(),
+            destination: &destination,
+            reason: Some(&format!("Details entered in Payvy by {}", cx.actor.name)),
+            proposed_by: &cx.actor.name,
+            created_at: cx.now,
+        },
+    )
+    .await?;
+    cx.emit(
+        "vendor.recipient_created",
+        vendor.id,
+        json!({ "vendor_id": vendor.id, "recipient_id": made.id, "recipient_name": made.name,
+                "method": method, "destination": destination }),
+    )
+    .await?;
+    cx.emit(
+        "vendor.payee_proposed",
+        vendor.id,
+        json!({ "vendor_id": vendor.id, "proposal_id": p.id, "recipient_name": p.recipient_name,
+                "method": p.method, "destination": p.destination }),
+    )
+    .await?;
+    Ok(json!({ "proposal": p, "recipient_id": made.id,
+               "next": "a person accepts it with vendor.accept_payee, after checking the details with the vendor by phone" }))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DecidePayee {
     proposal_id: Uuid,
     reason: Option<String>,
