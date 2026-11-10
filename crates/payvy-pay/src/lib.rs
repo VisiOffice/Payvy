@@ -48,7 +48,7 @@ impl Method {
         }
     }
 
-    fn mercury(self) -> &'static str {
+    pub fn mercury(self) -> &'static str {
         match self {
             Method::Ach => "ach",
             Method::Check => "check",
@@ -220,6 +220,18 @@ pub struct Observed {
     pub link: Option<String>,
 }
 
+/// Only the identifiers and lifecycle leave the client. In particular, never
+/// expose the onboarding URL (a capability link), bank details or raw errors.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecipientInvite {
+    pub id: String,
+    pub contact_email: String,
+    pub payment_methods: Vec<String>,
+    pub status: String,
+    pub recipient_id: Option<String>,
+}
+
 pub struct Mercury {
     base: String,
     token: String,
@@ -313,6 +325,68 @@ impl Mercury {
         } else {
             Err(Self::error(status, &body))
         }
+    }
+
+    async fn invite_call(
+        &self,
+        req: reqwest::RequestBuilder,
+    ) -> Result<RecipientInvite, BankError> {
+        // Bank errors may echo input or capability links. Keep the category,
+        // but never forward their body (or reqwest URLs) to logs or callers.
+        let (status, body) = self.call(req).await.map_err(|_| {
+            BankError::Unclear(
+                "couldn't reach Mercury; check the invitation in Mercury before trying again"
+                    .into(),
+            )
+        })?;
+        if !(200..300).contains(&status) {
+            return Err(Self::error(
+                status,
+                &json!({ "message": format!("Mercury invite HTTP {status}") }),
+            ));
+        }
+        let invite: RecipientInvite = serde_json::from_value(body)
+            .map_err(|_| BankError::Unclear("Mercury returned an incomplete invitation".into()))?;
+        if invite.id.trim().is_empty()
+            || !matches!(
+                invite.status.as_str(),
+                "created" | "completed" | "expired" | "declined"
+            )
+        {
+            return Err(BankError::Unclear(
+                "Mercury returned an unrecognized invitation".into(),
+            ));
+        }
+        Ok(invite)
+    }
+
+    /// Mercury sends the email; the vendor enters payment details there.
+    /// This endpoint has no documented idempotency key: never retry a POST.
+    pub async fn invite_recipient(
+        &self,
+        name: &str,
+        email: &str,
+        method: Method,
+    ) -> Result<RecipientInvite, BankError> {
+        self.invite_call(
+            self.http
+                .post(format!("{}/recipients/invites", self.base))
+                .json(&json!({
+                    "name": name, "contactEmail": email, "paymentMethods": [method.mercury()],
+                    "requireTaxDocument": false, "sendEmail": true
+                })),
+        )
+        .await
+    }
+
+    pub async fn recipient_invite(&self, id: &str) -> Result<RecipientInvite, BankError> {
+        let mut url = reqwest::Url::parse(&format!("{}/recipients/invites/", self.base))
+            .map_err(|_| BankError::Refused("invalid Mercury URL".into()))?;
+        url.path_segments_mut()
+            .map_err(|_| BankError::Refused("invalid Mercury URL".into()))?
+            .pop_if_empty()
+            .push(id);
+        self.invite_call(self.http.get(url)).await
     }
 
     pub async fn accounts(&self) -> Result<Vec<Account>, BankError> {

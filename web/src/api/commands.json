@@ -29,6 +29,20 @@
       "tier": "routine"
     },
     {
+      "input_schema": "{\"type\":\"object\",\"required\":[\"vendor_id\",\"email\",\"method\"],\"properties\":{\"vendor_id\":{\"type\":\"string\",\"format\":\"uuid\"},\"email\":{\"type\":\"string\",\"format\":\"email\"},\"method\":{\"type\":\"string\",\"enum\":[\"ach\",\"check\",\"domestic_wire\",\"real_time_payment\"]}}}",
+      "name": "vendor.invite_payee",
+      "person_only": true,
+      "summary": "Ask Mercury to email this vendor an invitation to supply payment details. Only a person may send it. Preview sends nothing. Completion proposes a payee; a person must still accept it. Uncertain delivery is never automatically retried.",
+      "tier": "confirmed"
+    },
+    {
+      "input_schema": "{\"type\":\"object\",\"required\":[\"invite_id\"],\"properties\":{\"invite_id\":{\"type\":\"string\",\"format\":\"uuid\"},\"mercury_invite_id\":{\"type\":\"string\",\"description\":\"Only for recovering an invitation whose delivery was uncertain\"}}}",
+      "name": "vendor.refresh_payee_invite",
+      "person_only": true,
+      "summary": "Check a Mercury invitation. Once completed, propose its recipient for the vendor without accepting it. If delivery was uncertain, a person can recover it by supplying the invitation ID from Mercury; the email and method must match.",
+      "tier": "routine"
+    },
+    {
       "input_schema": "{\"type\":\"object\",\"required\":[\"vendor_id\",\"recipient_id\",\"method\"],\"properties\":{\"vendor_id\":{\"type\":\"string\",\"format\":\"uuid\"},\"recipient_id\":{\"type\":\"string\",\"description\":\"The recipient's id in the bank\"},\"method\":{\"type\":\"string\",\"enum\":[\"ach\",\"check\",\"domestic_wire\",\"real_time_payment\"]},\"reason\":{\"type\":\"string\",\"description\":\"Why, for the person reviewing it, e.g. where the new details came from\"}}}",
       "name": "vendor.propose_payee",
       "person_only": false,

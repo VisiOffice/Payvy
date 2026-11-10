@@ -2238,3 +2238,70 @@ pub async fn open_workflow_proposals(tx: &mut Tx) -> anyhow::Result<Vec<Workflow
     .await?;
     rows.iter().map(workflow_row).collect()
 }
+
+// Recipient invitations contain no bank details or onboarding links.
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct PayeeInvite {
+    pub id: Uuid,
+    pub vendor_id: Uuid,
+    pub connection_id: Uuid,
+    pub contact_email: String,
+    pub method: String,
+    pub status: String,
+    pub mercury_invite_id: Option<String>,
+    pub proposal_id: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+    pub created_by: String,
+}
+
+pub async fn vendor_payee_invites(
+    tx: &mut Tx,
+    vendor_id: Uuid,
+) -> anyhow::Result<Vec<PayeeInvite>> {
+    Ok(sqlx::query_as::<_, PayeeInvite>(
+        "SELECT * FROM vendor_payee_invites WHERE vendor_id = $1 ORDER BY created_at DESC, id",
+    )
+    .bind(vendor_id)
+    .fetch_all(&mut **tx)
+    .await?)
+}
+
+pub async fn get_payee_invite(tx: &mut Tx, id: Uuid) -> anyhow::Result<Option<PayeeInvite>> {
+    Ok(sqlx::query_as::<_, PayeeInvite>(
+        "SELECT * FROM vendor_payee_invites WHERE id = $1 FOR UPDATE",
+    )
+    .bind(id)
+    .fetch_optional(&mut **tx)
+    .await?)
+}
+
+pub async fn insert_payee_invite(
+    tx: &mut Tx,
+    org_id: Uuid,
+    invite: &PayeeInvite,
+) -> anyhow::Result<()> {
+    sqlx::query("INSERT INTO vendor_payee_invites (id, org_id, vendor_id, connection_id, contact_email, method, status, created_at, created_by)
+        VALUES ($1, $2, $3, $4, $5, $6, 'unknown', $7, $8)")
+        .bind(invite.id).bind(org_id).bind(invite.vendor_id).bind(invite.connection_id)
+        .bind(&invite.contact_email).bind(&invite.method).bind(invite.created_at).bind(&invite.created_by)
+        .execute(&mut **tx).await?;
+    Ok(())
+}
+
+pub async fn update_payee_invite(tx: &mut Tx, invite: &PayeeInvite) -> anyhow::Result<()> {
+    sqlx::query("UPDATE vendor_payee_invites SET status = $2, mercury_invite_id = $3, proposal_id = $4 WHERE id = $1")
+        .bind(invite.id).bind(&invite.status).bind(&invite.mercury_invite_id).bind(invite.proposal_id)
+        .execute(&mut **tx).await?;
+    Ok(())
+}
+
+/// Serialize competing invitation commands before any external effect.
+pub async fn lock_invite_vendor(tx: &mut Tx, vendor_id: Uuid) -> anyhow::Result<bool> {
+    Ok(
+        sqlx::query("SELECT id FROM vendors WHERE id = $1 FOR UPDATE")
+            .bind(vendor_id)
+            .fetch_optional(&mut **tx)
+            .await?
+            .is_some(),
+    )
+}

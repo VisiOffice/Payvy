@@ -53,7 +53,9 @@ pub async fn get(cx: &mut Cx<'_>, input: Get) -> Result<Value, CommandError> {
     let accounts = store::vendor_accounts(&mut cx.tx, v.id).await?;
     let workflow = workflows::current(cx, Some(v.id)).await?;
     let payees = store::vendor_payees(&mut cx.tx, v.id).await?;
-    Ok(json!({ "vendor": v, "accounts": accounts, "workflow": workflow, "payees": payees }))
+    Ok(
+        json!({ "vendor": v, "accounts": accounts, "workflow": workflow, "payees": payees, "payee_invites": store::vendor_payee_invites(&mut cx.tx, v.id).await? }),
+    )
 }
 
 #[derive(Deserialize)]

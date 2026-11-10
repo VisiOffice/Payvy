@@ -43,6 +43,68 @@ Anyone, agents included, can propose a payee. **Only a person can accept one**, 
 records the payee it replaced. Changing where a vendor is paid is the classic AP fraud, so it
 always gets a human look. Methods: `ach`, `check`, `domestic_wire`, `real_time_payment`.
 
+## Inviting a vendor to supply payment details
+
+On the vendor page, choose **Invite payment details…**, enter the email and method,
+review the invitation, then send it. Mercury sends the email and collects the
+banking details. Payvy never stores the onboarding link or the vendor's account
+or routing numbers. The connected token needs permission to create and read
+recipient invites and read recipients; payment-request permission alone is not
+sufficient for this flow.
+
+The API uses the same commands as the page:
+
+```
+vendor.invite_payee { "vendor_id": "…", "email": "vendor@example.com", "method": "ach" }
+```
+
+This is a **person-only, confirmed** command: preview sends nothing, and commit
+uses the preview's single-use token. Supported methods are `ach`, `check`,
+`domestic_wire`, and `real_time_payment`. It invites a new recipient; it does not
+change an existing Mercury recipient's details or ask for tax documents.
+
+Use **Check invitation** after the vendor responds (there is no background
+invitation polling in this first version):
+
+```
+vendor.refresh_payee_invite { "invite_id": "…" }
+vendor.accept_payee         { "proposal_id": "…" }
+```
+
+Refresh is person-only. When Mercury reports completion and the recipient is
+active with the requested method, refresh creates one payee proposal. Review
+and accept it in **Waiting on you** before it can be used to pay. Refresh previews
+roll back the proposal; repeated or concurrent refreshes cannot create another.
+Expired and declined invitations can be replaced with a new invitation. A bank
+connection change requires a new invitation on that connection.
+
+Mercury does not document an idempotency key for sending invitations. Before the
+POST, Payvy commits an `unknown` attempt and consumes its confirmation. If the
+process stops, the response is lost, or the final database write fails, the
+attempt stays visible and blocks another invite for that vendor and connection.
+It is **never automatically resent**. A definite bank refusal is recorded as
+`failed` and permits another attempt after fixing the cause.
+
+For uncertain delivery, find the invitation in Mercury and enter its ID on the
+vendor page, or run:
+
+```
+vendor.refresh_payee_invite { "invite_id": "…", "mercury_invite_id": "…" }
+```
+
+Recovery checks the email and requested method and never sends another email.
+If no invitation can be found, leave the uncertain attempt for investigation;
+you can still set up a recipient in Mercury and use the existing
+`vendor.propose_payee` → `vendor.accept_payee` flow. Payvy does not infer that an
+invitation was never sent from a missing response.
+
+Mercury's [invite endpoint](https://docs.mercury.com/reference/createrecipientinvite)
+and [invite status endpoint](https://docs.mercury.com/reference/getrecipientinvite)
+define this flow (checked 2026-11-10). Tests use a local fake bank, never a live
+account. A debug server can point **only sandbox** connections at an HTTP
+loopback fake with `PAYVY_MERCURY_SANDBOX_URL` (and Rho with `PAYVY_RHO_SANDBOX_URL`);
+a release build refuses to start with either set.
+
 ## Paying
 
 `bill.release` previews the payment (bank, account, recipient, last four, method, amount) and
@@ -103,7 +165,7 @@ built yet — reads are live from Rho each time.
 ## Not yet
 
 - Paying automatically when a workflow's `pay` step is `auto` (today a person releases).
-- Inviting a vendor to enter their own bank details in Mercury.
+- Direct recipient creation inside Payvy; invitations are supported.
 - Bills in other currencies, and Wise and Airwallex for international payments.
 - Ramp and Brex.
 - Paying through Rho (its current API doesn't offer it to us), and stored

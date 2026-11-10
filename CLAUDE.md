@@ -58,6 +58,12 @@ Conventions follow Visirent (`~/Code/visirent`).
   leaves the payment `submitting` to be resent with the same key, never a new one. Only the
   bank's answer marks a released bill paid (`payments::apply`). New banks implement the same
   shape in `payvy-pay`; tests use a fake bank (`tests/payments.rs`), never a real one.
+- **Mercury invitations are non-idempotent.** `vendor.invite_payee` is person-only
+  and confirmed. It commits an unknown attempt, its event and the consumed token
+  before calling Mercury; a crash or unclear response must never automatically
+  resend. This is an intentional two-transaction command. Its preview skips the
+  checkpoint and the POST. Completion only proposes a payee. Invite error bodies
+  and onboarding links must never reach events or logs. See `docs/payments.md`.
 - **Rho is a read-only connection** (`payvy-pay`'s `Rho`, mode `read_only`): it coexists with
   the paying bank (one live paying connection per org, plus one read-only connection per
   provider), its client has no pay method, and `bill.release` with only Rho behaves exactly
@@ -116,9 +122,15 @@ fresh database it drops afterwards, and a `payvy-e2e` bucket in the compose Seaw
 else is mocked except the model and the banks: `fake-model.ts` answers as an OpenAI-compatible API
 with what each fixture invoice prints, so extraction, checks and vendor matching run for real;
 `fake-bank.ts` stands in for Mercury and Rho, reached only through sandbox connections
-(`PAYVY_MERCURY_SANDBOX_URL`, `PAYVY_RHO_SANDBOX_URL`; production always goes to the real bank). Sign-in
+(`PAYVY_MERCURY_SANDBOX_URL`, `PAYVY_RHO_SANDBOX_URL`, accepted only by debug builds and only on
+`http://127.0.0.1`; production connections always go to the real bank). Sign-in
 links are read from the server log (no mailer configured), so the tests sign in as a person
 does. Setup data is made through the command API with an agent key; what only a person may do
 (accept, approve, release, reject) is done in the browser. Run them when a change touches the
 web app or a command it uses. First time: `pnpm --dir web exec playwright install chromium`.
 `pnpm --dir web e2e:only` reruns without rebuilding.
+
+The bank tests (`bank.spec.ts`, `payee-invite.spec.ts`) need no documents:
+`PAYVY_E2E_BANK_ONLY=true pnpm --dir web e2e:only payee-invite.spec.ts bank.spec.ts` runs them
+without S3; the full suite still needs the document store. It creates its own
+database like the other browser tests. Never use production bank credentials.

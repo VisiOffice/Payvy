@@ -366,11 +366,32 @@ async fn main() -> anyhow::Result<()> {
                 Some(key) => {
                     let sealer = payvy_server::secrets::Sealer::from_hex(key)?;
                     let mut bank = payvy_server::Bank::new(sealer);
-                    if let Some(url) = mercury_sandbox_url.clone() {
-                        bank.mercury_sandbox = url;
-                    }
-                    if let Some(url) = rho_sandbox_url.clone() {
-                        bank.rho_sandbox = url;
+                    // Browser tests point sandbox connections at a local fake
+                    // bank. Only debug builds accept it, and only on loopback;
+                    // production connections always reach the real bank.
+                    for (name, url, slot) in [
+                        (
+                            "PAYVY_MERCURY_SANDBOX_URL",
+                            mercury_sandbox_url,
+                            &mut bank.mercury_sandbox,
+                        ),
+                        (
+                            "PAYVY_RHO_SANDBOX_URL",
+                            rho_sandbox_url,
+                            &mut bank.rho_sandbox,
+                        ),
+                    ] {
+                        let Some(url) = url else { continue };
+                        anyhow::ensure!(
+                            cfg!(debug_assertions),
+                            "{name} is for tests and only works in debug builds"
+                        );
+                        let parsed = reqwest::Url::parse(url)?;
+                        anyhow::ensure!(
+                            parsed.scheme() == "http" && parsed.host_str() == Some("127.0.0.1"),
+                            "{name} must be an http://127.0.0.1 URL"
+                        );
+                        *slot = url.clone();
                     }
                     state = state.with_bank(bank);
                     tokio::spawn(payvy_server::payment_worker::run(state.clone()));

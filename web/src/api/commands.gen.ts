@@ -24,6 +24,20 @@ export interface VendorAddAccountInput {
   location?: string;
 }
 
+export interface VendorInvitePayeeInput {
+  vendor_id: string;
+  email: string;
+  method: "ach" | "check" | "domestic_wire" | "real_time_payment";
+}
+
+export interface VendorRefreshPayeeInviteInput {
+  invite_id: string;
+  /**
+   * Only for recovering an invitation whose delivery was uncertain
+   */
+  mercury_invite_id?: string;
+}
+
 export interface VendorProposePayeeInput {
   vendor_id: string;
   /**
@@ -384,6 +398,8 @@ export interface CommandInputs {
   "vendor.list": VendorListInput;
   "vendor.get": VendorGetInput;
   "vendor.add_account": VendorAddAccountInput;
+  "vendor.invite_payee": VendorInvitePayeeInput;
+  "vendor.refresh_payee_invite": VendorRefreshPayeeInviteInput;
   "vendor.propose_payee": VendorProposePayeeInput;
   "vendor.accept_payee": VendorAcceptPayeeInput;
   "vendor.decline_payee": VendorDeclinePayeeInput;
@@ -434,6 +450,8 @@ export const COMMANDS: Record<CommandName, { tier: Tier; personOnly: boolean; su
   "vendor.list": { tier: "read", personOnly: false, summary: "List vendors with their open bill count and amount, whether each has its own workflow (else it follows the organization default), and how many workflow proposals wait for a person." },
   "vendor.get": { tier: "read", personOnly: false, summary: "A vendor with its account numbers, the workflow its bills follow and any open workflow proposals." },
   "vendor.add_account": { tier: "routine", personOnly: false, summary: "Record an account number this vendor uses for you, optionally tied to a location (a job site, a store). Invoices quoting it are matched to this vendor and location." },
+  "vendor.invite_payee": { tier: "confirmed", personOnly: true, summary: "Ask Mercury to email this vendor an invitation to supply payment details. Only a person may send it. Preview sends nothing. Completion proposes a payee; a person must still accept it. Uncertain delivery is never automatically retried." },
+  "vendor.refresh_payee_invite": { tier: "routine", personOnly: true, summary: "Check a Mercury invitation. Once completed, propose its recipient for the vendor without accepting it. If delivery was uncertain, a person can recover it by supplying the invitation ID from Mercury; the email and method must match." },
   "vendor.propose_payee": { tier: "routine", personOnly: false, summary: "Propose who this vendor's bills are paid to: a recipient already set up in the connected bank (see bank.recipients) and a method. The account's last four digits are shown for checking. Nothing changes until a person accepts it with vendor.accept_payee. Use this when a vendor's bank details change." },
   "vendor.accept_payee": { tier: "routine", personOnly: true, summary: "Accept a payee proposal: this vendor's bills are paid to it from now on. Check the destination with the vendor first; changed bank details are the most common way AP fraud happens." },
   "vendor.decline_payee": { tier: "routine", personOnly: true, summary: "Decline a payee proposal." },

@@ -17,12 +17,12 @@ test('a person signs in with an emailed link and signs out', async ({ page }) =>
   await expect(page.getByText(`Check ${PERSON.email}`)).toBeVisible();
 
   await page.goto(await linkAfter(log, mark));
-  await expect(page.getByRole('heading', { name: 'Waiting on you' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Waiting on you', exact: true })).toBeVisible();
   // The token is gone from the address bar once used.
   expect(page.url()).not.toContain('token=');
 
   await page.reload();
-  await expect(page.getByRole('heading', { name: 'Waiting on you' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Waiting on you', exact: true })).toBeVisible();
 
   await page.getByRole('button', { name: 'Sign out' }).click();
   await expect(page).toHaveURL(/\/sign-in$/);
@@ -39,7 +39,7 @@ test('a link works once', async ({ page }) => {
   const link = await linkAfter(log, mark);
 
   await page.goto(link);
-  await expect(page.getByRole('heading', { name: 'Waiting on you' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Waiting on you', exact: true })).toBeVisible();
   await page.context().clearCookies();
   await page.goto(link);
   await expect(page.getByText(/expired or was already used/)).toBeVisible();

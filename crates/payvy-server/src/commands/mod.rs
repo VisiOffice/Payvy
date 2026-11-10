@@ -9,6 +9,7 @@ mod email;
 mod events;
 mod extract;
 mod inbox;
+mod payee_invites;
 mod payments;
 mod people;
 mod vendors;
@@ -144,6 +145,7 @@ pub async fn run(
     }
     let mut cx = Cx {
         tx,
+        store: &state.store,
         org: actor.org_id,
         actor,
         now: (state.clock)(),
@@ -180,6 +182,8 @@ async fn execute(cx: &mut Cx<'_>, name: &str, input: &Value) -> Result<Value, Co
         "vendor.list" => vendors::list(cx).await,
         "vendor.get" => vendors::get(cx, parse(input)?).await,
         "vendor.add_account" => vendors::add_account(cx, parse(input)?).await,
+        "vendor.invite_payee" => payee_invites::invite(cx, parse(input)?).await,
+        "vendor.refresh_payee_invite" => payee_invites::refresh(cx, parse(input)?).await,
         "vendor.propose_payee" => bank::propose_payee(cx, parse(input)?).await,
         "vendor.accept_payee" => bank::decide_payee(cx, parse(input)?, true).await,
         "vendor.decline_payee" => bank::decide_payee(cx, parse(input)?, false).await,
@@ -227,6 +231,7 @@ async fn execute(cx: &mut Cx<'_>, name: &str, input: &Value) -> Result<Value, Co
 /// acting, the time, and the events appended so far.
 pub(crate) struct Cx<'a> {
     pub tx: Tx,
+    pub store: &'a store::Store,
     pub org: Uuid,
     pub actor: &'a Actor,
     pub now: DateTime<Utc>,

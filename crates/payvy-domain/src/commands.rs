@@ -68,6 +68,20 @@ pub const COMMANDS: &[CommandSpec] = &[
         input_schema: r#"{"type":"object","required":["vendor_id","account_number"],"properties":{"vendor_id":{"type":"string","format":"uuid"},"account_number":{"type":"string"},"location":{"type":"string","description":"e.g. 1420 Elm St site"}}}"#,
     },
     CommandSpec {
+        name: "vendor.invite_payee",
+        summary: "Ask Mercury to email this vendor an invitation to supply payment details. Only a person may send it. Preview sends nothing. Completion proposes a payee; a person must still accept it. Uncertain delivery is never automatically retried.",
+        tier: RiskTier::Confirmed,
+        person_only: true,
+        input_schema: r#"{"type":"object","required":["vendor_id","email","method"],"properties":{"vendor_id":{"type":"string","format":"uuid"},"email":{"type":"string","format":"email"},"method":{"type":"string","enum":["ach","check","domestic_wire","real_time_payment"]}}}"#,
+    },
+    CommandSpec {
+        name: "vendor.refresh_payee_invite",
+        summary: "Check a Mercury invitation. Once completed, propose its recipient for the vendor without accepting it. If delivery was uncertain, a person can recover it by supplying the invitation ID from Mercury; the email and method must match.",
+        tier: RiskTier::Routine,
+        person_only: true,
+        input_schema: r#"{"type":"object","required":["invite_id"],"properties":{"invite_id":{"type":"string","format":"uuid"},"mercury_invite_id":{"type":"string","description":"Only for recovering an invitation whose delivery was uncertain"}}}"#,
+    },
+    CommandSpec {
         name: "vendor.propose_payee",
         summary: "Propose who this vendor's bills are paid to: a recipient already set up in the connected bank (see bank.recipients) and a method. The account's last four digits are shown for checking. Nothing changes until a person accepts it with vendor.accept_payee. Use this when a vendor's bank details change.",
         tier: RiskTier::Routine,

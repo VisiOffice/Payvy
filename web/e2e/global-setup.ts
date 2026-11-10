@@ -92,6 +92,10 @@ export default async function globalSetup() {
     PAYVY_MERCURY_SANDBOX_URL: `http://127.0.0.1:${BANK_PORT}/mercury`,
     PAYVY_RHO_SANDBOX_URL: `http://127.0.0.1:${BANK_PORT}/rho`,
   };
+  // The bank-only run needs no document store. Full suites still use real S3.
+  if (process.env.PAYVY_E2E_BANK_ONLY === 'true') {
+    for (const key of Object.keys(env)) if (key.startsWith('PAYVY_S3_')) delete env[key];
+  }
   const serverLog = path.join(STATE_DIR, 'server.log');
   const out = fs.openSync(serverLog, 'w');
   const server = spawn(BIN, ['serve'], { env, stdio: ['ignore', out, out] });
@@ -135,7 +139,7 @@ export default async function globalSetup() {
       origins: [],
     }),
   );
-  fs.writeFileSync(STATE_FILE, JSON.stringify({ agentKey, serverLog } satisfies State));
+  fs.writeFileSync(STATE_FILE, JSON.stringify({ agentKey, serverLog, mercuryUrl: `http://127.0.0.1:${BANK_PORT}/mercury` } satisfies State));
 
   return async () => {
     server.kill('SIGTERM');

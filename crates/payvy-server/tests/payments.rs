@@ -30,6 +30,9 @@ struct Bank0 {
     /// The next payment gets this answer instead: (status, message, still create it).
     next: Option<(u16, &'static str, bool)>,
     posts: Vec<Value>,
+    invites: HashMap<String, Value>,
+    invite_posts: Vec<Value>,
+    invite_failure: Option<u16>,
 }
 
 #[derive(Clone, Default)]
@@ -66,6 +69,42 @@ fn king() -> Value {
     json!({ "id": KING, "name": "King Environmental", "status": "active", "emails": ["ar@kingenv.com"],
             "electronicRoutingInfo": { "accountNumber": "000123456789", "routingNumber": "121000248", "electronicAccountType": "businessChecking" },
             "checkInfo": { "address": { "address1": "PO Box 4410", "city": "Mesa", "region": "AZ", "postalCode": "85201", "country": "US" } } })
+}
+
+async fn invite_recipient(State(f): State<Fake>, h: HeaderMap, Json(body): Json<Value>) -> Reply {
+    if !authed(&h) {
+        return unauthorized();
+    }
+    let mut b = f.0.lock().unwrap();
+    b.invite_posts.push(body.clone());
+    let id = format!("invite-{}", b.invite_posts.len());
+    let invite = json!({"id": id, "status": "created", "contactEmail": body["contactEmail"],
+        "paymentMethods": body["paymentMethods"], "recipientId": null,
+        "onboardingUrl": "https://mercury.com/secret-capability", "accountNumber": "000123456789"});
+    if let Some(status) = b.invite_failure.take() {
+        if status >= 500 {
+            b.invites.insert(id, invite);
+        }
+        return (
+            StatusCode::from_u16(status).unwrap(),
+            Json(json!({"message": "secret-capability 000123456789"})),
+        );
+    }
+    b.invites.insert(id, invite.clone());
+    (StatusCode::CREATED, Json(invite))
+}
+
+async fn get_invite(State(f): State<Fake>, h: HeaderMap, Path(id): Path<String>) -> Reply {
+    if !authed(&h) {
+        return unauthorized();
+    }
+    match f.0.lock().unwrap().invites.get(&id) {
+        Some(i) => (StatusCode::OK, Json(i.clone())),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"message": "secret-capability"})),
+        ),
+    }
 }
 
 async fn recipients(h: HeaderMap) -> Reply {
@@ -234,6 +273,8 @@ async fn fake_mercury() -> (Fake, String) {
     let app = axum::Router::new()
         .route("/accounts", get(accounts))
         .route("/recipients", get(recipients))
+        .route("/recipients/invites", post(invite_recipient))
+        .route("/recipients/invites/{id}", get(get_invite))
         .route("/recipient/{id}", get(recipient))
         .route(
             "/account/{account}/transactions",
@@ -661,5 +702,355 @@ async fn without_a_secrets_key_banks_are_off() {
     .await
     .unwrap_err();
     assert!(matches!(e, CommandError::NotConfigured(_)), "{e}");
+    db.drop().await;
+}
+
+#[tokio::test]
+async fn invitation_preview_completion_acceptance_and_payment() {
+    let Some((db, fake)) = db().await else { return };
+    let who = person("robert");
+    connect(&db, "direct").await;
+    let v = vendor(&db.state, &who, "King Environmental").await;
+    set_workflow(
+        &db.state,
+        &who,
+        Some(&v),
+        json!([{ "id":"pay", "type":"pay", "release":"manual" }]),
+    )
+    .await;
+    let input = json!({ "vendor_id": v, "email": "ar@kingenv.com", "method": "ach" });
+    let denied = confirm(
+        &db.state,
+        &agent("bot"),
+        "vendor.invite_payee",
+        input.clone(),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(denied, CommandError::PersonOnly(_)));
+    assert!(matches!(
+        commit(&db.state, &who, "vendor.invite_payee", input.clone())
+            .await
+            .unwrap_err(),
+        CommandError::NeedsConfirmation(_)
+    ));
+    let preview = payvy_server::commands::run(
+        &db.state,
+        &who,
+        "vendor.invite_payee",
+        input.clone(),
+        payvy_server::commands::Mode::Preview,
+    )
+    .await
+    .unwrap();
+    assert!(fake.0.lock().unwrap().invite_posts.is_empty());
+    let detail = commit(&db.state, &who, "vendor.get", json!({"vendor_id": v}))
+        .await
+        .unwrap();
+    assert!(
+        detail["result"]["payee_invites"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let out = payvy_server::commands::run(
+        &db.state,
+        &who,
+        "vendor.invite_payee",
+        input.clone(),
+        payvy_server::commands::Mode::Commit {
+            confirm_token: Some(preview["confirm_token"].as_str().unwrap().into()),
+        },
+    )
+    .await
+    .unwrap();
+    let id = out["result"]["invite"]["id"].clone();
+    assert!(!out.to_string().contains("secret-capability"));
+    assert!(!out.to_string().contains("123456789"));
+    assert_eq!(fake.0.lock().unwrap().invite_posts.len(), 1);
+    assert_eq!(fake.0.lock().unwrap().invite_posts[0]["sendEmail"], true);
+    assert!(
+        confirm(&db.state, &who, "vendor.invite_payee", input)
+            .await
+            .is_err()
+    );
+    let other = db.add_org().await;
+    assert!(matches!(
+        commit(
+            &db.state,
+            &payvy_server::Actor::person(other, "other"),
+            "vendor.refresh_payee_invite",
+            json!({"invite_id": id})
+        )
+        .await
+        .unwrap_err(),
+        CommandError::NotFound(_)
+    ));
+    {
+        let mut b = fake.0.lock().unwrap();
+        let remote = b.invites.get_mut("invite-1").unwrap();
+        remote["status"] = json!("completed");
+        remote["recipientId"] = json!(KING);
+    }
+    // A refresh preview does not keep its proposal.
+    payvy_server::commands::run(
+        &db.state,
+        &who,
+        "vendor.refresh_payee_invite",
+        json!({"invite_id":id}),
+        payvy_server::commands::Mode::Preview,
+    )
+    .await
+    .unwrap();
+    let detail = commit(&db.state, &who, "vendor.get", json!({"vendor_id":v}))
+        .await
+        .unwrap();
+    assert!(detail["result"]["payees"].as_array().unwrap().is_empty());
+    let out = commit(
+        &db.state,
+        &who,
+        "vendor.refresh_payee_invite",
+        json!({"invite_id":id}),
+    )
+    .await
+    .unwrap();
+    let proposal = out["result"]["invite"]["proposal_id"].clone();
+    let audit = commit(&db.state, &who, "event.list", json!({"entity_id":v}))
+        .await
+        .unwrap();
+    for secret in ["000123456789", "121000248", "secret-capability", TOKEN] {
+        assert!(!audit.to_string().contains(secret), "audit leaked {secret}");
+    }
+    assert!(
+        commit(
+            &db.state,
+            &who,
+            "vendor.refresh_payee_invite",
+            json!({"invite_id":id})
+        )
+        .await
+        .is_err()
+    );
+    let detail = commit(&db.state, &who, "vendor.get", json!({"vendor_id":v}))
+        .await
+        .unwrap();
+    assert_eq!(detail["result"]["payees"].as_array().unwrap().len(), 1);
+    assert_eq!(detail["result"]["payees"][0]["status"], "proposed");
+    let bill = common::bill(&db.state, &who, &v, "invited-1", 1000).await;
+    assert!(
+        confirm(&db.state, &who, "bill.release", json!({"bill_id":bill}))
+            .await
+            .is_err()
+    );
+    assert!(
+        commit(
+            &db.state,
+            &agent("bot"),
+            "vendor.accept_payee",
+            json!({"proposal_id": proposal})
+        )
+        .await
+        .is_err()
+    );
+    commit(
+        &db.state,
+        &who,
+        "vendor.accept_payee",
+        json!({"proposal_id":proposal}),
+    )
+    .await
+    .unwrap();
+    confirm(&db.state, &who, "bill.release", json!({"bill_id":bill}))
+        .await
+        .unwrap();
+    assert_eq!(fake.posts().len(), 1);
+    db.drop().await;
+}
+
+#[tokio::test]
+async fn invitation_uncertainty_is_durable_and_recoverable_without_resending() {
+    let Some((db, fake)) = db().await else { return };
+    let who = person("robert");
+    connect(&db, "direct").await;
+    let v = vendor(&db.state, &who, "King Environmental").await;
+    let input = json!({"vendor_id":v,"email":"ar@kingenv.com","method":"ach"});
+    fake.0.lock().unwrap().invite_failure = Some(503);
+    let out = confirm(&db.state, &who, "vendor.invite_payee", input.clone())
+        .await
+        .unwrap();
+    assert_eq!(out["result"]["invite"]["status"], "unknown");
+    assert!(!out.to_string().contains("secret-capability"));
+    let id = out["result"]["invite"]["id"].clone();
+    assert!(
+        confirm(&db.state, &who, "vendor.invite_payee", input)
+            .await
+            .is_err()
+    );
+    let error = commit(
+        &db.state,
+        &who,
+        "vendor.refresh_payee_invite",
+        json!({"invite_id":id,"mercury_invite_id":"missing"}),
+    )
+    .await
+    .unwrap_err();
+    assert!(!error.to_string().contains("secret-capability"));
+    fake.0.lock().unwrap().invites.get_mut("invite-1").unwrap()["contactEmail"] =
+        json!("other@example.com");
+    assert!(
+        commit(
+            &db.state,
+            &who,
+            "vendor.refresh_payee_invite",
+            json!({"invite_id":id,"mercury_invite_id":"invite-1"})
+        )
+        .await
+        .is_err()
+    );
+    fake.0.lock().unwrap().invites.get_mut("invite-1").unwrap()["contactEmail"] =
+        json!("ar@kingenv.com");
+    let recovered = commit(
+        &db.state,
+        &who,
+        "vendor.refresh_payee_invite",
+        json!({"invite_id":id,"mercury_invite_id":"invite-1"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(recovered["result"]["invite"]["status"], "created");
+    assert_eq!(fake.0.lock().unwrap().invite_posts.len(), 1);
+    // A replacement bank connection cannot resolve the old invitation.
+    connect(&db, "direct").await;
+    assert!(matches!(
+        commit(
+            &db.state,
+            &who,
+            "vendor.refresh_payee_invite",
+            json!({"invite_id":id})
+        )
+        .await
+        .unwrap_err(),
+        CommandError::Conflict(_)
+    ));
+    db.drop().await;
+}
+
+#[tokio::test]
+async fn concurrent_invites_send_once_and_terminal_refusals_can_be_retried() {
+    let Some((db, fake)) = db().await else { return };
+    let who = person("robert");
+    connect(&db, "direct").await;
+    let v = vendor(&db.state, &who, "King Environmental").await;
+    let input = json!({"vendor_id":v,"email":"ar@kingenv.com","method":"ach"});
+    fake.0.lock().unwrap().invite_failure = Some(403);
+    let refused = confirm(&db.state, &who, "vendor.invite_payee", input.clone())
+        .await
+        .unwrap();
+    assert_eq!(refused["result"]["invite"]["status"], "failed");
+    assert!(!refused.to_string().contains("secret-capability"));
+    let (a, b) = tokio::join!(
+        confirm(&db.state, &who, "vendor.invite_payee", input.clone()),
+        confirm(&db.state, &who, "vendor.invite_payee", input)
+    );
+    assert_eq!(usize::from(a.is_ok()) + usize::from(b.is_ok()), 1);
+    assert_eq!(fake.0.lock().unwrap().invite_posts.len(), 2); // one refusal, one sent
+    db.drop().await;
+}
+
+#[tokio::test]
+async fn invitation_is_not_resent_when_bank_succeeds_but_local_completion_fails() {
+    let Some((db, fake)) = db().await else { return };
+    let who = person("robert");
+    connect(&db, "direct").await;
+    let v = vendor(&db.state, &who, "King Environmental").await;
+    // Simulate the final database write failing AFTER Mercury has sent email.
+    let mut tx = db.state.store.begin(who.org_id).await.unwrap();
+    sqlx::query("CREATE FUNCTION fail_invite_update() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'test storage failure'; END $$").execute(&mut *tx).await.unwrap();
+    sqlx::query("CREATE TRIGGER fail_invite_update BEFORE UPDATE ON vendor_payee_invites FOR EACH ROW EXECUTE FUNCTION fail_invite_update()").execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    let input = json!({"vendor_id":v,"email":"ar@kingenv.com","method":"ach"});
+    let preview = payvy_server::commands::run(
+        &db.state,
+        &who,
+        "vendor.invite_payee",
+        input.clone(),
+        payvy_server::commands::Mode::Preview,
+    )
+    .await
+    .unwrap();
+    let mode = || payvy_server::commands::Mode::Commit {
+        confirm_token: Some(preview["confirm_token"].as_str().unwrap().into()),
+    };
+    assert!(
+        payvy_server::commands::run(
+            &db.state,
+            &who,
+            "vendor.invite_payee",
+            input.clone(),
+            mode()
+        )
+        .await
+        .is_err()
+    );
+    assert!(matches!(
+        payvy_server::commands::run(
+            &db.state,
+            &who,
+            "vendor.invite_payee",
+            input.clone(),
+            mode()
+        )
+        .await
+        .unwrap_err(),
+        CommandError::BadToken(_)
+    ));
+    assert!(
+        confirm(&db.state, &who, "vendor.invite_payee", input)
+            .await
+            .is_err()
+    );
+    assert_eq!(fake.0.lock().unwrap().invite_posts.len(), 1);
+    let got = commit(&db.state, &who, "vendor.get", json!({"vendor_id":v}))
+        .await
+        .unwrap();
+    assert_eq!(got["result"]["payee_invites"][0]["status"], "unknown");
+    db.drop().await;
+}
+
+#[tokio::test]
+async fn invitation_terminal_states_and_incomplete_onboarding_do_not_propose_payees() {
+    let Some((db, fake)) = db().await else { return };
+    let who = person("robert");
+    connect(&db, "direct").await;
+    let v = vendor(&db.state, &who, "King Environmental").await;
+    let input = json!({"vendor_id":v,"email":"ar@kingenv.com","method":"ach"});
+    for (n, status) in [(1, "expired"), (2, "declined"), (3, "completed")] {
+        let out = confirm(&db.state, &who, "vendor.invite_payee", input.clone())
+            .await
+            .unwrap();
+        let id = out["result"]["invite"]["id"].clone();
+        fake.0
+            .lock()
+            .unwrap()
+            .invites
+            .get_mut(&format!("invite-{n}"))
+            .unwrap()["status"] = json!(status);
+        let refreshed = commit(
+            &db.state,
+            &who,
+            "vendor.refresh_payee_invite",
+            json!({"invite_id":id}),
+        )
+        .await;
+        if status == "completed" {
+            assert!(refreshed.is_err());
+        } else {
+            assert_eq!(refreshed.unwrap()["result"]["invite"]["status"], status);
+        }
+    }
+    let detail = commit(&db.state, &who, "vendor.get", json!({"vendor_id":v}))
+        .await
+        .unwrap();
+    assert!(detail["result"]["payees"].as_array().unwrap().is_empty());
     db.drop().await;
 }

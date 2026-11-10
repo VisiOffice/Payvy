@@ -16,6 +16,7 @@ import { Text } from '@astryxdesign/core/Text';
 import { VStack } from '@astryxdesign/core/VStack';
 import { run } from '../api/client';
 import { Page } from '../Page';
+import { PayeeInvites, type PayeeInvite } from './PayeeInvites';
 import { BillsTable, type Listed } from '../bills/BillsTable';
 import { METHOD } from '../inbox/types';
 import { date } from '../money';
@@ -27,6 +28,7 @@ interface VendorDetail {
   vendor: { id: string; name: string; email: string | null; terms_days: number | null };
   accounts: { id: string; account_number: string; location: string | null }[];
   workflow: Current;
+  payee_invites: PayeeInvite[];
   payees: {
     id: string;
     recipient_name: string;
@@ -141,6 +143,7 @@ export function VendorPage() {
                   Not set. Anyone can propose where this vendor is paid; a person accepts it in Waiting on you.
                 </Text>
               )}
+              <PayeeInvites key={vendor.id} vendor={vendor} invites={detail.payee_invites} payees={detail.payees} onChanged={loadVendor} />
               {proposed.map((p) => (
                 <HStack key={p.id} gap={2} vAlign="center" wrap="wrap">
                   <Badge variant="warning" label="Change proposed" />

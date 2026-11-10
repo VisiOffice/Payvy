@@ -243,7 +243,7 @@ function ConnectMercury({ onConnected, onCancel }: { onConnected: () => void; on
       <TextInput
         label="Mercury API token"
         type="password"
-        description="In Mercury: Settings → Tokens. It's shown once there; Payvy never shows it again."
+        description="In Mercury: Settings → Tokens. To let Payvy invite vendors to enter their bank details, also give the token permission to create recipient invites. The token is shown once there; Payvy never shows it again."
         value={token}
         onChange={setToken}
         autoComplete="off"

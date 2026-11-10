@@ -29,5 +29,6 @@ export const PERSON = { email: 'robert@example.com', name: 'Robert', actor: 'rob
 export interface State {
   /** An agent key (claude-ap) for setting up data the way an agent would. */
   agentKey: string;
+  mercuryUrl: string;
   serverLog: string;
 }
