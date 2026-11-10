@@ -1,0 +1,9 @@
+{
+  "identities": [
+    {
+      "name": "payvy-dev",
+      "credentials": [{ "accessKey": "payvy-dev", "secretKey": "payvy-dev-secret" }],
+      "actions": ["Admin", "Read", "Write", "List", "Tagging"]
+    }
+  ]
+}

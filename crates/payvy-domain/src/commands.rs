@@ -103,10 +103,10 @@ pub const COMMANDS: &[CommandSpec] = &[
     // ── Bills ───────────────────────────────────────────────────────────────
     CommandSpec {
         name: "bill.create",
-        summary: "Enter a bill. It follows the vendor's current workflow from now on. Refused if this vendor already has a bill with the same invoice number (ignoring case, spaces, punctuation and leading zeros) unless allow_duplicate is true.",
+        summary: "Enter a bill, optionally from an inbox document. It follows the vendor's current workflow from now on. Refused if this vendor already has a bill with the same invoice number (ignoring case, spaces, punctuation and leading zeros) unless allow_duplicate is true.",
         tier: RiskTier::Routine,
         person_only: false,
-        input_schema: r#"{"type":"object","required":["vendor_id","invoice_number","invoice_date","amount_cents"],"properties":{"vendor_id":{"type":"string","format":"uuid"},"invoice_number":{"type":"string"},"invoice_date":{"type":"string","format":"date"},"due_date":{"type":"string","format":"date","description":"Defaults to invoice_date plus the vendor's terms"},"amount_cents":{"type":"integer","minimum":1},"memo":{"type":"string"},"external_ref":{"type":"string","description":"Your own id for this bill (a PO or order number), so other systems can signal it"},"lines":{"type":"array","items":{"type":"object","required":["description","amount_cents"],"properties":{"description":{"type":"string"},"amount_cents":{"type":"integer","minimum":1},"account":{"type":"string"}}},"description":"If given, they must add up to amount_cents"},"allow_duplicate":{"type":"boolean"}}}"#,
+        input_schema: r#"{"type":"object","required":["vendor_id","invoice_number","invoice_date","amount_cents"],"properties":{"vendor_id":{"type":"string","format":"uuid"},"invoice_number":{"type":"string"},"invoice_date":{"type":"string","format":"date"},"due_date":{"type":"string","format":"date","description":"Defaults to invoice_date plus the vendor's terms"},"amount_cents":{"type":"integer","minimum":1},"memo":{"type":"string"},"external_ref":{"type":"string","description":"Your own id for this bill (a PO or order number), so other systems can signal it"},"lines":{"type":"array","items":{"type":"object","required":["description","amount_cents"],"properties":{"description":{"type":"string"},"amount_cents":{"type":"integer","minimum":1},"account":{"type":"string"}}},"description":"If given, they must add up to amount_cents"},"allow_duplicate":{"type":"boolean"},"document_id":{"type":"string","format":"uuid","description":"The inbox document this bill was read from; it is filed with the bill"}}}"#,
     },
     CommandSpec {
         name: "bill.list",
@@ -163,6 +163,35 @@ pub const COMMANDS: &[CommandSpec] = &[
         tier: RiskTier::Confirmed,
         person_only: true,
         input_schema: r#"{"type":"object","required":["bill_id","reason"],"properties":{"bill_id":{"type":"string","format":"uuid"},"reason":{"type":"string"}}}"#,
+    },
+    // ── Documents ───────────────────────────────────────────────────────────
+    CommandSpec {
+        name: "document.upload",
+        summary: "Add a file to the inbox: a PDF or image (PNG, JPEG, GIF, WebP, TIFF) of a bill, up to 25 MB, as base64. Its type is read from the file itself. Refused if the same file is already here, naming the existing document.",
+        tier: RiskTier::Routine,
+        person_only: false,
+        input_schema: r#"{"type":"object","required":["filename","content_base64"],"properties":{"filename":{"type":"string"},"content_base64":{"type":"string","description":"The file, base64-encoded (standard alphabet)"}}}"#,
+    },
+    CommandSpec {
+        name: "document.list",
+        summary: "Documents in the inbox (default), oldest first; or filed or trashed ones.",
+        tier: RiskTier::Read,
+        person_only: false,
+        input_schema: r#"{"type":"object","properties":{"status":{"type":"string","enum":["inbox","filed","trashed"]},"limit":{"type":"integer","minimum":1,"maximum":500}}}"#,
+    },
+    CommandSpec {
+        name: "document.get",
+        summary: "A document's details and a download link valid for 15 minutes.",
+        tier: RiskTier::Read,
+        person_only: false,
+        input_schema: r#"{"type":"object","required":["document_id"],"properties":{"document_id":{"type":"string","format":"uuid"}}}"#,
+    },
+    CommandSpec {
+        name: "document.trash",
+        summary: "Take a document out of the inbox because it isn't a bill (a statement, a marketing email, a duplicate). The file is kept.",
+        tier: RiskTier::Routine,
+        person_only: false,
+        input_schema: r#"{"type":"object","required":["document_id","reason"],"properties":{"document_id":{"type":"string","format":"uuid"},"reason":{"type":"string"}}}"#,
     },
     // ── Audit ───────────────────────────────────────────────────────────────
     CommandSpec {

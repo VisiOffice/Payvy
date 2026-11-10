@@ -61,6 +61,9 @@ pub struct AppState {
     pub admin_key: Arc<str>,
     pub confirm: Arc<Confirmer>,
     pub clock: Clock,
+    /// None when no object store is configured: document commands then say
+    /// so instead of failing obscurely.
+    pub storage: Option<Arc<payvy_storage::Storage>>,
 }
 
 impl AppState {
@@ -74,7 +77,13 @@ impl AppState {
             admin_key: admin_key.into(),
             confirm: Arc::new(Confirmer::new(admin_key.as_bytes())),
             clock: Arc::new(Utc::now),
+            storage: None,
         }
+    }
+
+    pub fn with_storage(mut self, storage: payvy_storage::Storage) -> Self {
+        self.storage = Some(Arc::new(storage));
+        self
     }
 
     pub fn with_clock(mut self, clock: Clock) -> Self {
@@ -101,6 +110,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/commands", get(list_commands))
         .route("/api/commands/{name}", post(run_command))
         .route("/mcp", post(mcp::handle))
+        // A 25 MB document arrives as about 34 MB of base64 in JSON.
+        .layer(axum::extract::DefaultBodyLimit::max(36 * 1024 * 1024))
         .route_layer(middleware::from_fn_with_state(state.clone(), authenticate));
     Router::new()
         .route("/health", get(health))

@@ -1,0 +1,17 @@
+[package]
+name = "payvy-storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Documents in any S3-compatible store: Cloudflare R2, Backblaze B2, AWS S3,
+# or self-hosted (Garage, SeaweedFS). Signing by rusty-s3, HTTP by reqwest.
+[dependencies]
+anyhow.workspace = true
+reqwest.workspace = true
+rusty-s3.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true

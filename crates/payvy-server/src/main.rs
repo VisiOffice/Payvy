@@ -20,12 +20,51 @@ enum Command {
         /// confirm tokens. At least 32 characters.
         #[arg(long, env = "PAYVY_API_KEY", hide_env_values = true)]
         api_key: String,
+        #[command(flatten)]
+        storage: StorageArgs,
     },
     /// Manage API keys for people and agents.
     Key {
         #[command(subcommand)]
         command: KeyCommand,
     },
+}
+
+/// Document storage: any S3-compatible store (Cloudflare R2, Backblaze B2,
+/// AWS S3, Garage, SeaweedFS). Without it, document commands report that
+/// storage isn't configured.
+#[derive(clap::Args)]
+struct StorageArgs {
+    /// e.g. https://<account>.r2.cloudflarestorage.com or
+    /// https://s3.us-west-004.backblazeb2.com
+    #[arg(long, env = "PAYVY_S3_ENDPOINT", requires_all = ["s3_bucket", "s3_access_key", "s3_secret_key"])]
+    s3_endpoint: Option<String>,
+    #[arg(long, env = "PAYVY_S3_BUCKET")]
+    s3_bucket: Option<String>,
+    /// "auto" for R2; the bucket's region for B2 and AWS.
+    #[arg(long, env = "PAYVY_S3_REGION", default_value = "auto")]
+    s3_region: String,
+    #[arg(long, env = "PAYVY_S3_ACCESS_KEY", hide_env_values = true)]
+    s3_access_key: Option<String>,
+    #[arg(long, env = "PAYVY_S3_SECRET_KEY", hide_env_values = true)]
+    s3_secret_key: Option<String>,
+    /// Path-style URLs (endpoint/bucket/key): right for R2, B2 and
+    /// self-hosted stores. Set false for AWS virtual-hosted buckets.
+    #[arg(long, env = "PAYVY_S3_PATH_STYLE", default_value_t = true, action = clap::ArgAction::Set)]
+    s3_path_style: bool,
+}
+
+impl StorageArgs {
+    fn config(self) -> Option<payvy_storage::Config> {
+        Some(payvy_storage::Config {
+            endpoint: self.s3_endpoint?,
+            bucket: self.s3_bucket?,
+            region: self.s3_region,
+            access_key: self.s3_access_key?,
+            secret_key: self.s3_secret_key?,
+            path_style: self.s3_path_style,
+        })
+    }
 }
 
 #[derive(Subcommand)]
@@ -61,12 +100,23 @@ async fn main() -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("set DATABASE_URL or --database-url"))?;
 
     match cli.command {
-        Command::Serve { bind, api_key } => {
+        Command::Serve {
+            bind,
+            api_key,
+            storage,
+        } => {
             anyhow::ensure!(
                 api_key.len() >= 32,
                 "PAYVY_API_KEY must be at least 32 characters"
             );
-            let state = payvy_server::AppState::connect(&database_url, &api_key).await?;
+            let mut state = payvy_server::AppState::connect(&database_url, &api_key).await?;
+            match storage.config() {
+                Some(config) => {
+                    tracing::info!(endpoint = %config.endpoint, bucket = %config.bucket, "document storage");
+                    state = state.with_storage(payvy_storage::Storage::new(&config)?);
+                }
+                None => tracing::warn!("no document storage configured; document commands are off"),
+            }
             let listener = tokio::net::TcpListener::bind(bind).await?;
             tracing::info!("payvy listening on http://{bind}");
             axum::serve(listener, payvy_server::router(state))

@@ -12,7 +12,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use super::{CommandError, Cx, text};
+use super::{CommandError, Cx, documents, text};
 
 /// The workflow a bill follows: the version it arrived under.
 async fn workflow_of(cx: &mut Cx<'_>, bill: &Bill) -> Result<Workflow, CommandError> {
@@ -82,6 +82,7 @@ async fn detail(cx: &mut Cx<'_>, bill_id: Uuid) -> Result<Value, CommandError> {
         (bill.state == State::Open).then(|| evaluate(cx, &bill, &wf, &approvals, &signals));
     let lines = store::bill_lines(&mut cx.tx, bill.id).await?;
     let history = store::list_events(&mut cx.tx, Some(bill.id), 200).await?;
+    let documents = store::bill_documents(&mut cx.tx, bill.id).await?;
     Ok(json!({
         "bill": bill,
         "lines": lines,
@@ -89,6 +90,7 @@ async fn detail(cx: &mut Cx<'_>, bill_id: Uuid) -> Result<Value, CommandError> {
         "workflow": { "id": bill.workflow_id, "mermaid": wf.mermaid() },
         "approvals": approvals,
         "signals": signals,
+        "documents": documents,
         "history": history,
     }))
 }
@@ -113,6 +115,7 @@ pub struct Create {
     lines: Vec<Line>,
     #[serde(default)]
     allow_duplicate: bool,
+    document_id: Option<Uuid>,
 }
 
 pub async fn create(cx: &mut Cx<'_>, input: Create) -> Result<Value, CommandError> {
@@ -175,6 +178,9 @@ pub async fn create(cx: &mut Cx<'_>, input: Create) -> Result<Value, CommandErro
                 "amount_cents": input.amount_cents, "workflow_id": workflow_id, "duplicate_allowed": input.allow_duplicate }),
     )
     .await?;
+    if let Some(doc) = input.document_id {
+        documents::file_with_bill(cx, doc, id).await?;
+    }
     detail(cx, id).await
 }
 

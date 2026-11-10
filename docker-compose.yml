@@ -1,4 +1,5 @@
-# Development database. `docker compose up -d`, then see .env.example.
+# Development database and S3-compatible storage. `docker compose up -d`,
+# then see .env.example.
 services:
   postgres:
     image: postgres:17
@@ -9,5 +10,16 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./scripts/postgres-init:/docker-entrypoint-initdb.d:ro
+  # Any S3-compatible store works (R2, B2, S3, Garage, SeaweedFS). This is
+  # SeaweedFS for local development; credentials in scripts/seaweedfs/s3.json.
+  s3:
+    image: chrislusf/seaweedfs:3.97
+    command: server -s3 -s3.config=/etc/seaweedfs/s3.json -dir=/data -ip=127.0.0.1 -ip.bind=0.0.0.0
+    ports:
+      - "127.0.0.1:8336:8333"
+    volumes:
+      - s3data:/data
+      - ./scripts/seaweedfs/s3.json:/etc/seaweedfs/s3.json:ro
 volumes:
   pgdata:
+  s3data:

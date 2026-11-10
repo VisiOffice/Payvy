@@ -30,12 +30,19 @@ Conventions follow Visirent (`~/Code/visirent`).
   database role is not a superuser, so RLS is really enforced.
 - **The clock** is read only through `AppState::clock` (`Cx::now`), so tests can move time.
 - `payvy-domain` stays pure: no I/O, no clock.
+- **Documents live in S3-compatible storage** (`payvy-storage`: rusty-s3 signing + reqwest, no
+  SDK), keyed by content hash per organization. The type comes from the bytes
+  (`documents::check`), never the filename or a claimed content type. Effects outside the
+  database are skipped when `cx.preview`; the object is written before the row, so a failed
+  transaction leaves only an unreferenced object.
+- **The README compares Payvy with Bill.com.** Keep every Bill.com figure sourced and dated, and
+  keep the "what Bill.com has that Payvy doesn't" list honest.
 - SQL is static strings (`concat!` with the column macros); sqlx 0.9 refuses runtime-built SQL.
 
 ## Running
 
 ```bash
-docker compose up -d                      # Postgres on 127.0.0.1:5446
+docker compose up -d                      # Postgres on :5446, SeaweedFS (S3) on :8336
 cp .env.example .env                      # set PAYVY_API_KEY
 set -a; . ./.env; set +a
 cargo test                                # integration tests need PAYVY_TEST_* from .env

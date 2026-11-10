@@ -813,3 +813,157 @@ pub async fn mark_paid(
         .await?;
     Ok(())
 }
+
+// ── Documents ───────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Document {
+    pub id: Uuid,
+    pub sha256: String,
+    pub content_type: String,
+    pub size_bytes: i64,
+    pub filename: String,
+    #[serde(skip)]
+    pub storage_key: String,
+    pub source: String,
+    pub status: String,
+    pub bill_id: Option<Uuid>,
+    pub trashed_reason: Option<String>,
+    pub received_at: DateTime<Utc>,
+    pub created_by: String,
+}
+
+macro_rules! document_cols {
+    () => {
+        "id, sha256, content_type, size_bytes, filename, storage_key, source, status, bill_id, trashed_reason, received_at, created_by"
+    };
+}
+
+fn document(r: &PgRow) -> Document {
+    Document {
+        id: r.get("id"),
+        sha256: r.get("sha256"),
+        content_type: r.get("content_type"),
+        size_bytes: r.get("size_bytes"),
+        filename: r.get("filename"),
+        storage_key: r.get("storage_key"),
+        source: r.get("source"),
+        status: r.get("status"),
+        bill_id: r.get("bill_id"),
+        trashed_reason: r.get("trashed_reason"),
+        received_at: r.get("received_at"),
+        created_by: r.get("created_by"),
+    }
+}
+
+pub struct NewDocument<'a> {
+    pub sha256: &'a str,
+    pub content_type: &'a str,
+    pub size_bytes: i64,
+    pub filename: &'a str,
+    pub storage_key: &'a str,
+    pub source: &'a str,
+    pub received_at: DateTime<Utc>,
+    pub created_by: &'a str,
+}
+
+pub async fn document_by_hash(tx: &mut Tx, sha256: &str) -> anyhow::Result<Option<Document>> {
+    let row = sqlx::query(concat!(
+        "SELECT ",
+        document_cols!(),
+        " FROM documents WHERE sha256 = $1"
+    ))
+    .bind(sha256)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(row.as_ref().map(document))
+}
+
+/// None if this organization already has the file (a concurrent upload won).
+pub async fn insert_document(
+    tx: &mut Tx,
+    org_id: Uuid,
+    new: &NewDocument<'_>,
+) -> anyhow::Result<Option<Document>> {
+    let row = sqlx::query(concat!(
+        "INSERT INTO documents (id, org_id, sha256, content_type, size_bytes, filename, storage_key, source,
+                                received_at, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         ON CONFLICT (org_id, sha256) DO NOTHING RETURNING ",
+        document_cols!()
+    ))
+    .bind(Uuid::new_v4())
+    .bind(org_id)
+    .bind(new.sha256)
+    .bind(new.content_type)
+    .bind(new.size_bytes)
+    .bind(new.filename)
+    .bind(new.storage_key)
+    .bind(new.source)
+    .bind(new.received_at)
+    .bind(new.created_by)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(row.as_ref().map(document))
+}
+
+/// Locks the document for the rest of the transaction.
+pub async fn get_document(tx: &mut Tx, id: Uuid) -> anyhow::Result<Option<Document>> {
+    let row = sqlx::query(concat!(
+        "SELECT ",
+        document_cols!(),
+        " FROM documents WHERE id = $1 FOR UPDATE"
+    ))
+    .bind(id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(row.as_ref().map(document))
+}
+
+/// Oldest first, so the inbox reads in arrival order.
+pub async fn list_documents(
+    tx: &mut Tx,
+    status: &str,
+    limit: i64,
+) -> anyhow::Result<Vec<Document>> {
+    let rows = sqlx::query(concat!(
+        "SELECT ",
+        document_cols!(),
+        " FROM documents WHERE status = $1 ORDER BY received_at, id LIMIT $2"
+    ))
+    .bind(status)
+    .bind(limit)
+    .fetch_all(&mut **tx)
+    .await?;
+    Ok(rows.iter().map(document).collect())
+}
+
+pub async fn bill_documents(tx: &mut Tx, bill_id: Uuid) -> anyhow::Result<Vec<Document>> {
+    let rows = sqlx::query(concat!(
+        "SELECT ",
+        document_cols!(),
+        " FROM documents WHERE bill_id = $1 ORDER BY received_at"
+    ))
+    .bind(bill_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    Ok(rows.iter().map(document).collect())
+}
+
+pub async fn file_document(tx: &mut Tx, id: Uuid, bill_id: Uuid) -> anyhow::Result<()> {
+    sqlx::query("UPDATE documents SET status = 'filed', bill_id = $2 WHERE id = $1")
+        .bind(id)
+        .bind(bill_id)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
+pub async fn trash_document(tx: &mut Tx, id: Uuid, reason: &str) -> anyhow::Result<()> {
+    sqlx::query("UPDATE documents SET status = 'trashed', trashed_reason = $2 WHERE id = $1")
+        .bind(id)
+        .bind(reason)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}

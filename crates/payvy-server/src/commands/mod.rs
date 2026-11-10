@@ -3,6 +3,7 @@
 //! per area; the registry itself is `payvy_domain::commands::COMMANDS`.
 
 mod bills;
+mod documents;
 mod events;
 mod vendors;
 mod workflows;
@@ -37,6 +38,8 @@ pub enum CommandError {
     PersonOnly(&'static str),
     #[error("{0}")]
     Forbidden(String),
+    #[error("{0}")]
+    NotConfigured(&'static str),
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
 }
@@ -52,6 +55,7 @@ impl CommandError {
             CommandError::BadToken(_) => "bad_confirm_token",
             CommandError::PersonOnly(_) => "person_only",
             CommandError::Forbidden(_) => "forbidden",
+            CommandError::NotConfigured(_) => "not_configured",
             CommandError::Internal(_) => "internal",
         }
     }
@@ -64,6 +68,7 @@ impl CommandError {
             | CommandError::NeedsConfirmation(_)
             | CommandError::BadToken(_) => StatusCode::CONFLICT,
             CommandError::PersonOnly(_) | CommandError::Forbidden(_) => StatusCode::FORBIDDEN,
+            CommandError::NotConfigured(_) => StatusCode::SERVICE_UNAVAILABLE,
             CommandError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -132,6 +137,8 @@ pub async fn run(
         actor,
         now: (state.clock)(),
         events: Vec::new(),
+        preview,
+        storage: state.storage.as_deref(),
     };
     let result = execute(&mut cx, spec.name, &input).await?;
     let Cx { tx, events, .. } = cx;
@@ -172,6 +179,10 @@ async fn execute(cx: &mut Cx<'_>, name: &str, input: &Value) -> Result<Value, Co
         "bill.release" => bills::release(cx, parse(input)?).await,
         "bill.mark_paid" => bills::mark_paid(cx, parse(input)?).await,
         "bill.void" => bills::void(cx, parse(input)?).await,
+        "document.upload" => documents::upload(cx, parse(input)?).await,
+        "document.list" => documents::list(cx, parse(input)?).await,
+        "document.get" => documents::get(cx, parse(input)?).await,
+        "document.trash" => documents::trash(cx, parse(input)?).await,
         "event.list" => events::list(cx, parse(input)?).await,
         other => Err(CommandError::Unknown(other.to_owned())),
     }
@@ -185,9 +196,19 @@ pub(crate) struct Cx<'a> {
     pub actor: &'a Actor,
     pub now: DateTime<Utc>,
     pub events: Vec<String>,
+    /// Rolled back at the end. Commands with effects outside the database
+    /// (writing to storage) skip them in preview.
+    pub preview: bool,
+    storage: Option<&'a payvy_storage::Storage>,
 }
 
-impl Cx<'_> {
+impl<'a> Cx<'a> {
+    pub fn storage(&self) -> Result<&'a payvy_storage::Storage, CommandError> {
+        self.storage.ok_or(CommandError::NotConfigured(
+            "no document storage is configured (set PAYVY_S3_ENDPOINT, PAYVY_S3_BUCKET and its keys)",
+        ))
+    }
+
     pub async fn emit(
         &mut self,
         kind: &str,
