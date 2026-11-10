@@ -173,14 +173,14 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "bill.get",
-        summary: "A bill with its lines, its workflow progress step by step, approvals, signals and history.",
+        summary: "A bill with its lines, its workflow progress step by step, approvals, signals and history. While it waits for approval, approval says whether you can give it and, if not, why and who else can.",
         tier: RiskTier::Read,
         person_only: false,
         input_schema: r#"{"type":"object","required":["bill_id"],"properties":{"bill_id":{"type":"string","format":"uuid"}}}"#,
     },
     CommandSpec {
         name: "bill.approve",
-        summary: "Approve a bill at its current approval step. You must be one of that step's approvers.",
+        summary: "Approve a bill at its current approval step. You must be one of that step's approvers. One person gives a bill one approval, so you can't approve a second step, or a step a later one needs you for; and when approval_rules has submitter_cannot_approve on, whoever entered the bill or uploaded its document can't approve it. A refusal says who else can. bill.get shows it in approval before you try.",
         tier: RiskTier::Routine,
         person_only: true,
         input_schema: r#"{"type":"object","required":["bill_id"],"properties":{"bill_id":{"type":"string","format":"uuid"},"note":{"type":"string"}}}"#,
@@ -234,6 +234,21 @@ pub const COMMANDS: &[CommandSpec] = &[
         tier: RiskTier::Read,
         person_only: false,
         input_schema: r#"{"type":"object","properties":{}}"#,
+    },
+    // ── Approval rules ──────────────────────────────────────────────────────
+    CommandSpec {
+        name: "approval_rules.get",
+        summary: "The company's approval rules. submitter_cannot_approve: whoever entered a bill or uploaded its document can't approve it (bills an agent entered are unaffected). One approval per person per bill always applies.",
+        tier: RiskTier::Read,
+        person_only: false,
+        input_schema: r#"{"type":"object","properties":{}}"#,
+    },
+    CommandSpec {
+        name: "approval_rules.set",
+        summary: "Turn submitter_cannot_approve on or off for the whole company. It applies to approvals from now on, including bills already waiting.",
+        tier: RiskTier::Routine,
+        person_only: true,
+        input_schema: r#"{"type":"object","required":["submitter_cannot_approve"],"properties":{"submitter_cannot_approve":{"type":"boolean"},"reason":{"type":"string"}}}"#,
     },
     // ── People ──────────────────────────────────────────────────────────────
     CommandSpec {

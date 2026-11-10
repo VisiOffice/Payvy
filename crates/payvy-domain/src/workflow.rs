@@ -101,6 +101,10 @@ pub enum WorkflowError {
     BadHold(String),
     #[error("step {0}: signal must be 1-60 characters of a-z, 0-9 or _")]
     BadSignal(String),
+    #[error(
+        "step {0}: its approvers are already needed by an earlier step, and one person gives a bill one approval; name someone else"
+    )]
+    SamePersonTwice(String),
 }
 
 impl Workflow {
@@ -177,6 +181,9 @@ impl Workflow {
                     }
                 }
             }
+        }
+        if let Some(step) = crate::duties::needs_a_person_twice(self) {
+            return Err(WorkflowError::SamePersonTwice(step));
         }
         Ok(())
     }

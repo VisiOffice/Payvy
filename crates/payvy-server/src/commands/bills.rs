@@ -6,8 +6,9 @@ use std::collections::HashMap;
 
 use chrono::{Duration, NaiveDate};
 use payvy_domain::bills::{self as rules, Line, State};
+use payvy_domain::duties::{self, Refusal, Rules, Turn};
 use payvy_domain::workflow::{self, Approval, Facts, Progress, Signal, Status, Workflow};
-use payvy_store::{self as store, Bill, InsertBill, NewBill};
+use payvy_store::{self as store, ActorKind, Bill, InsertBill, NewBill};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -47,6 +48,63 @@ fn evaluate(
     )
 }
 
+/// What the separation-of-duties rules need besides a bill and its facts:
+/// the company's rules, who signs in, and who uploaded each bill's documents.
+struct Duties {
+    rules: Rules,
+    people: Vec<String>,
+    uploaders: Vec<(Uuid, String)>,
+}
+
+async fn duties(cx: &mut Cx<'_>, bill_ids: &[Uuid]) -> Result<Duties, CommandError> {
+    let rules = store::approval_rules(&mut cx.tx).await?;
+    let people = store::people(&mut cx.tx, cx.org)
+        .await?
+        .into_iter()
+        .map(|p| p.actor)
+        .collect();
+    let uploaders = store::bill_uploaders(&mut cx.tx, bill_ids).await?;
+    Ok(Duties {
+        rules: Rules {
+            submitter_cannot_approve: rules.submitter_cannot_approve,
+        },
+        people,
+        uploaders,
+    })
+}
+
+/// Whether the caller may approve the step this bill waits on, and who
+/// else may. None unless it is waiting for approval.
+fn turn(
+    cx: &Cx<'_>,
+    d: &Duties,
+    bill: &Bill,
+    workflow: &Workflow,
+    progress: &Progress,
+    approvals: &[Approval],
+) -> Option<Turn> {
+    let uploaded_by: Vec<String> = d
+        .uploaders
+        .iter()
+        .filter(|(b, _)| *b == bill.id)
+        .map(|(_, a)| a.clone())
+        .collect();
+    duties::turn(
+        &duties::Context {
+            workflow,
+            status: &progress.status,
+            amount_cents: bill.amount_cents,
+            approvals,
+            entered_by: &bill.created_by,
+            uploaded_by: &uploaded_by,
+            people: &d.people,
+            rules: d.rules,
+        },
+        &cx.actor.name,
+        cx.actor.kind == ActorKind::Person,
+    )
+}
+
 /// A locked open bill and where it stands.
 async fn open_bill(
     cx: &mut Cx<'_>,
@@ -81,6 +139,13 @@ async fn detail(cx: &mut Cx<'_>, bill_id: Uuid) -> Result<Value, CommandError> {
     let signals: Vec<Signal> = s.into_iter().map(|(_, s)| s).collect();
     let progress =
         (bill.state == State::Open).then(|| evaluate(cx, &bill, &wf, &approvals, &signals));
+    let approval = match &progress {
+        Some(p) if matches!(p.status, Status::AwaitingApproval { .. }) => {
+            let d = duties(cx, &[bill.id]).await?;
+            turn(cx, &d, &bill, &wf, p, &approvals)
+        }
+        _ => None,
+    };
     let lines = store::bill_lines(&mut cx.tx, bill.id).await?;
     let history = store::list_events(&mut cx.tx, Some(bill.id), 200).await?;
     let documents = store::bill_documents(&mut cx.tx, bill.id).await?;
@@ -90,6 +155,7 @@ async fn detail(cx: &mut Cx<'_>, bill_id: Uuid) -> Result<Value, CommandError> {
         "bill": bill,
         "lines": lines,
         "progress": progress,
+        "approval": approval,
         "workflow": { "id": bill.workflow_id, "mermaid": wf.mermaid() },
         "approvals": approvals,
         "signals": signals,
@@ -214,6 +280,10 @@ pub struct List {
     #[serde(default)]
     mine: bool,
     limit: Option<usize>,
+    /// With mine: also bills waiting on you that the approval rules keep
+    /// you from approving (the inbox shows them as waiting on others).
+    #[serde(skip)]
+    pub(super) include_blocked: bool,
 }
 
 /// Whether a step is waiting on this person: named, or open to anyone.
@@ -257,10 +327,12 @@ pub async fn list(cx: &mut Cx<'_>, input: List) -> Result<Value, CommandError> {
         .map(|b| b.id)
         .collect();
     let (approvals, signals) = store::facts(&mut cx.tx, &open_ids).await?;
+    let d = duties(cx, &open_ids).await?;
     let builtin = Workflow::builtin_default();
 
     let mut out = Vec::new();
     for bill in &bills {
+        let mut approval = None;
         let progress = (bill.state == State::Open).then(|| {
             let wf = bill
                 .workflow_id
@@ -276,7 +348,9 @@ pub async fn list(cx: &mut Cx<'_>, input: List) -> Result<Value, CommandError> {
                 .filter(|(b, _)| *b == bill.id)
                 .map(|(_, s)| s.clone())
                 .collect();
-            evaluate(cx, bill, wf, &a, &s)
+            let p = evaluate(cx, bill, wf, &a, &s);
+            approval = turn(cx, &d, bill, wf, &p, &a);
+            p
         });
         if let Some(want) = &input.status
             && progress.as_ref().map(status_name) != Some(want.as_str())
@@ -290,7 +364,15 @@ pub async fn list(cx: &mut Cx<'_>, input: List) -> Result<Value, CommandError> {
         {
             continue;
         }
-        out.push(json!({ "bill": bill, "progress": progress.map(|p| p.status) }));
+        if input.mine && !input.include_blocked && approval.as_ref().is_some_and(|t| !t.can_approve)
+        {
+            continue;
+        }
+        let mut item = json!({ "bill": bill, "progress": progress.map(|p| p.status) });
+        if let Some(t) = approval {
+            item["approval"] = json!(t);
+        }
+        out.push(item);
         if out.len() == limit {
             break;
         }
@@ -325,17 +407,22 @@ pub async fn approve(cx: &mut Cx<'_>, input: Approve) -> Result<Value, CommandEr
             status_name(&progress)
         )));
     };
-    if let Some(workflow::Step {
-        kind: workflow::StepKind::Approve { approvers, .. },
+    // The step's approvers and the separation-of-duties rules. The bill row
+    // is locked, so two approvals of one bill can't race past this.
+    let (approvals, _) = store::facts(&mut cx.tx, &[bill.id]).await?;
+    let approvals: Vec<Approval> = approvals.into_iter().map(|(_, a)| a).collect();
+    let d = duties(cx, &[bill.id]).await?;
+    if let Some(Turn {
+        refusal: Some(refusal),
+        message,
         ..
-    }) = wf.step(step_id)
-        && !approvers.is_empty()
-        && !approvers.contains(&cx.actor.name)
+    }) = turn(cx, &d, &bill, &wf, &progress, &approvals)
     {
-        return Err(CommandError::Forbidden(format!(
-            "you aren't an approver on step {step_id}; it needs {}",
-            approvers.join(" or ")
-        )));
+        let message = message.unwrap_or_default();
+        return Err(match refusal {
+            Refusal::AlreadyApprovedStep => CommandError::Conflict(message),
+            _ => CommandError::Forbidden(message),
+        });
     }
     let note = text(input.note);
     if !store::insert_approval(

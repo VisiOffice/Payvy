@@ -2,6 +2,7 @@
 //! same validation, risk tiers, events and errors. Handlers live one module
 //! per area; the registry itself is `payvy_domain::commands::COMMANDS`.
 
+mod approval_rules;
 mod bank;
 mod bills;
 mod documents;
@@ -192,6 +193,8 @@ async fn execute(cx: &mut Cx<'_>, name: &str, input: &Value) -> Result<Value, Co
         "vendor.accept_payee" => bank::decide_payee(cx, parse(input)?, true).await,
         "vendor.decline_payee" => bank::decide_payee(cx, parse(input)?, false).await,
         "inbox.get" => inbox::get(cx).await,
+        "approval_rules.get" => approval_rules::get(cx).await,
+        "approval_rules.set" => approval_rules::set(cx, parse(input)?).await,
         "person.list" => people::list(cx).await,
         "person.add" => people::add(cx, parse(input)?).await,
         "person.remove" => people::remove(cx, parse(input)?).await,
