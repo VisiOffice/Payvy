@@ -1,8 +1,10 @@
+pub mod auth;
 pub mod commands;
 pub mod confirm;
 pub mod eval;
 pub mod extract_worker;
 pub mod inbound;
+pub mod mailer;
 pub mod mcp;
 pub mod payment_worker;
 pub mod secrets;
@@ -79,6 +81,12 @@ pub struct AppState {
     /// None when PAYVY_SECRETS_KEY isn't set: bank commands say so, and
     /// bills are paid outside Payvy and marked paid.
     pub bank: Option<Arc<Bank>>,
+    /// None when PAYVY_PUBLIC_URL isn't set: nobody can sign in to the web
+    /// app, and API keys still work.
+    pub auth: Option<Arc<auth::Auth>>,
+    /// The built web app (web/dist), served for every path the API doesn't
+    /// claim. None serves only the API.
+    pub web_dir: Option<std::path::PathBuf>,
 }
 
 /// Paying through the customer's bank: the key bank tokens are sealed with,
@@ -114,6 +122,8 @@ impl AppState {
             inbound: None,
             extractor: None,
             bank: None,
+            auth: None,
+            web_dir: None,
         }
     }
 
@@ -134,6 +144,16 @@ impl AppState {
 
     pub fn with_bank(mut self, bank: Bank) -> Self {
         self.bank = Some(Arc::new(bank));
+        self
+    }
+
+    pub fn with_auth(mut self, auth: auth::Auth) -> Self {
+        self.auth = Some(Arc::new(auth));
+        self
+    }
+
+    pub fn with_web(mut self, dir: impl Into<std::path::PathBuf>) -> Self {
+        self.web_dir = Some(dir.into());
         self
     }
 
@@ -170,11 +190,21 @@ pub fn router(state: AppState) -> Router {
         .layer(axum::extract::DefaultBodyLimit::max(
             email::MAX_RAW_BYTES + 1024,
         ));
-    Router::new()
+    let web_dir = state.web_dir.clone();
+    let api = Router::new()
         .route("/health", get(health))
         .merge(authed)
         .merge(webhooks)
-        .with_state(state)
+        .merge(auth::routes())
+        .with_state(state);
+    match web_dir {
+        // The app routes in the browser, so any other path gets index.html.
+        Some(dir) => api.fallback_service(
+            tower_http::services::ServeDir::new(&dir)
+                .fallback(tower_http::services::ServeFile::new(dir.join("index.html"))),
+        ),
+        None => api,
+    }
 }
 
 async fn health(State(state): State<AppState>) -> Response {
@@ -209,6 +239,17 @@ async fn authenticate(State(state): State<AppState>, mut req: Request, next: Nex
                 return StatusCode::SERVICE_UNAVAILABLE.into_response();
             }
         },
+        // The web app: a session cookie, on a call that carries the client
+        // header (a cross-site form can't add one).
+        None if req.headers().contains_key(auth::CLIENT_HEADER) => {
+            match auth::signed_in(&state, req.headers()).await {
+                Ok(s) => s.map(|s| Actor::person(s.person.org_id, s.person.actor)),
+                Err(e) => {
+                    tracing::error!("session lookup: {e:#}");
+                    return StatusCode::SERVICE_UNAVAILABLE.into_response();
+                }
+            }
+        }
         None => None,
     };
     match actor {

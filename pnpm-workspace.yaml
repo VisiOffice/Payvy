@@ -1,0 +1,8 @@
+packages:
+  - web
+  - workers/*
+
+# wrangler needs these to run; nothing else may run install scripts.
+onlyBuiltDependencies:
+  - esbuild
+  - workerd

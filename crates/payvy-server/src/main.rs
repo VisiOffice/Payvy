@@ -38,6 +38,8 @@ enum Command {
         /// Payvy and marked paid. Losing it means reconnecting every bank.
         #[arg(long, env = "PAYVY_SECRETS_KEY", hide_env_values = true)]
         secrets_key: Option<String>,
+        #[command(flatten)]
+        web: WebArgs,
     },
     /// Score the configured extraction model against sample documents with
     /// known answers, e.g. fixtures/invoices. Sends each one to the model.
@@ -45,6 +47,15 @@ enum Command {
         dir: std::path::PathBuf,
         #[command(flatten)]
         extract: ExtractArgs,
+    },
+    /// Print every command with its input schema as JSON. The web app's
+    /// typed client is generated from this (web/scripts/gen-api.mjs).
+    Commands,
+    /// Let someone sign in to the web app (the same as person.add, run as
+    /// admin). For the first person; after that, people add each other.
+    Person {
+        #[command(subcommand)]
+        command: PersonCommand,
     },
     /// Manage API keys for people and agents.
     Key {
@@ -159,6 +170,57 @@ impl ExtractArgs {
     }
 }
 
+/// The web app, and signing in to it with links sent by email.
+#[derive(clap::Args)]
+struct WebArgs {
+    /// Where people open the app, e.g. https://app.payvy.com; sign-in links
+    /// point here. Without it, nobody can sign in (API keys still work).
+    #[arg(long, env = "PAYVY_PUBLIC_URL")]
+    public_url: Option<String>,
+    /// The built web app (web/dist) to serve beside the API.
+    #[arg(long, env = "PAYVY_WEB_DIR")]
+    web_dir: Option<std::path::PathBuf>,
+    /// The address mail comes from, e.g. Payvy <no-reply@payvy.com>.
+    #[arg(long, env = "PAYVY_MAIL_FROM", requires_all = ["cloudflare_account_id", "cloudflare_email_token"])]
+    mail_from: Option<String>,
+    /// Sends mail through Cloudflare Email Service from this account.
+    #[arg(long, env = "PAYVY_CLOUDFLARE_ACCOUNT_ID")]
+    cloudflare_account_id: Option<String>,
+    /// A Cloudflare API token allowed to send email.
+    #[arg(long, env = "PAYVY_CLOUDFLARE_EMAIL_TOKEN", hide_env_values = true)]
+    cloudflare_email_token: Option<String>,
+}
+
+impl WebArgs {
+    fn mailer(&self) -> anyhow::Result<payvy_server::mailer::Mailer> {
+        Ok(
+            match (
+                &self.mail_from,
+                &self.cloudflare_account_id,
+                &self.cloudflare_email_token,
+            ) {
+                (Some(from), Some(account), Some(token)) => {
+                    payvy_server::mailer::Mailer::cloudflare(account, token, from)?
+                }
+                _ => payvy_server::mailer::Mailer::Log,
+            },
+        )
+    }
+}
+
+#[derive(Subcommand)]
+enum PersonCommand {
+    Add {
+        #[arg(long)]
+        email: String,
+        #[arg(long)]
+        name: String,
+        /// Defaults to the part of the email before @.
+        #[arg(long)]
+        actor: Option<String>,
+    },
+}
+
 #[derive(Subcommand)]
 enum KeyCommand {
     /// Create a key. It is printed once and never stored.
@@ -211,6 +273,7 @@ async fn main() -> anyhow::Result<()> {
             extract,
             extract_auto,
             ref secrets_key,
+            ref web,
         } => {
             let api_key = api_key.clone();
             anyhow::ensure!(
@@ -254,6 +317,30 @@ async fn main() -> anyhow::Result<()> {
                 }
                 None => tracing::warn!("PAYVY_SECRETS_KEY not set; bills are paid outside Payvy"),
             }
+            match &web.public_url {
+                Some(url) => {
+                    let mailer = web.mailer()?;
+                    if mailer.is_log() {
+                        tracing::warn!(
+                            "no mail sender configured; sign-in links are written to this log, not sent"
+                        );
+                    }
+                    tracing::info!(%url, "web sign-in");
+                    state = state.with_auth(payvy_server::auth::Auth::new(url, mailer));
+                }
+                None => {
+                    tracing::warn!("PAYVY_PUBLIC_URL not set; nobody can sign in to the web app")
+                }
+            }
+            if let Some(dir) = &web.web_dir {
+                anyhow::ensure!(
+                    dir.join("index.html").is_file(),
+                    "PAYVY_WEB_DIR {} has no index.html; build it with pnpm --dir web build",
+                    dir.display()
+                );
+                tracing::info!(dir = %dir.display(), "serving the web app");
+                state = state.with_web(dir);
+            }
             let listener = tokio::net::TcpListener::bind(bind).await?;
             tracing::info!("payvy listening on http://{bind}");
             axum::serve(listener, payvy_server::router(state))
@@ -261,6 +348,32 @@ async fn main() -> anyhow::Result<()> {
                     let _ = tokio::signal::ctrl_c().await;
                 })
                 .await?;
+        }
+        Command::Commands => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "commands": payvy_domain::commands::COMMANDS
+                }))?
+            );
+        }
+        Command::Person {
+            command: PersonCommand::Add { email, name, actor },
+        } => {
+            let store = payvy_store::Store::connect(&database_url()?).await?;
+            let (unused, _) = payvy_server::new_api_key()?;
+            let state = payvy_server::AppState::new(store, &unused);
+            let out = payvy_server::commands::run(
+                &state,
+                &payvy_server::Actor::person(payvy_store::DEFAULT_ORG, "admin"),
+                "person.add",
+                serde_json::json!({ "email": email, "name": name, "actor": actor }),
+                payvy_server::commands::Mode::Commit {
+                    confirm_token: None,
+                },
+            )
+            .await?;
+            println!("{}", serde_json::to_string_pretty(&out["result"])?);
         }
         Command::Key {
             command: KeyCommand::Create { actor, kind },

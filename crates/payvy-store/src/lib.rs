@@ -1887,3 +1887,266 @@ pub async fn reopen_returned_bill(tx: &mut Tx, bill_id: Uuid) -> anyhow::Result<
     .await?;
     Ok(())
 }
+
+// ── People and sign-in ──────────────────────────────────────────────────────
+//
+// No row-level security on these tables (see 0006_people.sql), so every query
+// names the organization or starts from a token that does.
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Person {
+    pub id: Uuid,
+    pub org_id: Uuid,
+    pub actor: String,
+    pub email: String,
+    pub name: String,
+    pub created_at: DateTime<Utc>,
+    pub created_by: String,
+}
+
+macro_rules! person_cols {
+    () => {
+        "p.id, p.org_id, p.actor, p.email, p.name, p.created_at, p.created_by"
+    };
+}
+
+fn person_from(r: &PgRow) -> Person {
+    Person {
+        id: r.get("id"),
+        org_id: r.get("org_id"),
+        actor: r.get("actor"),
+        email: r.get("email"),
+        name: r.get("name"),
+        created_at: r.get("created_at"),
+        created_by: r.get("created_by"),
+    }
+}
+
+/// The person and the organization's name.
+#[derive(Debug, Clone, Serialize)]
+pub struct SignedIn {
+    pub person: Person,
+    pub org_name: String,
+}
+
+pub struct NewPerson<'a> {
+    pub org_id: Uuid,
+    pub actor: &'a str,
+    pub email: &'a str,
+    pub name: &'a str,
+    pub created_at: DateTime<Utc>,
+    pub created_by: &'a str,
+}
+
+/// Adds a person. None when the actor or email is already taken.
+pub async fn insert_person(tx: &mut Tx, p: &NewPerson<'_>) -> anyhow::Result<Option<Person>> {
+    let id = Uuid::new_v4();
+    let r = sqlx::query(
+        "INSERT INTO people (id, org_id, actor, email, name, created_at, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT DO NOTHING",
+    )
+    .bind(id)
+    .bind(p.org_id)
+    .bind(p.actor)
+    .bind(p.email)
+    .bind(p.name)
+    .bind(p.created_at)
+    .bind(p.created_by)
+    .execute(&mut **tx)
+    .await?;
+    if r.rows_affected() == 0 {
+        return Ok(None);
+    }
+    Ok(Some(Person {
+        id,
+        org_id: p.org_id,
+        actor: p.actor.to_owned(),
+        email: p.email.to_owned(),
+        name: p.name.to_owned(),
+        created_at: p.created_at,
+        created_by: p.created_by.to_owned(),
+    }))
+}
+
+/// Everyone in an organization who can sign in.
+pub async fn people(tx: &mut Tx, org_id: Uuid) -> anyhow::Result<Vec<Person>> {
+    let rows = sqlx::query(concat!(
+        "SELECT ",
+        person_cols!(),
+        " FROM people p WHERE p.org_id = $1 AND p.removed_at IS NULL ORDER BY p.name, p.actor"
+    ))
+    .bind(org_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    Ok(rows.iter().map(person_from).collect())
+}
+
+/// Removes a person and ends their sessions. None if there was no such person.
+pub async fn remove_person(
+    tx: &mut Tx,
+    org_id: Uuid,
+    actor: &str,
+    at: DateTime<Utc>,
+    by: &str,
+) -> anyhow::Result<Option<Uuid>> {
+    let id: Option<Uuid> = sqlx::query_scalar(
+        "UPDATE people SET removed_at = $3, removed_by = $4
+         WHERE org_id = $1 AND actor = $2 AND removed_at IS NULL RETURNING id",
+    )
+    .bind(org_id)
+    .bind(actor)
+    .bind(at)
+    .bind(by)
+    .fetch_optional(&mut **tx)
+    .await?;
+    if let Some(id) = id {
+        sqlx::query("UPDATE sessions SET ended_at = $2 WHERE person_id = $1 AND ended_at IS NULL")
+            .bind(id)
+            .bind(at)
+            .execute(&mut **tx)
+            .await?;
+    }
+    Ok(id)
+}
+
+impl Store {
+    /// Every organization this email can sign in to.
+    pub async fn people_by_email(&self, email: &str) -> anyhow::Result<Vec<SignedIn>> {
+        let rows = sqlx::query(concat!(
+            "SELECT ",
+            person_cols!(),
+            ", o.name AS org_name FROM people p
+             JOIN organizations o ON o.id = p.org_id
+             WHERE p.email = $1 AND p.removed_at IS NULL ORDER BY o.name"
+        ))
+        .bind(email)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .iter()
+            .map(|r| SignedIn {
+                person: person_from(r),
+                org_name: r.get("org_name"),
+            })
+            .collect())
+    }
+
+    /// Sign-in links made for this person since a time, used or not.
+    pub async fn recent_sign_in_links(
+        &self,
+        person_id: Uuid,
+        since: DateTime<Utc>,
+    ) -> anyhow::Result<i64> {
+        Ok(sqlx::query_scalar(
+            "SELECT count(*) FROM sign_in_links WHERE person_id = $1 AND created_at >= $2",
+        )
+        .bind(person_id)
+        .bind(since)
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
+    pub async fn insert_sign_in_link(
+        &self,
+        token_hash: &str,
+        person_id: Uuid,
+        at: DateTime<Utc>,
+        expires_at: DateTime<Utc>,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO sign_in_links (token_hash, person_id, created_at, expires_at)
+             VALUES ($1, $2, $3, $4)",
+        )
+        .bind(token_hash)
+        .bind(person_id)
+        .bind(at)
+        .bind(expires_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Uses a sign-in link and starts a session, in one transaction. None if
+    /// the link is unknown, used, expired, or its person was removed.
+    pub async fn redeem_sign_in_link(
+        &self,
+        link_hash: &str,
+        session_hash: &str,
+        at: DateTime<Utc>,
+        session_expires_at: DateTime<Utc>,
+    ) -> anyhow::Result<Option<SignedIn>> {
+        let mut tx = self.pool.begin().await?;
+        let person_id: Option<Uuid> = sqlx::query_scalar(
+            "UPDATE sign_in_links l SET used_at = $2
+             FROM people p
+             WHERE l.token_hash = $1 AND l.used_at IS NULL AND l.expires_at > $2
+               AND p.id = l.person_id AND p.removed_at IS NULL
+             RETURNING l.person_id",
+        )
+        .bind(link_hash)
+        .bind(at)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(person_id) = person_id else {
+            return Ok(None);
+        };
+        sqlx::query(
+            "INSERT INTO sessions (token_hash, person_id, created_at, expires_at) VALUES ($1, $2, $3, $4)",
+        )
+        .bind(session_hash)
+        .bind(person_id)
+        .bind(at)
+        .bind(session_expires_at)
+        .execute(&mut *tx)
+        .await?;
+        let row = sqlx::query(concat!(
+            "SELECT ",
+            person_cols!(),
+            ", o.name AS org_name FROM people p
+             JOIN organizations o ON o.id = p.org_id WHERE p.id = $1"
+        ))
+        .bind(person_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(Some(SignedIn {
+            person: person_from(&row),
+            org_name: row.get("org_name"),
+        }))
+    }
+
+    /// Who a session cookie belongs to; None if unknown, ended, expired, or
+    /// the person was removed.
+    pub async fn session(
+        &self,
+        session_hash: &str,
+        at: DateTime<Utc>,
+    ) -> anyhow::Result<Option<SignedIn>> {
+        let row = sqlx::query(concat!(
+            "SELECT ",
+            person_cols!(),
+            ", o.name AS org_name FROM sessions s
+             JOIN people p ON p.id = s.person_id
+             JOIN organizations o ON o.id = p.org_id
+             WHERE s.token_hash = $1 AND s.ended_at IS NULL AND s.expires_at > $2
+               AND p.removed_at IS NULL"
+        ))
+        .bind(session_hash)
+        .bind(at)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| SignedIn {
+            person: person_from(&r),
+            org_name: r.get("org_name"),
+        }))
+    }
+
+    pub async fn end_session(&self, session_hash: &str, at: DateTime<Utc>) -> anyhow::Result<()> {
+        sqlx::query("UPDATE sessions SET ended_at = $2 WHERE token_hash = $1 AND ended_at IS NULL")
+            .bind(session_hash)
+            .bind(at)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+}

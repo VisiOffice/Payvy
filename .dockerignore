@@ -4,3 +4,7 @@ workers
 docs
 .env
 .kamal
+!workers/email-inbound/package.json
+node_modules
+**/node_modules
+web/dist

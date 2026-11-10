@@ -9,6 +9,7 @@ mod email;
 mod events;
 mod extract;
 mod payments;
+mod people;
 mod vendors;
 mod workflows;
 
@@ -181,6 +182,9 @@ async fn execute(cx: &mut Cx<'_>, name: &str, input: &Value) -> Result<Value, Co
         "vendor.propose_payee" => bank::propose_payee(cx, parse(input)?).await,
         "vendor.accept_payee" => bank::decide_payee(cx, parse(input)?, true).await,
         "vendor.decline_payee" => bank::decide_payee(cx, parse(input)?, false).await,
+        "person.list" => people::list(cx).await,
+        "person.add" => people::add(cx, parse(input)?).await,
+        "person.remove" => people::remove(cx, parse(input)?).await,
         "bank.connect" => bank::connect(cx, parse(input)?).await,
         "bank.get" => bank::get(cx).await,
         "bank.disconnect" => bank::disconnect(cx).await,

@@ -39,14 +39,16 @@ Kamal runs under the mise Ruby; if it reports `can't find gem kamal`:
    losing it means reconnecting every bank). Add an R2 API token scoped to
    `payvy-documents` (Object Read & Write) as two items, and an Anthropic API key for reading
    documents (`PAYVY_EXTRACT_API_KEY`). Put the references in `.kamal/secrets`.
-2. Cloudflare: A record `api.payvy.com` → 5.78.94.150 (DNS only); Email Routing → add the
-   subdomain `in.payvy.com`.
+2. Cloudflare: A records `api.payvy.com` and `app.payvy.com` → 5.78.94.150 (DNS only); Email
+   Routing → add the subdomain `in.payvy.com`; Email Service → onboard `payvy.com` for sending
+   and create an API token allowed to send email (`PAYVY_CLOUDFLARE_EMAIL_TOKEN`).
 3. On the host: copy the nginx file to `/etc/nginx/sites-available/payvy`, link it, get the
-   certificate (`certbot certonly --webroot -w /var/www/payvy-acme -d api.payvy.com`), then
+   certificate (`certbot certonly --webroot -w /var/www/payvy-acme -d api.payvy.com -d app.payvy.com`), then
    `nginx -t && systemctl reload nginx`.
 4. `kamal accessory boot db`, then `kamal deploy`.
 5. Legacy worker: `wrangler secret put PAYVY_INBOUND_SECRET` and deploy it.
-6. Create the first person key (`kamal app exec "payvy key create --actor robert --kind person"`)
-   and the inbound address (`email.new_address`), then send a test bill.
+6. Let the first person sign in (`kamal app exec "payvy person add --email ... --name ..."`),
+   open https://app.payvy.com and ask for a link. Create the inbound address
+   (`email.new_address`), then send a test bill.
 7. Paying through Mercury: in direct mode, add 5.78.94.150 to the token's IP allowlist; request
    mode needs none. Connect with `bank.connect` (see `docs/payments.md`).

@@ -8,8 +8,10 @@ Self-host it for free, or let us run it for one flat price per company.
 
 > **Status: early.** Working today: vendor workflows, bills, the document inbox on any
 > S3-compatible storage, email intake, reading bills with Claude or any OpenAI-compatible model,
-> paying through Mercury, the audit log, the REST API and the MCP server. Coming next: the web
-> app, sync to VisiBooks, QuickBooks Online and Xero, and Ramp, Brex, Wise and Airwallex.
+> paying through Mercury, the audit log, the REST API and the MCP server, and the start of the web
+> app (sign-in by email link, bills). Coming next: approving and releasing in the app, the invoice
+> viewer, the workflow builder, sync to VisiBooks, QuickBooks Online and Xero, and Ramp, Brex,
+> Wise and Airwallex.
 
 ## Why not Bill.com
 
@@ -89,7 +91,8 @@ transaction, and organizations are isolated by Postgres row-level security.
 
 ## Running it
 
-Requires Postgres and an S3-compatible store; `docker compose up -d` starts both locally.
+Requires Postgres and an S3-compatible store; `docker compose up -d` starts both locally. The
+web app in `web/` is built with Vite and served by the same server (one Docker image).
 See [`CLAUDE.md`](CLAUDE.md) for setup, configuration and tests.
 
 ## License

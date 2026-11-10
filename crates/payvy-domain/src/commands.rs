@@ -185,6 +185,28 @@ pub const COMMANDS: &[CommandSpec] = &[
         person_only: true,
         input_schema: r#"{"type":"object","required":["bill_id","reason"],"properties":{"bill_id":{"type":"string","format":"uuid"},"reason":{"type":"string"}}}"#,
     },
+    // ── People ──────────────────────────────────────────────────────────────
+    CommandSpec {
+        name: "person.list",
+        summary: "Everyone who can sign in to the web app, with the actor name their actions are recorded under.",
+        tier: RiskTier::Read,
+        person_only: false,
+        input_schema: r#"{"type":"object","properties":{}}"#,
+    },
+    CommandSpec {
+        name: "person.add",
+        summary: "Let someone sign in to the web app with a link sent to their email. They act as the person named by actor, with every right a person has: approving, releasing payments, accepting payees and workflows.",
+        tier: RiskTier::Routine,
+        person_only: true,
+        input_schema: r#"{"type":"object","required":["email","name"],"properties":{"email":{"type":"string","format":"email"},"name":{"type":"string","description":"Their name, for people"},"actor":{"type":"string","description":"The name their actions are recorded under, a-z 0-9 . _ -; defaults to the part of the email before @"}}}"#,
+    },
+    CommandSpec {
+        name: "person.remove",
+        summary: "Stop someone signing in, and sign them out everywhere. Their past actions stay on the record.",
+        tier: RiskTier::Routine,
+        person_only: true,
+        input_schema: r#"{"type":"object","required":["actor"],"properties":{"actor":{"type":"string"}}}"#,
+    },
     // ── Bank and payments ───────────────────────────────────────────────────
     CommandSpec {
         name: "bank.connect",

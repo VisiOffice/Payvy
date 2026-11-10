@@ -1,0 +1,30 @@
+{
+  "name": "@payvy/web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "check": "tsc -b",
+    "gen:api": "cargo run -q -p payvy-server --bin payvy -- commands > src/api/commands.json && node scripts/gen-api.mjs",
+    "astryx": "node node_modules/@astryxdesign/cli/clients/cli/bin/astryx.mjs"
+  },
+  "dependencies": {
+    "@astryxdesign/core": "0.7.12",
+    "@astryxdesign/theme-neutral": "0.7.12",
+    "@stylexjs/stylex": "0.19.1",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "react-router": "7.18.5"
+  },
+  "devDependencies": {
+    "@astryxdesign/cli": "0.7.12",
+    "@types/node": "^24.19.2",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "6.3.0",
+    "json-schema-to-typescript": "16.0.0",
+    "typescript": "5.9.3",
+    "vite": "8.3.7"
+  }
+}

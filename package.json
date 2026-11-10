@@ -1,0 +1,10 @@
+{
+  "name": "payvy",
+  "private": true,
+  "packageManager": "pnpm@10.12.4",
+  "scripts": {
+    "web": "pnpm --dir web dev",
+    "build": "pnpm --dir web build",
+    "check": "pnpm -r check"
+  }
+}

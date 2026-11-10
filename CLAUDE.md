@@ -57,6 +57,19 @@ Conventions follow Visirent (`~/Code/visirent`).
   leaves the payment `submitting` to be resent with the same key, never a new one. Only the
   bank's answer marks a released bill paid (`payments::apply`). New banks implement the same
   shape in `payvy-pay`; tests use a fake bank (`tests/payments.rs`), never a real one.
+- **The web app (`web/`) is one more caller of the commands.** Vite, React 19 and Astryx
+  (`@astryxdesign/*`, exact versions pinned; it is in beta). It calls `/api/commands/{name}` with
+  the session cookie and the `x-payvy-client` header, which the server requires for cookie
+  sign-in so a cross-site form can't use the cookie. Inputs are typed from the registry:
+  after changing a command's schema, run `pnpm --dir web gen:api` and commit
+  `web/src/api/commands.{json,gen.ts}`. Nothing in the app may write around a command, and
+  anything an agent can't do in the API, the app can't do for an agent either. Use Astryx
+  components before writing CSS; `pnpm --dir web astryx component <Name> --dense` shows one.
+- **People sign in with a link sent by email** (`auth.rs`, `people` table). No passwords. The
+  token travels after `#` and is posted by the app, so mail scanners can't use it up; only
+  hashes of link and session tokens are stored; asking for a link answers the same for unknown
+  addresses. A person signs in as the actor of the same name, with a person key's rights.
+  Outbound mail goes through `mailer.rs` (Cloudflare Email Service, or the log in development).
 - **The README compares Payvy with Bill.com.** Keep every Bill.com figure sourced and dated, and
   keep the "what Bill.com has that Payvy doesn't" list honest.
 - SQL is static strings (`concat!` with the column macros); sqlx 0.9 refuses runtime-built SQL.
@@ -73,6 +86,11 @@ set -a; . ./.env; set +a
 cargo test                                # integration tests need PAYVY_TEST_* from .env
 cargo run -- serve                        # http://127.0.0.1:7430, MCP at /mcp
 cargo run -- key create --actor robert --kind person
+cargo run -- person add --email you@example.com --name You   # someone who signs in to the app
+pnpm install                              # once: the web app and the email worker
+pnpm web                                  # the app on http://127.0.0.1:5173; the sign-in link
+                                          # is printed in the server's log
 ```
 
-Before committing: `cargo clippy --all-targets -- -D warnings && cargo fmt --all -- --check`.
+Before committing: `cargo clippy --all-targets -- -D warnings && cargo fmt --all -- --check`,
+and `pnpm -r check` when `web/` or `workers/` changed.
