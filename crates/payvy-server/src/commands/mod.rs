@@ -4,6 +4,7 @@
 
 mod bills;
 mod documents;
+mod email;
 mod events;
 mod vendors;
 mod workflows;
@@ -139,6 +140,7 @@ pub async fn run(
         events: Vec::new(),
         preview,
         storage: state.storage.as_deref(),
+        inbound_domain: state.inbound.as_ref().map(|i| i.domain.as_str()),
     };
     let result = execute(&mut cx, spec.name, &input).await?;
     let Cx { tx, events, .. } = cx;
@@ -183,6 +185,11 @@ async fn execute(cx: &mut Cx<'_>, name: &str, input: &Value) -> Result<Value, Co
         "document.list" => documents::list(cx, parse(input)?).await,
         "document.get" => documents::get(cx, parse(input)?).await,
         "document.trash" => documents::trash(cx, parse(input)?).await,
+        "email.address" => email::address(cx, parse(input)?).await,
+        "email.new_address" => email::new_address(cx, parse(input)?).await,
+        "email.import" => email::import(cx, parse(input)?).await,
+        "email.list" => email::list(cx, parse(input)?).await,
+        "email.get" => email::get(cx, parse(input)?).await,
         "event.list" => events::list(cx, parse(input)?).await,
         other => Err(CommandError::Unknown(other.to_owned())),
     }
@@ -200,12 +207,19 @@ pub(crate) struct Cx<'a> {
     /// (writing to storage) skip them in preview.
     pub preview: bool,
     storage: Option<&'a payvy_storage::Storage>,
+    inbound_domain: Option<&'a str>,
 }
 
 impl<'a> Cx<'a> {
     pub fn storage(&self) -> Result<&'a payvy_storage::Storage, CommandError> {
         self.storage.ok_or(CommandError::NotConfigured(
             "no document storage is configured (set PAYVY_S3_ENDPOINT, PAYVY_S3_BUCKET and its keys)",
+        ))
+    }
+
+    pub fn inbound_domain(&self) -> Result<&'a str, CommandError> {
+        self.inbound_domain.ok_or(CommandError::NotConfigured(
+            "email intake isn't configured (set PAYVY_INBOUND_DOMAIN and PAYVY_INBOUND_SECRET)",
         ))
     }
 

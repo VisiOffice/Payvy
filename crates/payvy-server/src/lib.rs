@@ -1,5 +1,6 @@
 pub mod commands;
 pub mod confirm;
+pub mod inbound;
 pub mod mcp;
 
 use std::sync::Arc;
@@ -12,6 +13,7 @@ use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use chrono::{DateTime, Utc};
 use payvy_domain::commands::COMMANDS;
+use payvy_domain::email;
 use payvy_store::{ActorKind, Store};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -64,6 +66,9 @@ pub struct AppState {
     /// None when no object store is configured: document commands then say
     /// so instead of failing obscurely.
     pub storage: Option<Arc<payvy_storage::Storage>>,
+    /// None when email intake isn't configured: the webhook answers 404 and
+    /// the email commands say so.
+    pub inbound: Option<Arc<inbound::Inbound>>,
 }
 
 impl AppState {
@@ -78,11 +83,17 @@ impl AppState {
             confirm: Arc::new(Confirmer::new(admin_key.as_bytes())),
             clock: Arc::new(Utc::now),
             storage: None,
+            inbound: None,
         }
     }
 
     pub fn with_storage(mut self, storage: payvy_storage::Storage) -> Self {
         self.storage = Some(Arc::new(storage));
+        self
+    }
+
+    pub fn with_inbound(mut self, inbound: inbound::Inbound) -> Self {
+        self.inbound = Some(Arc::new(inbound));
         self
     }
 
@@ -113,9 +124,16 @@ pub fn router(state: AppState) -> Router {
         // A 25 MB document arrives as about 34 MB of base64 in JSON.
         .layer(axum::extract::DefaultBodyLimit::max(36 * 1024 * 1024))
         .route_layer(middleware::from_fn_with_state(state.clone(), authenticate));
+    // Signed by the mail front end instead of an API key; see `inbound`.
+    let webhooks = Router::new()
+        .route("/webhooks/email", post(inbound::webhook))
+        .layer(axum::extract::DefaultBodyLimit::max(
+            email::MAX_RAW_BYTES + 1024,
+        ));
     Router::new()
         .route("/health", get(health))
         .merge(authed)
+        .merge(webhooks)
         .with_state(state)
 }
 

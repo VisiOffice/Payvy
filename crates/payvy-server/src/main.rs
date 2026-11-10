@@ -22,6 +22,8 @@ enum Command {
         api_key: String,
         #[command(flatten)]
         storage: StorageArgs,
+        #[command(flatten)]
+        inbound: InboundArgs,
     },
     /// Manage API keys for people and agents.
     Key {
@@ -67,6 +69,21 @@ impl StorageArgs {
     }
 }
 
+/// Email intake: bills sent to `{token}@{domain}` land in the inbox. Mail
+/// reaches the server through a front end that signs each message, such as
+/// the Cloudflare Email Worker in `workers/email-inbound` (see
+/// docs/email-intake.md).
+#[derive(clap::Args)]
+struct InboundArgs {
+    /// The domain inbound addresses live on, e.g. in.example.com.
+    #[arg(long, env = "PAYVY_INBOUND_DOMAIN", requires = "inbound_secret")]
+    inbound_domain: Option<String>,
+    /// Shared with the front end, which signs each message with it. At least
+    /// 32 characters.
+    #[arg(long, env = "PAYVY_INBOUND_SECRET", hide_env_values = true)]
+    inbound_secret: Option<String>,
+}
+
 #[derive(Subcommand)]
 enum KeyCommand {
     /// Create a key. It is printed once and never stored.
@@ -104,6 +121,7 @@ async fn main() -> anyhow::Result<()> {
             bind,
             api_key,
             storage,
+            inbound,
         } => {
             anyhow::ensure!(
                 api_key.len() >= 32,
@@ -116,6 +134,14 @@ async fn main() -> anyhow::Result<()> {
                     state = state.with_storage(payvy_storage::Storage::new(&config)?);
                 }
                 None => tracing::warn!("no document storage configured; document commands are off"),
+            }
+            match (inbound.inbound_domain, inbound.inbound_secret) {
+                (Some(domain), Some(secret)) => {
+                    tracing::info!(%domain, "email intake");
+                    state =
+                        state.with_inbound(payvy_server::inbound::Inbound::new(&domain, &secret)?);
+                }
+                _ => tracing::warn!("no inbound email domain configured; email intake is off"),
             }
             let listener = tokio::net::TcpListener::bind(bind).await?;
             tracing::info!("payvy listening on http://{bind}");

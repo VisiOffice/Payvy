@@ -1,0 +1,10 @@
+name = "payvy-email-inbound"
+main = "src/index.ts"
+compatibility_date = "2026-10-01"
+
+[vars]
+# Where your Payvy server is reachable from the internet.
+PAYVY_URL = "https://payvy.example.com"
+# FALLBACK_TO = "ap-backup@example.com"   # optional; must be a verified destination
+
+# The secret is set with: npx wrangler secret put PAYVY_INBOUND_SECRET

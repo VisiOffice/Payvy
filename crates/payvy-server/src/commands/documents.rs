@@ -18,61 +18,88 @@ pub struct Upload {
 }
 
 pub async fn upload(cx: &mut Cx<'_>, input: Upload) -> Result<Value, CommandError> {
-    let storage = cx.storage()?;
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(input.content_base64.trim())
         .map_err(|e| CommandError::Invalid(format!("content_base64 isn't valid base64: {e}")))?;
     let kind = rules::check(&bytes).map_err(|e| CommandError::Invalid(e.to_string()))?;
+    let filename = rules::clean_filename(&input.filename);
+    match receive(cx, bytes, kind, &filename, None).await? {
+        Received::New(doc) => Ok(json!(doc)),
+        Received::AlreadyHere(existing) => Err(already_here(&existing)),
+    }
+}
+
+pub(super) enum Received {
+    New(store::Document),
+    AlreadyHere(store::Document),
+}
+
+/// Stores a checked file and puts it in the inbox, unless this organization
+/// already has it. `email_id` is set for an email attachment.
+pub(super) async fn receive(
+    cx: &mut Cx<'_>,
+    bytes: Vec<u8>,
+    kind: rules::Kind,
+    filename: &str,
+    email_id: Option<Uuid>,
+) -> Result<Received, CommandError> {
+    let storage = cx.storage()?;
     let sha = hex::encode(Sha256::digest(&bytes));
     if let Some(existing) = store::document_by_hash(&mut cx.tx, &sha).await? {
-        return Err(already_here(&existing));
+        return Ok(Received::AlreadyHere(existing));
     }
     let key = rules::storage_key(&cx.org.to_string(), &sha, kind);
     // The object is written before the row: a failed transaction leaves an
     // object nothing points at, and a retry writes the same key again.
+    let size_bytes = bytes.len() as i64;
     if !cx.preview {
-        storage
-            .put(&key, bytes.clone(), kind.content_type())
-            .await?;
+        storage.put(&key, bytes, kind.content_type()).await?;
     }
-    let filename = rules::clean_filename(&input.filename);
+    let source = if email_id.is_some() {
+        "email"
+    } else {
+        "upload"
+    };
     let new = NewDocument {
         sha256: &sha,
         content_type: kind.content_type(),
-        size_bytes: bytes.len() as i64,
-        filename: &filename,
+        size_bytes,
+        filename,
         storage_key: &key,
-        source: "upload",
+        source,
+        email_id,
         received_at: cx.now,
         created_by: &cx.actor.name,
     };
-    let doc = match store::insert_document(&mut cx.tx, cx.org, &new).await? {
-        Some(d) => d,
-        None => {
-            let existing = store::document_by_hash(&mut cx.tx, &sha)
-                .await?
-                .ok_or_else(|| anyhow::anyhow!("document {sha} conflicted but can't be read"))?;
-            return Err(already_here(&existing));
-        }
+    let Some(doc) = store::insert_document(&mut cx.tx, cx.org, &new).await? else {
+        let existing = store::document_by_hash(&mut cx.tx, &sha)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("document {sha} conflicted but can't be read"))?;
+        return Ok(Received::AlreadyHere(existing));
     };
     cx.emit(
         "document.received",
         doc.id,
-        json!({ "document_id": doc.id, "filename": doc.filename, "source": "upload", "size_bytes": doc.size_bytes }),
+        json!({ "document_id": doc.id, "filename": doc.filename, "source": source, "email_id": email_id, "size_bytes": doc.size_bytes }),
     )
     .await?;
-    Ok(json!(doc))
+    Ok(Received::New(doc))
 }
 
 fn already_here(existing: &store::Document) -> CommandError {
+    CommandError::Conflict(format!(
+        "this exact file is already here: {}",
+        where_is(existing)
+    ))
+}
+
+/// "document X (name.pdf), filed with bill Y"
+pub(super) fn where_is(existing: &store::Document) -> String {
     let place = match (existing.status.as_str(), existing.bill_id) {
         ("filed", Some(bill)) => format!("filed with bill {bill}"),
         (status, _) => format!("in {status}"),
     };
-    CommandError::Conflict(format!(
-        "this exact file is already here: document {} ({}), {place}",
-        existing.id, existing.filename
-    ))
+    format!("document {} ({}), {place}", existing.id, existing.filename)
 }
 
 #[derive(Deserialize)]

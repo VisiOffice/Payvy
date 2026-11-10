@@ -7,9 +7,9 @@ your money, so it doesn't charge you to move it.
 Self-host it for free, or let us run it for one flat price per company.
 
 > **Status: early.** Working today: vendor workflows, bills, the document inbox on any
-> S3-compatible storage, the audit log, the REST API and the MCP server. Coming next: email
-> intake and AI extraction, paying through Mercury, the web app, and sync to VisiBooks,
-> QuickBooks Online and Xero.
+> S3-compatible storage, email intake, the audit log, the REST API and the MCP server. Coming
+> next: AI extraction, paying through Mercury, the web app, and sync to VisiBooks, QuickBooks
+> Online and Xero.
 
 ## Why not Bill.com
 
@@ -63,6 +63,11 @@ first and commits with a single-use token tied to exactly what was previewed.
 **Documents on your storage.** Original invoices go to any S3-compatible store: Cloudflare R2,
 Backblaze B2, AWS S3, or one you run (Garage, SeaweedFS). A file's type is read from its contents,
 and the same file arriving twice is caught.
+
+**Bills by email.** Each company gets an inbound address; attachments land in the inbox, and
+forwarded emails work too. Mail comes in through Cloudflare Email Routing, free on your own
+domain, or anything else that can post a signed request. See
+[`docs/email-intake.md`](docs/email-intake.md).
 
 **Every change is on the record.** Each change writes an event in the same database
 transaction, and organizations are isolated by Postgres row-level security.

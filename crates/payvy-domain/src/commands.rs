@@ -193,6 +193,42 @@ pub const COMMANDS: &[CommandSpec] = &[
         person_only: false,
         input_schema: r#"{"type":"object","required":["document_id","reason"],"properties":{"document_id":{"type":"string","format":"uuid"},"reason":{"type":"string"}}}"#,
     },
+    // ── Email ───────────────────────────────────────────────────────────────
+    CommandSpec {
+        name: "email.address",
+        summary: "This organization's inbound address. Bills emailed or forwarded to it land in the document inbox; a +tag after the token is allowed (token+fuel@...). Null until a person creates one with email.new_address.",
+        tier: RiskTier::Read,
+        person_only: false,
+        input_schema: r#"{"type":"object","properties":{}}"#,
+    },
+    CommandSpec {
+        name: "email.new_address",
+        summary: "Create the inbound address, or replace it if it is getting spam. The old address stops working at once, so anyone forwarding to it must switch.",
+        tier: RiskTier::Routine,
+        person_only: true,
+        input_schema: r#"{"type":"object","properties":{}}"#,
+    },
+    CommandSpec {
+        name: "email.import",
+        summary: "Read a raw email (an .eml file, base64) into the inbox: its PDF and image attachments become documents, including those of a forwarded email. The inbound webhook uses this too. Refused if the same email is already here. The result lists what was skipped and why.",
+        tier: RiskTier::Routine,
+        person_only: false,
+        input_schema: r#"{"type":"object","required":["raw_base64"],"properties":{"raw_base64":{"type":"string","description":"The whole RFC 5322 message, base64-encoded (standard alphabet)"},"recipient":{"type":"string","description":"The address it was delivered to, if known"}}}"#,
+    },
+    CommandSpec {
+        name: "email.list",
+        summary: "Emails received, newest first: sender, subject and what was skipped.",
+        tier: RiskTier::Read,
+        person_only: false,
+        input_schema: r#"{"type":"object","properties":{"limit":{"type":"integer","minimum":1,"maximum":500}}}"#,
+    },
+    CommandSpec {
+        name: "email.get",
+        summary: "One email: its details, the documents it brought in, and a 15-minute download link for the original message.",
+        tier: RiskTier::Read,
+        person_only: false,
+        input_schema: r#"{"type":"object","required":["email_id"],"properties":{"email_id":{"type":"string","format":"uuid"}}}"#,
+    },
     // ── Audit ───────────────────────────────────────────────────────────────
     CommandSpec {
         name: "event.list",

@@ -4,6 +4,7 @@
 pub mod bills;
 pub mod commands;
 pub mod documents;
+pub mod email;
 pub mod workflow;
 
 /// Money is integer cents, always.

@@ -828,6 +828,7 @@ pub struct Document {
     pub source: String,
     pub status: String,
     pub bill_id: Option<Uuid>,
+    pub email_id: Option<Uuid>,
     pub trashed_reason: Option<String>,
     pub received_at: DateTime<Utc>,
     pub created_by: String,
@@ -835,7 +836,7 @@ pub struct Document {
 
 macro_rules! document_cols {
     () => {
-        "id, sha256, content_type, size_bytes, filename, storage_key, source, status, bill_id, trashed_reason, received_at, created_by"
+        "id, sha256, content_type, size_bytes, filename, storage_key, source, status, bill_id, email_id, trashed_reason, received_at, created_by"
     };
 }
 
@@ -850,6 +851,7 @@ fn document(r: &PgRow) -> Document {
         source: r.get("source"),
         status: r.get("status"),
         bill_id: r.get("bill_id"),
+        email_id: r.get("email_id"),
         trashed_reason: r.get("trashed_reason"),
         received_at: r.get("received_at"),
         created_by: r.get("created_by"),
@@ -863,6 +865,8 @@ pub struct NewDocument<'a> {
     pub filename: &'a str,
     pub storage_key: &'a str,
     pub source: &'a str,
+    /// Set exactly when `source` is "email".
+    pub email_id: Option<Uuid>,
     pub received_at: DateTime<Utc>,
     pub created_by: &'a str,
 }
@@ -887,8 +891,8 @@ pub async fn insert_document(
 ) -> anyhow::Result<Option<Document>> {
     let row = sqlx::query(concat!(
         "INSERT INTO documents (id, org_id, sha256, content_type, size_bytes, filename, storage_key, source,
-                                received_at, created_by)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                                email_id, received_at, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
          ON CONFLICT (org_id, sha256) DO NOTHING RETURNING ",
         document_cols!()
     ))
@@ -900,6 +904,7 @@ pub async fn insert_document(
     .bind(new.filename)
     .bind(new.storage_key)
     .bind(new.source)
+    .bind(new.email_id)
     .bind(new.received_at)
     .bind(new.created_by)
     .fetch_optional(&mut **tx)
@@ -938,6 +943,18 @@ pub async fn list_documents(
     Ok(rows.iter().map(document).collect())
 }
 
+pub async fn email_documents(tx: &mut Tx, email_id: Uuid) -> anyhow::Result<Vec<Document>> {
+    let rows = sqlx::query(concat!(
+        "SELECT ",
+        document_cols!(),
+        " FROM documents WHERE email_id = $1 ORDER BY filename, id"
+    ))
+    .bind(email_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    Ok(rows.iter().map(document).collect())
+}
+
 pub async fn bill_documents(tx: &mut Tx, bill_id: Uuid) -> anyhow::Result<Vec<Document>> {
     let rows = sqlx::query(concat!(
         "SELECT ",
@@ -966,4 +983,219 @@ pub async fn trash_document(tx: &mut Tx, id: Uuid, reason: &str) -> anyhow::Resu
         .execute(&mut **tx)
         .await?;
     Ok(())
+}
+
+// ── Email ───────────────────────────────────────────────────────────────────
+
+impl Store {
+    /// The organization a live inbound token routes to. Outside any
+    /// organization's transaction: the webhook doesn't know it yet.
+    pub async fn org_for_inbound_token(&self, token: &str) -> anyhow::Result<Option<Uuid>> {
+        let row = sqlx::query(
+            "SELECT org_id FROM inbound_addresses WHERE token = $1 AND retired_at IS NULL",
+        )
+        .bind(token)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| r.get("org_id")))
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct InboundAddress {
+    pub token: String,
+    pub created_at: DateTime<Utc>,
+    pub created_by: String,
+}
+
+// inbound_addresses has no row-level security, so these filter by org_id.
+pub async fn live_inbound_address(
+    tx: &mut Tx,
+    org_id: Uuid,
+) -> anyhow::Result<Option<InboundAddress>> {
+    let row = sqlx::query(
+        "SELECT token, created_at, created_by FROM inbound_addresses
+         WHERE org_id = $1 AND retired_at IS NULL FOR UPDATE",
+    )
+    .bind(org_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(row.map(|r| InboundAddress {
+        token: r.get("token"),
+        created_at: r.get("created_at"),
+        created_by: r.get("created_by"),
+    }))
+}
+
+/// Retires the organization's live address, if any, and makes `token` the
+/// live one. False if the token is taken (a collision; pick another).
+pub async fn replace_inbound_address(
+    tx: &mut Tx,
+    org_id: Uuid,
+    token: &str,
+    now: DateTime<Utc>,
+    by: &str,
+) -> anyhow::Result<bool> {
+    sqlx::query(
+        "UPDATE inbound_addresses SET retired_at = $2 WHERE org_id = $1 AND retired_at IS NULL",
+    )
+    .bind(org_id)
+    .bind(now)
+    .execute(&mut **tx)
+    .await?;
+    let done = sqlx::query(
+        "INSERT INTO inbound_addresses (token, org_id, created_at, created_by) VALUES ($1, $2, $3, $4)
+         ON CONFLICT (token) DO NOTHING",
+    )
+    .bind(token)
+    .bind(org_id)
+    .bind(now)
+    .bind(by)
+    .execute(&mut **tx)
+    .await?;
+    Ok(done.rows_affected() == 1)
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Email {
+    pub id: Uuid,
+    pub message_id: Option<String>,
+    pub raw_sha256: String,
+    pub size_bytes: i64,
+    #[serde(skip)]
+    pub storage_key: String,
+    pub recipient: Option<String>,
+    pub from_address: Option<String>,
+    pub from_name: Option<String>,
+    pub subject: Option<String>,
+    pub sent_at: Option<DateTime<Utc>>,
+    pub authentication_results: Option<String>,
+    pub skipped: serde_json::Value,
+    pub received_at: DateTime<Utc>,
+    pub created_by: String,
+}
+
+macro_rules! email_cols {
+    () => {
+        "id, message_id, raw_sha256, size_bytes, storage_key, recipient, from_address, from_name, subject, sent_at, authentication_results, skipped, received_at, created_by"
+    };
+}
+
+fn email(r: &PgRow) -> Email {
+    Email {
+        id: r.get("id"),
+        message_id: r.get("message_id"),
+        raw_sha256: r.get("raw_sha256"),
+        size_bytes: r.get("size_bytes"),
+        storage_key: r.get("storage_key"),
+        recipient: r.get("recipient"),
+        from_address: r.get("from_address"),
+        from_name: r.get("from_name"),
+        subject: r.get("subject"),
+        sent_at: r.get("sent_at"),
+        authentication_results: r.get("authentication_results"),
+        skipped: r.get("skipped"),
+        received_at: r.get("received_at"),
+        created_by: r.get("created_by"),
+    }
+}
+
+pub struct NewEmail<'a> {
+    pub id: Uuid,
+    pub message_id: Option<&'a str>,
+    pub raw_sha256: &'a str,
+    pub size_bytes: i64,
+    pub storage_key: &'a str,
+    pub recipient: Option<&'a str>,
+    pub from_address: Option<&'a str>,
+    pub from_name: Option<&'a str>,
+    pub subject: Option<&'a str>,
+    pub sent_at: Option<DateTime<Utc>>,
+    pub authentication_results: Option<&'a str>,
+    pub received_at: DateTime<Utc>,
+    pub created_by: &'a str,
+}
+
+/// The email already here with this Message-ID or these exact bytes.
+pub async fn existing_email(
+    tx: &mut Tx,
+    message_id: Option<&str>,
+    raw_sha256: &str,
+) -> anyhow::Result<Option<Email>> {
+    let row = sqlx::query(concat!(
+        "SELECT ",
+        email_cols!(),
+        " FROM emails WHERE raw_sha256 = $2 OR ($1::text IS NOT NULL AND message_id = $1) LIMIT 1"
+    ))
+    .bind(message_id)
+    .bind(raw_sha256)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(row.as_ref().map(email))
+}
+
+/// False if the email is already here (a concurrent delivery won).
+pub async fn insert_email(tx: &mut Tx, org_id: Uuid, new: &NewEmail<'_>) -> anyhow::Result<bool> {
+    let done = sqlx::query(
+        "INSERT INTO emails (id, org_id, message_id, raw_sha256, size_bytes, storage_key, recipient,
+                             from_address, from_name, subject, sent_at, authentication_results,
+                             received_at, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(new.id)
+    .bind(org_id)
+    .bind(new.message_id)
+    .bind(new.raw_sha256)
+    .bind(new.size_bytes)
+    .bind(new.storage_key)
+    .bind(new.recipient)
+    .bind(new.from_address)
+    .bind(new.from_name)
+    .bind(new.subject)
+    .bind(new.sent_at)
+    .bind(new.authentication_results)
+    .bind(new.received_at)
+    .bind(new.created_by)
+    .execute(&mut **tx)
+    .await?;
+    Ok(done.rows_affected() == 1)
+}
+
+pub async fn set_email_skipped(
+    tx: &mut Tx,
+    id: Uuid,
+    skipped: &serde_json::Value,
+) -> anyhow::Result<()> {
+    sqlx::query("UPDATE emails SET skipped = $2 WHERE id = $1")
+        .bind(id)
+        .bind(skipped)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
+pub async fn get_email(tx: &mut Tx, id: Uuid) -> anyhow::Result<Option<Email>> {
+    let row = sqlx::query(concat!(
+        "SELECT ",
+        email_cols!(),
+        " FROM emails WHERE id = $1"
+    ))
+    .bind(id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(row.as_ref().map(email))
+}
+
+/// Newest first.
+pub async fn list_emails(tx: &mut Tx, limit: i64) -> anyhow::Result<Vec<Email>> {
+    let rows = sqlx::query(concat!(
+        "SELECT ",
+        email_cols!(),
+        " FROM emails ORDER BY received_at DESC, id LIMIT $1"
+    ))
+    .bind(limit)
+    .fetch_all(&mut **tx)
+    .await?;
+    Ok(rows.iter().map(email).collect())
 }
