@@ -325,6 +325,29 @@ export interface BillVoidInput {
   reason: string;
 }
 
+export interface AutoPayLimitsInput {}
+
+export interface AutoPayLowerLimitInput {
+  /**
+   * Leave out for the company's limit
+   */
+  vendor_id?: string;
+  limit_cents: number;
+  reason?: string;
+}
+
+export interface AutoPayRaiseLimitInput {
+  /**
+   * Leave out for the company's limit
+   */
+  vendor_id?: string;
+  /**
+   * null (with vendor_id only) removes the vendor's own limit
+   */
+  limit_cents: number | null;
+  reason?: string;
+}
+
 export interface InboxGetInput {}
 
 export interface PersonListInput {}
@@ -511,6 +534,9 @@ export interface CommandInputs {
   "bill.auto_pay": BillAutoPayInput;
   "bill.mark_paid": BillMarkPaidInput;
   "bill.void": BillVoidInput;
+  "auto_pay.limits": AutoPayLimitsInput;
+  "auto_pay.lower_limit": AutoPayLowerLimitInput;
+  "auto_pay.raise_limit": AutoPayRaiseLimitInput;
   "inbox.get": InboxGetInput;
   "person.list": PersonListInput;
   "person.add": PersonAddInput;
@@ -569,9 +595,12 @@ export const COMMANDS: Record<CommandName, { tier: Tier; personOnly: boolean; su
   "bill.reject": { tier: "routine", personOnly: true, summary: "Reject a bill: it will not be paid. Final." },
   "bill.signal": { tier: "routine", personOnly: false, summary: "Report that something outside Payvy happened for a bill, e.g. customer_funded when the customer has paid for this cost. A workflow's wait_for step waits for its signal. Name the bill by bill_id or by the external_ref it was created with." },
   "bill.release": { tier: "confirmed", personOnly: true, summary: "Release a bill for payment at its pay step. With a bank connected, this sends the payment through it to the vendor's accepted payee; the preview shows exactly what will be sent. Preview first; commit with the returned token." },
-  "bill.auto_pay": { tier: "routine", personOnly: false, summary: "Pay a bill whose workflow pays automatically (status ready_to_pay) through the connected Mercury account, to the vendor's accepted payee. Payvy does this on its own within a minute of the bill getting there; run it to pay one now. If the payment doesn't go, the bill waits for a person to release it and is never retried automatically." },
+  "bill.auto_pay": { tier: "routine", personOnly: false, summary: "Pay a bill whose workflow pays automatically (status ready_to_pay) through the connected Mercury account, to the vendor's accepted payee. Payvy does this on its own within a minute of the bill getting there; run it to pay one now. A bill over the auto-pay limit (auto_pay.limits) is never paid this way; it waits for a person to release it. If the payment doesn't go, the bill waits for a person to release it and is never retried automatically." },
   "bill.mark_paid": { tier: "confirmed", personOnly: false, summary: "Record that a released or ready bill was paid outside Payvy (a check, a payment made in the bank's own app). Payments sent through the connected bank are recorded on their own. Preview first; commit with the returned token." },
   "bill.void": { tier: "confirmed", personOnly: true, summary: "Void a bill entered by mistake. It no longer counts for duplicate detection. Preview first; commit with the returned token." },
+  "auto_pay.limits": { tier: "read", personOnly: false, summary: "The ceiling on automatic payments: the company's limit (the $5,000.00 default until a person sets one) and each vendor's own, lower limit. A bill over its limit never pays automatically: it waits for a person to release it, whatever its workflow says." },
+  "auto_pay.lower_limit": { tier: "routine", personOnly: true, summary: "Lower the company's auto-pay limit, or with vendor_id set or lower one vendor's own limit (below the company's). Bills over the new limit wait for a person to release them. Only a person may change a limit. To raise one, use auto_pay.raise_limit." },
+  "auto_pay.raise_limit": { tier: "confirmed", personOnly: true, summary: "Raise the company's auto-pay limit, or with vendor_id raise a vendor's own limit (it stays below the company's) or remove it with limit_cents null so the vendor follows the company's. Only a person may change a limit. The preview lists the bills that would start paying automatically; commit with the returned token." },
   "inbox.get": { tier: "read", personOnly: false, summary: "What is waiting on the caller: bills a step needs them to approve or release (action approve or release), and payee changes and workflow proposals a person must accept or decline. Agents see it too, to remind people." },
   "person.list": { tier: "read", personOnly: false, summary: "Everyone who can sign in to the web app, with the actor name their actions are recorded under." },
   "person.add": { tier: "routine", personOnly: true, summary: "Let someone sign in to the web app with a link sent to their email. They act as the person named by actor, with every right a person has: approving, releasing payments, accepting payees and workflows." },

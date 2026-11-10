@@ -249,6 +249,7 @@ function BillCard({
       <div className="payvy-queue-description">
         <Link href={`/bills/${b.id}`} isStandalone>{b.vendor_name}</Link>
         <span className="payvy-muted">{b.invoice_number}{b.memo ? ` · ${b.memo}` : ''}</span>
+        {item.progress?.reason && <span className="payvy-muted">{item.progress.reason}</span>}
       </div>
       <div className="payvy-queue-due">
         <span>{b.due_date ? date(b.due_date) : 'No due date'}</span>

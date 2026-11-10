@@ -86,6 +86,7 @@ export function Shell({ children }: { children: ReactNode }) {
           <SideNavSection title="Settings">
             <SideNavItem label="Bank" href="/settings/bank" isSelected={pathname.startsWith('/settings/bank')} />
             <SideNavItem label="Bill inbox" href="/settings/email" isSelected={pathname.startsWith('/settings/email')} />
+            <SideNavItem label="Auto-pay limit" href="/settings/auto-pay" isSelected={pathname.startsWith('/settings/auto-pay')} />
           </SideNavSection>
         </SideNav>
       }

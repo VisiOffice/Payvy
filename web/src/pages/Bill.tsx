@@ -131,6 +131,10 @@ export function BillPage() {
         </Text>
       </VStack>
 
+      {typeof p === 'object' && typeof p?.reason === 'string' && (
+        <Banner status="info" title={p.reason} description="Its workflow pays automatically, but a person releases bills over the limit." />
+      )}
+
       {isOpen && (
         <HStack gap={2}>
           {status === 'awaiting_approval' && <Button label="Approve" variant="primary" clickAction={approve} />}

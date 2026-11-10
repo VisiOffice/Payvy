@@ -14,7 +14,7 @@ export interface Bill {
 
 export interface BillItem {
   bill: Bill;
-  progress: { status: string; waiting_on?: string[]; by?: string[] } | null;
+  progress: { status: string; waiting_on?: string[]; by?: string[]; reason?: string } | null;
   action: 'approve' | 'release' | 'look';
 }
 

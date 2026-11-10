@@ -6,6 +6,7 @@
 //! reopens a paid bill.
 
 use payvy_domain::bills::State;
+use payvy_domain::workflow::AutoPayLimit;
 use payvy_pay::{BankError, Method, Mode, Observed, Payment, Status};
 use payvy_store::{self as store, Bill, NewPayment, Payee, PaymentRow, PaymentUpdate};
 use serde::Deserialize;
@@ -41,13 +42,47 @@ pub(super) fn plan(bill: &Bill, c: &store::BankConnection, p: &Payee) -> Value {
     })
 }
 
-/// Creates the payment and sends it. Called by `bill.release` on commit.
+/// Who authorized a payment: a person's release, or a workflow's automatic
+/// pay step (which the auto-pay limit caps).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Authority {
+    Person,
+    Workflow,
+}
+
+/// Refuses an automatic payment over the auto-pay limit in force now. Holds
+/// the limit lock (shared) for the rest of the transaction, so a limit
+/// lowered at this moment waits until this payment is decided.
+pub(super) async fn within_auto_pay_limit(
+    cx: &mut Cx<'_>,
+    bill: &Bill,
+) -> Result<(), CommandError> {
+    let (company, vendor) =
+        store::auto_pay_limits_for_payment(&mut cx.tx, cx.org, bill.vendor_id).await?;
+    let limit = AutoPayLimit::effective(company, vendor);
+    if !limit.allows(bill.amount_cents) {
+        return Err(CommandError::Conflict(format!(
+            "{}: a person releases this bill; it isn't paid automatically",
+            limit.reason()
+        )));
+    }
+    Ok(())
+}
+
+/// Creates the payment and sends it. Called by `bill.release` and
+/// `bill.auto_pay` on commit.
 pub(super) async fn submit(
     cx: &mut Cx<'_>,
     bill: &Bill,
     c: &store::BankConnection,
     payee: &Payee,
+    authority: Authority,
 ) -> Result<PaymentRow, CommandError> {
+    // The last word before the bank is asked: an automatic payment never
+    // goes over the limit in force at this moment.
+    if authority == Authority::Workflow {
+        within_auto_pay_limit(cx, bill).await?;
+    }
     let earlier = store::bill_payments(&mut cx.tx, bill.id).await?;
     if let Some(live) = earlier.iter().find(|p| is_live(&p.status)) {
         return Err(CommandError::Conflict(format!(

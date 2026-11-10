@@ -16,6 +16,7 @@ const BillPage = lazy(() => import('./pages/Bill').then((m) => ({ default: m.Bil
 const Workflows = lazy(() => import('./pages/Workflows').then((m) => ({ default: m.Workflows })));
 const Bank = lazy(() => import('./pages/Bank').then((m) => ({ default: m.Bank })));
 const EmailSettings = lazy(() => import('./pages/EmailSettings').then((m) => ({ default: m.EmailSettings })));
+const AutoPaySettings = lazy(() => import('./pages/AutoPaySettings').then((m) => ({ default: m.AutoPaySettings })));
 const VendorPage = lazy(() => import('./pages/Vendor').then((m) => ({ default: m.VendorPage })));
 const DocumentReview = lazy(() =>
   import('./pages/DocumentReview').then((m) => ({ default: m.DocumentReview })),
@@ -128,6 +129,7 @@ export function App() {
               </Suspense>
             }
           />
+          <Route path="/settings/auto-pay" element={<Suspense fallback={<Spinner label="Loading" />}><AutoPaySettings /></Suspense>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </Shell>
