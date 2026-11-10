@@ -31,7 +31,7 @@ export interface Listed {
 }
 
 /** Open bills' progress is a status object, closed ones have none. */
-function statusOf(l: Listed): string {
+export function statusOf(l: Listed): string {
   const p = l.progress as { status?: string } | string | null;
   const s = typeof p === 'string' ? p : (p?.status ?? l.bill.state);
   return s;
@@ -96,5 +96,5 @@ export function BillsTable({ bills, showVendor = true }: { bills: Listed[]; show
   const columns = showVendor
     ? COLUMNS.map((c) => (c.key === 'invoice' ? { key: c.key, header: c.header } : c))
     : COLUMNS.filter((c) => c.key !== 'vendor');
-  return <Table data={rows(bills)} columns={columns} idKey="id" hasHover />;
+  return <div className="payvy-table"><Table data={rows(bills)} columns={columns} idKey="id" hasHover /></div>;
 }

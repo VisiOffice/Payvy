@@ -2,6 +2,7 @@
 @import '@astryxdesign/core/reset.css';
 @import '@astryxdesign/core/astryx.css';
 @import '@astryxdesign/theme-neutral/theme.css';
+@import './design.css';
 
 html,
 body,
@@ -9,16 +10,15 @@ body,
   height: 100%;
 }
 
-/* The one accent for Payvy's own chrome: the theme's near-black ink.
-   Blue is not a Payvy color; status keeps its semantic colors. */
+/* Semantic state colors are shared by both appearances. */
 :root {
-  --payvy-ink: var(--color-text-primary);
+  --payvy-ink: var(--color-accent);
   --payvy-bad: var(--color-text-error);
   --payvy-soon: var(--color-text-warning);
 }
 
-.payvy-due-bad { color: var(--payvy-bad); font-weight: 600; }
-.payvy-due-soon { color: var(--payvy-soon); font-weight: 600; }
+.payvy-due-bad { color: var(--color-text-error); font-weight: 600; }
+.payvy-due-soon { color: var(--color-text-warning); font-weight: 600; }
 
 /* Sign-in brand block over the card. */
 .payvy-signin-brand { text-align: center; margin-bottom: 20px; }
@@ -174,9 +174,9 @@ button.payvy-wf-node:hover { background: rgb(127 127 127 / 0.06); }
 /* Pages: a readable width, centred in what the side nav leaves. */
 .payvy-page {
   width: 100%;
-  max-width: 1120px;
+  max-width: 1240px;
   margin-inline: auto;
-  padding: 32px 32px 64px;
+  padding: 36px 40px 64px;
 }
 .payvy-page-narrow { max-width: 880px; }
 @media (max-width: 640px) {

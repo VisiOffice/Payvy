@@ -8,6 +8,7 @@ import { VStack } from '@astryxdesign/core/VStack';
 
 export function Page({
   title,
+  eyebrow,
   description,
   above,
   actions,
@@ -15,6 +16,7 @@ export function Page({
   children,
 }: {
   title: ReactNode;
+  eyebrow?: string;
   description?: ReactNode;
   /** Breadcrumbs, shown over the title. */
   above?: ReactNode;
@@ -27,8 +29,9 @@ export function Page({
   return (
     <div className={narrow ? 'payvy-page payvy-page-narrow' : 'payvy-page'}>
       <VStack gap={6}>
-        <VStack gap={2}>
+        <VStack gap={2} className="payvy-page-heading">
           {above}
+          {eyebrow && <span className="payvy-eyebrow">{eyebrow}</span>}
           <HStack gap={3} hAlign="between" vAlign="center" wrap="wrap">
             {typeof title === 'string' ? <Heading level={1}>{title}</Heading> : title}
             {actions}

@@ -67,10 +67,14 @@ export function run<R = unknown, N extends CommandName = CommandName>(
   input: CommandInputs[N],
   confirmToken?: string,
 ): Promise<Committed<R>> {
-  return request('POST', `/api/commands/${name}`, {
+  return request<Committed<R>>('POST', `/api/commands/${name}`, {
     input,
     mode: 'commit',
     confirm_token: confirmToken,
+  }).then(result => {
+    // Keep navigation counts current after writes, including actions on the same page.
+    if (result.events.length) window.dispatchEvent(new Event('payvy:changed'));
+    return result;
   });
 }
 

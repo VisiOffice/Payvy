@@ -2,6 +2,7 @@
 // where it's paid, and the account numbers it bills under.
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation, useParams } from 'react-router';
+import { Button } from '@astryxdesign/core/Button';
 import { Badge } from '@astryxdesign/core/Badge';
 import { Banner } from '@astryxdesign/core/Banner';
 import { BreadcrumbItem, Breadcrumbs } from '@astryxdesign/core/Breadcrumbs';
@@ -20,7 +21,7 @@ import { PayeeInvites, type PayeeInvite } from './PayeeInvites';
 import { BillsTable, type Listed } from '../bills/BillsTable';
 import { METHOD } from '../inbox/types';
 import { date } from '../money';
-import type { Current } from '../workflow';
+import { describeStep, type Current } from '../workflow';
 import { Builder, loadPeople } from '../workflows/Builder';
 import type { PersonOption } from '../workflows/StepEditor';
 
@@ -48,6 +49,7 @@ export function VendorPage() {
   const [people, setPeople] = useState<PersonOption[] | null>(null);
   const [bills, setBills] = useState<Listed[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [editingWorkflow, setEditingWorkflow] = useState(hash === '#workflow');
   const workflowRef = useRef<HTMLDivElement>(null);
 
   const loadVendor = useCallback(async () => {
@@ -68,7 +70,7 @@ export function VendorPage() {
   // Links to a vendor's workflow (from Waiting on you, or Workflows) land on it.
   const ready = !!detail && !!people;
   useEffect(() => {
-    if (ready && hash === '#workflow') workflowRef.current?.scrollIntoView({ block: 'start' });
+    if (ready && hash === '#workflow') { setEditingWorkflow(true); workflowRef.current?.scrollIntoView({ block: 'start' }); }
   }, [ready, hash]);
 
   if (error)
@@ -105,18 +107,6 @@ export function VendorPage() {
         </>
       }
     >
-
-      <div ref={workflowRef} id="workflow" style={{ scrollMarginTop: 16 }}>
-        <VStack gap={3}>
-          <Heading level={2}>Workflow</Heading>
-          <Builder
-            vendor={{ id: vendor.id, name: vendor.name }}
-            current={detail.workflow}
-            people={people}
-            onSaved={loadVendor}
-          />
-        </VStack>
-      </div>
 
       <VStack gap={3}>
         <Heading level={2}>Bills</Heading>
@@ -175,6 +165,23 @@ export function VendorPage() {
           </Card>
         </VStack>
       </HStack>
+      <section ref={workflowRef} id="workflow" className="payvy-vendor-workflow" style={{ scrollMarginTop: 16 }}>
+        <div className="payvy-section-heading">
+          <Heading level={2}>Workflow</Heading>
+          <span className="payvy-muted">{detail.workflow.source === 'vendor' ? 'For this vendor' : 'Company default'}</span>
+          <Button label={editingWorkflow ? 'Close editor' : 'Edit workflow'} variant="secondary" size="sm"
+            onClick={() => setEditingWorkflow(v => !v)} aria-expanded={editingWorkflow} />
+        </div>
+        {editingWorkflow ? <Builder vendor={{ id: vendor.id, name: vendor.name }} current={detail.workflow}
+          people={people} onSaved={loadVendor} /> : <div className="payvy-workflow-summary">
+          {detail.workflow.workflow.steps.map((step, index) => <div key={step.id}>
+            <span className="payvy-step-number">{index + 1}</span>
+            <span>{describeStep(step, actor => people.find(p => p.value === actor)?.label ?? actor)}</span>
+          </div>)}
+          {detail.workflow.proposals.length > 0 && <Button label={`Review ${detail.workflow.proposals.length} proposed changes`}
+            variant="secondary" onClick={() => setEditingWorkflow(true)} />}
+        </div>}
+      </section>
     </Page>
   );
 }

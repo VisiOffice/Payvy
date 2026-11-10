@@ -16,6 +16,7 @@ test('a person builds a workflow and new bills follow it', async ({ page }) => {
   await page.goto('/vendors');
   await page.getByRole('link', { name: 'Canyon Roofing' }).click();
   await expect(page).toHaveURL(`/vendors/${vendorId}`);
+  await page.getByRole('button', { name: 'Edit workflow', exact: true }).click();
   await expect(page.getByText(/Canyon Roofing follows Payvy's starting workflow/)).toBeVisible();
 
   // Add an approval for bills of $2,500 or more, by Robert.

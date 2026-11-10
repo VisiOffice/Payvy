@@ -7,6 +7,7 @@ import { Heading } from '@astryxdesign/core/Heading';
 import { HStack } from '@astryxdesign/core/HStack';
 import { Link } from '@astryxdesign/core/Link';
 import { MetadataList, MetadataListItem } from '@astryxdesign/core/MetadataList';
+import { SegmentedControl, SegmentedControlItem } from '@astryxdesign/core/SegmentedControl';
 import { Spinner } from '@astryxdesign/core/Spinner';
 import { Text } from '@astryxdesign/core/Text';
 import { useToast } from '@astryxdesign/core/Toast';
@@ -29,6 +30,7 @@ type Open =
   | null;
 
 export function Inbox() {
+  const [view, setView] = useState('all');
   const [data, setData] = useState<InboxData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState<Open>(null);
@@ -69,7 +71,23 @@ export function Inbox() {
   );
 
   return (
-    <Page narrow title="Waiting on you" description="Bills to approve or pay, and changes only a person can accept.">
+    <Page title="Waiting on you" eyebrow="Action center" description="A clear path from invoice to paid. Here’s what needs your attention.">
+      {data && data.count > 0 && <>
+        <div className="payvy-overview">
+          <div><span className="payvy-stat-label">Needs approval</span><strong>{data.bills.filter(b => b.action === 'approve').length}<span>{data.bills.filter(b => b.action === 'approve').length === 1 ? 'bill' : 'bills'}</span></strong></div>
+          <div><span className="payvy-stat-label">Ready to pay</span><strong>{money(data.bills.filter(b => b.action === 'release').reduce((s, b) => s + b.bill.amount_cents, 0))}</strong></div>
+          <div><span className="payvy-stat-label">Changes to review</span><strong>{data.payee_changes.length + data.workflow_proposals.length}<span>{data.payee_changes.length + data.workflow_proposals.length === 1 ? 'proposal' : 'proposals'}</span></strong></div>
+        </div>
+        <div className="payvy-viewbar">
+          <SegmentedControl label="Queue view" size="sm" value={view} onChange={setView}>
+            <SegmentedControlItem value="all" label="Everything" />
+            <SegmentedControlItem value="approve" label="Approvals" />
+            <SegmentedControlItem value="release" label="Payments" />
+            <SegmentedControlItem value="changes" label="Changes" />
+          </SegmentedControl>
+          <span className="payvy-muted">{data.count} to review</span>
+        </div>
+      </>}
 
       {error && <Banner status="error" title="Couldn't load your inbox" description={error} />}
       {!data && !error && <Spinner label="Loading" />}
@@ -80,32 +98,28 @@ export function Inbox() {
         />
       )}
 
-      {data && data.bills.length > 0 && (
-        <VStack gap={3}>
-          <HStack gap={3} vAlign="center" wrap="wrap">
-            <Heading level={2}>Bills</Heading>
-            <Text type="supporting">
-              {data.bills.length} waiting · {money(data.bills.reduce((s, i) => s + i.bill.amount_cents, 0))} in total
-            </Text>
-          </HStack>
-          {data.bills.map((item) => (
-            <BillCard
-              key={item.bill.id}
-              item={item}
-              onApprove={() =>
-                act(
-                  () => run('bill.approve', { bill_id: item.bill.id }),
-                  `Approved ${item.bill.vendor_name} ${item.bill.invoice_number}`,
-                )
-              }
+      {data && (['approve', 'release', 'look'] as const).map(action => {
+        const items = data.bills.filter(b => b.action === action);
+        if (!items.length || (view !== 'all' && view !== action)) return null;
+        return <section className="payvy-queue-section" key={action} aria-label={action === 'approve' ? 'Bills to approve' : action === 'release' ? 'Bills to pay' : 'Bills to review'}>
+          <div className="payvy-section-heading">
+            <Heading level={2}>{action === 'approve' ? 'Needs approval' : action === 'release' ? 'Ready to pay' : 'Review bills'}</Heading>
+            <span className="payvy-count">{items.length}</span>
+            <span className="payvy-section-total">{money(items.reduce((s, i) => s + i.bill.amount_cents, 0))}</span>
+          </div>
+          <div className="payvy-queue">
+            {items.map(item => <BillCard key={item.bill.id} item={item}
+              onApprove={() => act(() => run('bill.approve', { bill_id: item.bill.id }), `Approved ${item.bill.vendor_name} ${item.bill.invoice_number}`)}
               onRelease={() => setOpen({ kind: 'release', bill: item.bill })}
-              onReject={() => setOpen({ kind: 'reject', bill: item.bill })}
-            />
-          ))}
-        </VStack>
-      )}
+              onReject={() => setOpen({ kind: 'reject', bill: item.bill })} />)}
+          </div>
+        </section>;
+      })}
+      {data && data.count > 0 && ((view === 'approve' || view === 'release') && !data.bills.some(b => b.action === view)
+        || view === 'changes' && !data.payee_changes.length && !data.workflow_proposals.length) &&
+        <EmptyState title="You’re all caught up here" description="Choose another view to continue reviewing." />}
 
-      {data && data.payee_changes.length > 0 && (
+      {data && (view === 'all' || view === 'changes') && data.payee_changes.length > 0 && (
         <VStack gap={3}>
           <HStack gap={3} vAlign="center" wrap="wrap">
             <Heading level={2}>Where vendors are paid</Heading>
@@ -132,7 +146,7 @@ export function Inbox() {
         </VStack>
       )}
 
-      {data && data.workflow_proposals.length > 0 && (
+      {data && (view === 'all' || view === 'changes') && data.workflow_proposals.length > 0 && (
         <VStack gap={3}>
           <Heading level={2}>Workflow changes</Heading>
           {data.workflow_proposals.map((w) => (
@@ -230,35 +244,23 @@ function BillCard({
 }) {
   const b = item.bill;
   return (
-    <Card>
-      <HStack gap={4} vAlign="center" hAlign="between" wrap="wrap">
-        <VStack gap={1}>
-          <HStack gap={2} vAlign="center">
-            <Link href={`/bills/${b.id}`} isStandalone>{b.vendor_name}</Link>
-
-          </HStack>
-          <Text type="supporting">
-            Invoice {b.invoice_number} · {date(b.invoice_date)}
-            {b.due_date ? ` · due ${date(b.due_date)}` : ''}
-            {dueLabel(b.due_date) && (
-              <>
-                {' · '}
-                <DueText iso={b.due_date} />
-              </>
-            )}
-          </Text>
-          {b.memo && <Text type="supporting">{b.memo}</Text>}
-        </VStack>
-        <HStack gap={3} vAlign="center">
-          <Text size="lg" weight="semibold" hasTabularNumbers>
-            {money(b.amount_cents)}
-          </Text>
-          <Button label="Reject" variant="ghost" onClick={onReject} />
-          {item.action === 'approve' && <Button label="Approve" variant="primary" clickAction={onApprove} />}
-          {item.action === 'release' && <Button label="Pay…" variant="primary" onClick={onRelease} />}
-        </HStack>
-      </HStack>
-    </Card>
+    <div className="payvy-queue-row">
+      <span className="payvy-vendor-glyph" aria-hidden="true">{b.vendor_name.slice(0, 1).toUpperCase()}</span>
+      <div className="payvy-queue-description">
+        <Link href={`/bills/${b.id}`} isStandalone>{b.vendor_name}</Link>
+        <span className="payvy-muted">{b.invoice_number}{b.memo ? ` · ${b.memo}` : ''}</span>
+      </div>
+      <div className="payvy-queue-due">
+        <span>{b.due_date ? date(b.due_date) : 'No due date'}</span>
+        {dueLabel(b.due_date) && <DueText iso={b.due_date} />}
+      </div>
+      <strong className="payvy-queue-amount">{money(b.amount_cents)}</strong>
+      <div className="payvy-queue-actions">
+        <Button label="Reject" variant="ghost" size="sm" onClick={onReject} />
+        {item.action === 'approve' && <Button label="Approve" variant="primary" size="sm" clickAction={onApprove} />}
+        {item.action === 'release' && <Button label="Pay…" variant="primary" size="sm" onClick={onRelease} />}
+      </div>
+    </div>
   );
 }
 
