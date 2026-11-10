@@ -12,7 +12,9 @@ import { linkAfter, logMark } from './mail';
 import {
   ADMIN_URL,
   APP_URL,
+  API_URL,
   BASE_URL,
+  EDGE_PORT,
   MODEL_PORT,
   BANK_PORT,
   PERSON,
@@ -35,7 +37,7 @@ async function waitForHealth(server: ReturnType<typeof spawn>, log: string) {
       throw new Error(`payvy serve exited (${server.exitCode}):\n${fs.readFileSync(log, 'utf8')}`);
     }
     try {
-      if ((await fetch(`${BASE_URL}/health`)).ok) return;
+      if ((await fetch(`${API_URL}/health`)).ok) return;
     } catch {
       // not listening yet
     }
@@ -101,6 +103,17 @@ export default async function globalSetup() {
   const server = spawn(BIN, ['serve'], { env, stdio: ['ignore', out, out] });
   await waitForHealth(server, serverLog);
 
+  // Exercise the same asset routing and streaming proxy as Cloudflare, against
+  // this run's isolated Rust server. No production API or bank is contacted.
+  const edge = EDGE_PORT ? await (await import('wrangler')).unstable_dev(
+    path.join(ROOT, 'web/worker/index.ts'), {
+      config: path.join(ROOT, 'web/wrangler.jsonc'), env: 'local',
+      ip: '127.0.0.1', port: EDGE_PORT, inspectorPort: 0, local: true,
+      vars: { API_ORIGIN: API_URL }, persist: false, logLevel: 'error',
+      experimental: { disableExperimentalWarning: true, disableDevRegistry: true, watch: false },
+    },
+  ) : null;
+
   const cli = (...args: string[]) => execFileSync(BIN, args, { env, encoding: 'utf8', stdio: 'pipe' });
   cli('person', 'add', '--email', PERSON.email, '--name', PERSON.name);
   const agentKey = /pv_[0-9a-f]+/.exec(cli('key', 'create', '--kind', 'agent', '--actor', 'claude-ap'))?.[0];
@@ -142,6 +155,7 @@ export default async function globalSetup() {
   fs.writeFileSync(STATE_FILE, JSON.stringify({ agentKey, serverLog, mercuryUrl: `http://127.0.0.1:${BANK_PORT}/mercury` } satisfies State));
 
   return async () => {
+    await edge?.stop();
     server.kill('SIGTERM');
     await new Promise((r) => server.once('exit', r));
     model.close();

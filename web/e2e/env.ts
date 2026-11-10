@@ -12,7 +12,9 @@ export const STATE_FILE = path.join(STATE_DIR, 'state.json');
 export const PORT = Number(process.env.PAYVY_E2E_PORT ?? 7431);
 export const MODEL_PORT = Number(process.env.PAYVY_E2E_MODEL_PORT ?? 7432);
 export const BANK_PORT = Number(process.env.PAYVY_E2E_BANK_PORT ?? 7433);
-export const BASE_URL = `http://127.0.0.1:${PORT}`;
+export const EDGE_PORT = process.env.PAYVY_E2E_EDGE_PORT ? Number(process.env.PAYVY_E2E_EDGE_PORT) : null;
+export const API_URL = `http://127.0.0.1:${PORT}`;
+export const BASE_URL = `http://127.0.0.1:${EDGE_PORT ?? PORT}`;
 
 // The docker compose stores (see .env.example).
 export const ADMIN_URL = process.env.PAYVY_TEST_ADMIN_URL ?? 'postgres://postgres:postgres@127.0.0.1:5446/postgres';

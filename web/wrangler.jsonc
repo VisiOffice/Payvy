@@ -1,0 +1,24 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "payvy-web",
+  "account_id": "65a93a8aa12255c42cb5bbaa1d1a2ea2",
+  "main": "worker/index.ts",
+  "compatibility_date": "2025-10-01",
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [{ "pattern": "beta.payvy.com", "custom_domain": true }],
+  "vars": { "API_ORIGIN": "https://dev.payvy.com" },
+  "assets": {
+    "directory": "./dist",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api", "/api/*", "/auth", "/auth/*"]
+  },
+  "env": {
+    "local": {
+      "name": "payvy-web-local",
+      "workers_dev": false,
+      "routes": [],
+      "vars": { "API_ORIGIN": "http://127.0.0.1:7430" }
+    }
+  }
+}

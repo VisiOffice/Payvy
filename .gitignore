@@ -7,3 +7,5 @@ web/dist/
 web/e2e/.state/
 web/test-results/
 web/playwright-report/
+.wrangler/
+.dev.vars*
