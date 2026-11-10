@@ -74,9 +74,37 @@ second. A definite refusal fails the attempt; the next release is a new attempt 
 Mercury also refuses a payment that matches one to the same recipient, amount and method in the
 last 24 hours. Payvy shows that as a failed payment with Mercury's reason.
 
+## Rho: read-only visibility
+
+Rho's API (v1) only reads: accounts and transactions. So a Rho connection
+coexists with the paying bank — it never replaces it, holds no payees, and
+cannot pay. It answers "what's in the bank, and what moved":
+
+1. In Rho, create an API Access Token (Settings → API → Access Tokens) with
+   `accounts:read` and `transactions:read` only. It's shown once.
+2. A person connects it: `bank.connect { "provider": "rho", "token": "rhobat_…" }`
+   (`"environment": "sandbox"` against Rho's sandbox, which takes any token).
+   Payvy seals the token like Mercury's. With several Rho accounts, the result
+   names the display account it picked (the first, unless `account_id` chose one).
+3. Anyone with a key can then call `bank.accounts` (balances, in cents) and
+   `bank.transactions` (signed cents — negative is money out — with
+   counterparty, status and posted time; filter by account, dates, search,
+   limit). Amounts come from Rho as integer minor units, unchanged.
+4. `bill.release` with only Rho connected behaves as with no paying bank:
+   Payvy won't send the payment — pay it another way, then `bill.mark_paid`.
+   `bank.disconnect` with `"provider": "rho"` removes just Rho; the default
+   removes the paying bank.
+
+Rho tokens expire after 45 days unused (a year at most). When one lapses,
+reads fail with a clear "Rho refused this token" and a person reconnects.
+Stored transaction sync and matching bank transactions to bills are not
+built yet — reads are live from Rho each time.
+
 ## Not yet
 
 - Paying automatically when a workflow's `pay` step is `auto` (today a person releases).
 - Inviting a vendor to enter their own bank details in Mercury.
 - Bills in other currencies, and Wise and Airwallex for international payments.
 - Ramp and Brex.
+- Paying through Rho (its current API doesn't offer it to us), and stored
+  Rho transaction sync for reconciliation matching.

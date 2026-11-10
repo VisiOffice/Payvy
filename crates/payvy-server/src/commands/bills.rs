@@ -455,9 +455,11 @@ pub async fn release(cx: &mut Cx<'_>, input: Release) -> Result<Value, CommandEr
             )));
         }
     }
-    // With a bank connected, a release pays through it, to the payee a
-    // person accepted for this vendor.
-    let connection = store::live_connection(&mut cx.tx).await?;
+    // With a paying bank connected, a release pays through it, to the payee a
+    // person accepted for this vendor. With no paying bank — Rho connected
+    // or none — a release records that it will be paid elsewhere, exactly
+    // as it did before Rho existed.
+    let connection = store::live_paying_connection(&mut cx.tx).await?;
     let pay = match (&connection, input.pay_elsewhere) {
         (Some(c), false) => {
             let vendor = store::get_vendor(&mut cx.tx, bill.vendor_id)

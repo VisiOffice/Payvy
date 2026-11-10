@@ -96,6 +96,8 @@ pub struct Bank {
     pub sealer: secrets::Sealer,
     pub mercury_production: String,
     pub mercury_sandbox: String,
+    pub rho_production: String,
+    pub rho_sandbox: String,
 }
 
 impl Bank {
@@ -104,6 +106,8 @@ impl Bank {
             sealer,
             mercury_production: payvy_pay::MERCURY_PRODUCTION.into(),
             mercury_sandbox: payvy_pay::MERCURY_SANDBOX.into(),
+            rho_production: payvy_pay::RHO_PRODUCTION.into(),
+            rho_sandbox: payvy_pay::RHO_SANDBOX.into(),
         }
     }
 }

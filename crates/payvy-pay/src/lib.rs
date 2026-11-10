@@ -15,6 +15,10 @@
 //!
 //! Ramp, Brex, Wise and Airwallex fit the same shape: list recipients, send
 //! or request a payment under an idempotency key, read its status.
+//!
+//! Rho is the exception that proves the capability split: its API only
+//! reads accounts and transactions, so its client below has no pay method
+//! at all — a read-only connection can never pay by construction.
 
 use std::time::Duration;
 
@@ -479,6 +483,204 @@ impl Mercury {
     }
 }
 
+/// One Rho transaction. Amounts are signed integer minor units at Rho
+/// (negative = money out), and Payvy keeps that exact value — no float.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RhoTransaction {
+    pub id: String,
+    pub account_id: String,
+    pub account_name: String,
+    pub transaction_type: String,
+    pub status: String,
+    /// Signed cents: negative for an outflow, positive for an inflow.
+    pub amount_cents: i64,
+    pub currency: String,
+    pub counterparty_name: String,
+    pub initiated_at: String,
+    pub posted_at: Option<String>,
+    pub memo: Option<String>,
+    pub note: Option<String>,
+    pub money_movement_id: Option<String>,
+}
+
+/// Filters for `Rho::transactions`. Times are ISO 8601, passed through.
+#[derive(Debug, Clone, Default)]
+pub struct RhoTransactionQuery {
+    pub account_id: Option<String>,
+    pub posted_after: Option<String>,
+    pub posted_before: Option<String>,
+    pub initiated_after: Option<String>,
+    pub initiated_before: Option<String>,
+    pub search: Option<String>,
+    /// Stop after this many transactions (pages of 100 underneath).
+    pub limit: usize,
+}
+
+/// Rho (rho.co): a read-only bank connection. Its API v1 covers accounts
+/// and transactions only, so this client can look and can never pay:
+/// there is no pay method to call by mistake.
+pub struct Rho {
+    base: String,
+    token: String,
+    http: reqwest::Client,
+}
+
+pub const RHO_PRODUCTION: &str = "https://rhoapi.rho.co/api/v1";
+pub const RHO_SANDBOX: &str = "https://rhoapi-sandbox.rho.co/api/v1";
+
+impl Rho {
+    pub fn new(base: &str, token: &str) -> anyhow::Result<Self> {
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(60))
+            .build()?;
+        Ok(Self {
+            base: base.trim_end_matches('/').to_owned(),
+            token: token.trim().to_owned(),
+            http,
+        })
+    }
+
+    async fn get(&self, path: &str, query: &[(&str, String)]) -> Result<Value, BankError> {
+        let res = self
+            .http
+            .get(format!("{}{path}", self.base))
+            .query(query)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| BankError::Unclear(format!("couldn't reach Rho: {e}")))?;
+        let status = res.status().as_u16();
+        let body: Value = res.json().await.unwrap_or(Value::Null);
+        if (200..300).contains(&status) {
+            return Ok(body);
+        }
+        // Rho errors are RFC 9457 problem+json: detail, else title.
+        let message = body["detail"]
+            .as_str()
+            .or_else(|| body["title"].as_str())
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("HTTP {status}"));
+        Err(match status {
+            401 | 403 => BankError::Unauthorized(message),
+            400..=499 => BankError::Refused(message),
+            _ => BankError::Unclear(message),
+        })
+    }
+
+    fn account(a: &Value) -> Account {
+        Account {
+            id: a["id"].as_str().unwrap_or_default().to_owned(),
+            name: a["account_name"].as_str().unwrap_or_default().to_owned(),
+            // Rho's account shape has no status field; a listed account
+            // is readable. Rho never sends, so this pays no one either way.
+            status: "active".into(),
+            available_cents: a["balance"]["amount"].as_i64().unwrap_or(0),
+            can_send_real_time: false,
+        }
+    }
+
+    fn transaction(t: &Value) -> RhoTransaction {
+        RhoTransaction {
+            id: t["id"].as_str().unwrap_or_default().to_owned(),
+            account_id: t["account_id"].as_str().unwrap_or_default().to_owned(),
+            account_name: t["account_name"].as_str().unwrap_or_default().to_owned(),
+            transaction_type: t["transaction_type"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned(),
+            status: t["status"].as_str().unwrap_or_default().to_owned(),
+            amount_cents: t["amount"]["amount"].as_i64().unwrap_or(0),
+            currency: t["amount"]["currency"].as_str().unwrap_or("USD").to_owned(),
+            counterparty_name: t["counterparty_name"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned(),
+            initiated_at: t["initiated_at"].as_str().unwrap_or_default().to_owned(),
+            posted_at: t["posted_at"].as_str().map(str::to_owned),
+            memo: t["memo"].as_str().map(str::to_owned),
+            note: t["note"].as_str().map(str::to_owned),
+            money_movement_id: t["money_movement_id"].as_str().map(str::to_owned),
+        }
+    }
+
+    /// Every account, following Rho's cursor pages.
+    pub async fn accounts(&self) -> Result<Vec<Account>, BankError> {
+        let mut out = Vec::new();
+        let mut token: Option<String> = None;
+        for _ in 0..50 {
+            let mut query: Vec<(&str, String)> = vec![("page_size", "100".into())];
+            if let Some(t) = &token {
+                query.push(("page_token", t.clone()));
+            }
+            let body = self.get("/accounts", &query).await?;
+            out.extend(
+                body["accounts"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(Self::account),
+            );
+            match body["page"]["next_page_token"].as_str() {
+                Some(next) if !next.is_empty() => token = Some(next.to_owned()),
+                _ => return Ok(out),
+            }
+        }
+        Ok(out)
+    }
+
+    /// Transactions matching the query, following cursor pages until the
+    /// limit is met or Rho runs out.
+    pub async fn transactions(
+        &self,
+        q: &RhoTransactionQuery,
+    ) -> Result<Vec<RhoTransaction>, BankError> {
+        let limit = if q.limit == 0 { 100 } else { q.limit.min(1000) };
+        let mut out: Vec<RhoTransaction> = Vec::new();
+        let mut token: Option<String> = None;
+        for _ in 0..50 {
+            let mut query: Vec<(&str, String)> = vec![("page_size", "100".into())];
+            if let Some(v) = &q.account_id {
+                query.push(("account_id", v.clone()));
+            }
+            if let Some(v) = &q.posted_after {
+                query.push(("posted_after", v.clone()));
+            }
+            if let Some(v) = &q.posted_before {
+                query.push(("posted_before", v.clone()));
+            }
+            if let Some(v) = &q.initiated_after {
+                query.push(("initiated_after", v.clone()));
+            }
+            if let Some(v) = &q.initiated_before {
+                query.push(("initiated_before", v.clone()));
+            }
+            if let Some(v) = &q.search {
+                query.push(("search", v.clone()));
+            }
+            if let Some(t) = &token {
+                query.push(("page_token", t.clone()));
+            }
+            let body = self.get("/transactions", &query).await?;
+            out.extend(
+                body["transactions"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(Self::transaction),
+            );
+            if out.len() >= limit {
+                out.truncate(limit);
+                return Ok(out);
+            }
+            match body["page"]["next_page_token"].as_str() {
+                Some(next) if !next.is_empty() => token = Some(next.to_owned()),
+                _ => return Ok(out),
+            }
+        }
+        Ok(out)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -511,6 +713,39 @@ mod tests {
         assert_eq!(r("rejected"), Status::Rejected);
         assert!(Status::Returned.did_not_pay() && Status::Sent.is_final());
         assert!(!Status::Pending.is_final());
+    }
+
+    #[test]
+    fn rho_amounts_are_signed_minor_units() {
+        let a = Rho::account(&json!({
+            "id": "acc-1", "account_name": "Operating", "account_type": "checking",
+            "balance": { "amount": 5200050, "currency": "USD" }, "account_number_last_4": "6789"
+        }));
+        assert_eq!(a.id, "acc-1");
+        assert_eq!(a.name, "Operating");
+        assert_eq!(a.available_cents, 5_200_050);
+        assert!(!a.can_send_real_time);
+        let shown = serde_json::to_string(&a).unwrap();
+        assert!(
+            !shown.contains("6789"),
+            "account numbers never surface: {shown}"
+        );
+        let t = Rho::transaction(&json!({
+            "id": "txn-1", "account_id": "acc-1", "account_name": "Operating",
+            "transaction_type": "ach_debit", "status": "settled",
+            "amount": { "amount": -245000, "currency": "USD" },
+            "counterparty_name": "Northline Supply", "initiated_at": "2026-11-01T09:00:00Z",
+            "posted_at": "2026-11-03T09:00:00Z", "memo": "INV-1042", "money_movement_id": "mm-1"
+        }));
+        assert_eq!(t.amount_cents, -245_000);
+        assert_eq!(t.counterparty_name, "Northline Supply");
+        assert_eq!(t.posted_at.as_deref(), Some("2026-11-03T09:00:00Z"));
+        let credit = Rho::transaction(&json!({
+            "id": "txn-2", "account_id": "acc-1", "transaction_type": "ach_credit", "status": "pending",
+            "amount": { "amount": 100, "currency": "USD" }, "initiated_at": "2026-11-04T09:00:00Z"
+        }));
+        assert_eq!(credit.amount_cents, 100);
+        assert_eq!(credit.posted_at, None);
     }
 
     #[test]

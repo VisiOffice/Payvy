@@ -265,19 +265,45 @@ export interface PersonRemoveInput {
 }
 
 export interface BankConnectInput {
-  provider: "mercury";
+  provider: "mercury" | "rho";
   token: string;
   environment?: "production" | "sandbox";
+  /**
+   * Mercury only: how payments are sent. Rho is always read-only.
+   */
   mode?: "request" | "direct";
   /**
-   * The account to pay from, if there is more than one
+   * The account to pay from (Mercury) or display (Rho), if there is more than one
    */
   account_id?: string;
 }
 
 export interface BankGetInput {}
 
-export interface BankDisconnectInput {}
+export interface BankDisconnectInput {
+  provider?: "mercury" | "rho";
+}
+
+export interface BankAccountsInput {}
+
+export interface BankTransactionsInput {
+  account_id?: string;
+  /**
+   * ISO 8601, inclusive
+   */
+  posted_after?: string;
+  /**
+   * ISO 8601, exclusive
+   */
+  posted_before?: string;
+  initiated_after?: string;
+  initiated_before?: string;
+  /**
+   * Counterparty, memo or note text
+   */
+  search?: string;
+  limit?: number;
+}
 
 export interface BankRecipientsInput {
   /**
@@ -381,6 +407,8 @@ export interface CommandInputs {
   "bank.connect": BankConnectInput;
   "bank.get": BankGetInput;
   "bank.disconnect": BankDisconnectInput;
+  "bank.accounts": BankAccountsInput;
+  "bank.transactions": BankTransactionsInput;
   "bank.recipients": BankRecipientsInput;
   "payment.list": PaymentListInput;
   "payment.refresh": PaymentRefreshInput;
@@ -426,9 +454,11 @@ export const COMMANDS: Record<CommandName, { tier: Tier; personOnly: boolean; su
   "person.list": { tier: "read", personOnly: false, summary: "Everyone who can sign in to the web app, with the actor name their actions are recorded under." },
   "person.add": { tier: "routine", personOnly: true, summary: "Let someone sign in to the web app with a link sent to their email. They act as the person named by actor, with every right a person has: approving, releasing payments, accepting payees and workflows." },
   "person.remove": { tier: "routine", personOnly: true, summary: "Stop someone signing in, and sign them out everywhere. Their past actions stay on the record." },
-  "bank.connect": { tier: "routine", personOnly: true, summary: "Connect the bank bills are paid from (Mercury) with an API token from its dashboard, replacing any earlier connection. Payvy keeps the token encrypted and never holds money or account numbers. mode request (default): payments wait in Mercury for a Mercury admin to approve them; needs a Custom token with the RequestSendMoney scope. mode direct: payments go at once; needs a Read and Write token that allows this server's IP." },
-  "bank.get": { tier: "read", personOnly: false, summary: "The connected bank: provider, account paid from and mode. Null when none is connected." },
-  "bank.disconnect": { tier: "routine", personOnly: true, summary: "Disconnect the bank. No new payments are sent; ones already sent are still tracked." },
+  "bank.connect": { tier: "routine", personOnly: true, summary: "Connect a bank with an API token from its dashboard. Mercury pays bills: mode request (default) waits in Mercury for a Mercury admin (Custom token, RequestSendMoney scope); mode direct sends at once (Read and Write token, server IP allowlisted). Rho is always read-only (no mode to choose): it never pays and never replaces the paying bank; create its token in Rho Settings > API > Access Tokens with accounts:read and transactions:read. Payvy keeps tokens encrypted and never holds money or account numbers." },
+  "bank.get": { tier: "read", personOnly: false, summary: "The connected banks: connection is the paying bank (Mercury) or null, connections lists every live connection with its capability (pay or read_only)." },
+  "bank.disconnect": { tier: "routine", personOnly: true, summary: "Disconnect a bank (the paying one by default, or provider rho for the read-only one). No new payments are sent through a disconnected paying bank; ones already sent are still tracked." },
+  "bank.accounts": { tier: "read", personOnly: false, summary: "Accounts at the read-only Rho connection, with balances in cents. Empty object input; refuses when no Rho connection is live." },
+  "bank.transactions": { tier: "read", personOnly: false, summary: "Transactions from the read-only Rho connection: signed amounts in cents (negative is money out), counterparty, status and posted time. Filter by account, date and search text." },
   "bank.recipients": { tier: "read", personOnly: false, summary: "Recipients set up in the connected bank, with the ways each can be paid and the last four digits of each account. Use one with vendor.propose_payee." },
   "payment.list": { tier: "read", personOnly: false, summary: "Payments sent through the bank, newest first, or only those still waiting on the bank." },
   "payment.refresh": { tier: "routine", personOnly: false, summary: "Ask the bank where a payment stands now and record it: sent marks the bill paid; failed, cancelled or rejected sends the bill back for release; returned reopens a paid bill. Payvy does this on its own every minute or two." },

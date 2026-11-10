@@ -218,24 +218,38 @@ pub const COMMANDS: &[CommandSpec] = &[
     // ── Bank and payments ───────────────────────────────────────────────────
     CommandSpec {
         name: "bank.connect",
-        summary: "Connect the bank bills are paid from (Mercury) with an API token from its dashboard, replacing any earlier connection. Payvy keeps the token encrypted and never holds money or account numbers. mode request (default): payments wait in Mercury for a Mercury admin to approve them; needs a Custom token with the RequestSendMoney scope. mode direct: payments go at once; needs a Read and Write token that allows this server's IP.",
+        summary: "Connect a bank with an API token from its dashboard. Mercury pays bills: mode request (default) waits in Mercury for a Mercury admin (Custom token, RequestSendMoney scope); mode direct sends at once (Read and Write token, server IP allowlisted). Rho is always read-only (no mode to choose): it never pays and never replaces the paying bank; create its token in Rho Settings > API > Access Tokens with accounts:read and transactions:read. Payvy keeps tokens encrypted and never holds money or account numbers.",
         tier: RiskTier::Routine,
         person_only: true,
-        input_schema: r#"{"type":"object","required":["provider","token"],"properties":{"provider":{"type":"string","enum":["mercury"]},"token":{"type":"string"},"environment":{"type":"string","enum":["production","sandbox"]},"mode":{"type":"string","enum":["request","direct"]},"account_id":{"type":"string","description":"The account to pay from, if there is more than one"}}}"#,
+        input_schema: r#"{"type":"object","required":["provider","token"],"properties":{"provider":{"type":"string","enum":["mercury","rho"]},"token":{"type":"string"},"environment":{"type":"string","enum":["production","sandbox"]},"mode":{"type":"string","enum":["request","direct"],"description":"Mercury only: how payments are sent. Rho is always read-only."},"account_id":{"type":"string","description":"The account to pay from (Mercury) or display (Rho), if there is more than one"}}}"#,
     },
     CommandSpec {
         name: "bank.get",
-        summary: "The connected bank: provider, account paid from and mode. Null when none is connected.",
+        summary: "The connected banks: connection is the paying bank (Mercury) or null, connections lists every live connection with its capability (pay or read_only).",
         tier: RiskTier::Read,
         person_only: false,
         input_schema: r#"{"type":"object","properties":{}}"#,
     },
     CommandSpec {
         name: "bank.disconnect",
-        summary: "Disconnect the bank. No new payments are sent; ones already sent are still tracked.",
+        summary: "Disconnect a bank (the paying one by default, or provider rho for the read-only one). No new payments are sent through a disconnected paying bank; ones already sent are still tracked.",
         tier: RiskTier::Routine,
         person_only: true,
+        input_schema: r#"{"type":"object","properties":{"provider":{"type":"string","enum":["mercury","rho"]}}}"#,
+    },
+    CommandSpec {
+        name: "bank.accounts",
+        summary: "Accounts at the read-only Rho connection, with balances in cents. Empty object input; refuses when no Rho connection is live.",
+        tier: RiskTier::Read,
+        person_only: false,
         input_schema: r#"{"type":"object","properties":{}}"#,
+    },
+    CommandSpec {
+        name: "bank.transactions",
+        summary: "Transactions from the read-only Rho connection: signed amounts in cents (negative is money out), counterparty, status and posted time. Filter by account, date and search text.",
+        tier: RiskTier::Read,
+        person_only: false,
+        input_schema: r#"{"type":"object","properties":{"account_id":{"type":"string"},"posted_after":{"type":"string","description":"ISO 8601, inclusive"},"posted_before":{"type":"string","description":"ISO 8601, exclusive"},"initiated_after":{"type":"string"},"initiated_before":{"type":"string"},"search":{"type":"string","description":"Counterparty, memo or note text"},"limit":{"type":"integer","minimum":1,"maximum":1000}}}"#,
     },
     CommandSpec {
         name: "bank.recipients",

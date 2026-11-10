@@ -255,7 +255,9 @@ async fn db() -> Option<(TestDb, Fake)> {
     db.state = db.state.clone().with_bank(Bank {
         sealer: Sealer::from_hex(&"5a".repeat(32)).unwrap(),
         mercury_production: base.clone(),
-        mercury_sandbox: base,
+        mercury_sandbox: base.clone(),
+        rho_production: base.clone(),
+        rho_sandbox: base,
     });
     Some((db, fake))
 }

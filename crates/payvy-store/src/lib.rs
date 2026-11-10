@@ -1463,12 +1463,42 @@ pub struct NewConnection<'a> {
     pub created_by: &'a str,
 }
 
-pub async fn live_connection(tx: &mut Tx) -> anyhow::Result<Option<BankConnection>> {
+/// The live paying connection (Mercury), if any. Read-only connections
+/// (Rho) never pay, so they don't count here.
+pub async fn live_paying_connection(tx: &mut Tx) -> anyhow::Result<Option<BankConnection>> {
     let row = sqlx::query(concat!(
         "SELECT ",
         connection_cols!(),
-        " FROM bank_connections WHERE retired_at IS NULL"
+        " FROM bank_connections WHERE retired_at IS NULL AND mode <> 'read_only'"
     ))
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(row.as_ref().map(connection))
+}
+
+/// Every live connection, paying and read-only, oldest first.
+pub async fn live_connections(tx: &mut Tx) -> anyhow::Result<Vec<BankConnection>> {
+    let rows = sqlx::query(concat!(
+        "SELECT ",
+        connection_cols!(),
+        " FROM bank_connections WHERE retired_at IS NULL ORDER BY created_at, id"
+    ))
+    .fetch_all(&mut **tx)
+    .await?;
+    Ok(rows.iter().map(connection).collect())
+}
+
+/// The live read-only connection for a provider (e.g. Rho), if any.
+pub async fn live_read_connection(
+    tx: &mut Tx,
+    provider: &str,
+) -> anyhow::Result<Option<BankConnection>> {
+    let row = sqlx::query(concat!(
+        "SELECT ",
+        connection_cols!(),
+        " FROM bank_connections WHERE retired_at IS NULL AND mode = 'read_only' AND provider = $1"
+    ))
+    .bind(provider)
     .fetch_optional(&mut **tx)
     .await?;
     Ok(row.as_ref().map(connection))
@@ -1486,13 +1516,35 @@ pub async fn get_connection(tx: &mut Tx, id: Uuid) -> anyhow::Result<Option<Bank
     Ok(row.as_ref().map(connection))
 }
 
-/// Retires the live connection, if any. True if there was one.
-pub async fn retire_connection(tx: &mut Tx, at: DateTime<Utc>, by: &str) -> anyhow::Result<bool> {
+/// Retires the live paying connection, if any. True if there was one.
+pub async fn retire_paying_connection(
+    tx: &mut Tx,
+    at: DateTime<Utc>,
+    by: &str,
+) -> anyhow::Result<bool> {
     let done = sqlx::query(
-        "UPDATE bank_connections SET retired_at = $1, retired_by = $2 WHERE retired_at IS NULL",
+        "UPDATE bank_connections SET retired_at = $1, retired_by = $2 WHERE retired_at IS NULL AND mode <> 'read_only'",
     )
     .bind(at)
     .bind(by)
+    .execute(&mut **tx)
+    .await?;
+    Ok(done.rows_affected() > 0)
+}
+
+/// Retires one live connection by id, if it is still live.
+pub async fn retire_connection_by_id(
+    tx: &mut Tx,
+    id: Uuid,
+    at: DateTime<Utc>,
+    by: &str,
+) -> anyhow::Result<bool> {
+    let done = sqlx::query(
+        "UPDATE bank_connections SET retired_at = $1, retired_by = $2 WHERE retired_at IS NULL AND id = $3",
+    )
+    .bind(at)
+    .bind(by)
+    .bind(id)
     .execute(&mut **tx)
     .await?;
     Ok(done.rows_affected() > 0)

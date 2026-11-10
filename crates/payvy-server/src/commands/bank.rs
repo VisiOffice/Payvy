@@ -2,7 +2,7 @@
 //! Payvy keeps the bank's API token sealed and the recipient's id; account
 //! numbers stay in the bank, and people see only the last four digits.
 
-use payvy_pay::{BankError, Mercury, Method, Mode};
+use payvy_pay::{BankError, Mercury, Method, Mode, Rho, RhoTransactionQuery};
 use payvy_store::{self as store, BankConnection, NewConnection, NewPayee};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -42,11 +42,36 @@ pub(super) fn mercury(cx: &Cx<'_>, c: &BankConnection) -> Result<Mercury, Comman
 }
 
 pub(super) async fn live(cx: &mut Cx<'_>) -> Result<BankConnection, CommandError> {
-    store::live_connection(&mut cx.tx).await?.ok_or_else(|| {
-        CommandError::Conflict(
-            "no bank is connected; a person connects one with bank.connect".into(),
-        )
-    })
+    store::live_paying_connection(&mut cx.tx)
+        .await?
+        .ok_or_else(|| {
+            CommandError::Conflict(
+                "no paying bank is connected; a person connects one with bank.connect".into(),
+            )
+        })
+}
+
+/// A client for the live read-only Rho connection, with its token unsealed.
+pub(super) fn rho_client(cx: &Cx<'_>, c: &BankConnection) -> Result<Rho, CommandError> {
+    let bank = cx.bank()?;
+    let token = bank
+        .sealer
+        .open(cx.org, &sealed_as(c.id), &c.token_sealed)?;
+    let base = match c.environment.as_str() {
+        "sandbox" => &bank.rho_sandbox,
+        _ => &bank.rho_production,
+    };
+    Ok(Rho::new(base, &token)?)
+}
+
+pub(super) async fn live_rho(cx: &mut Cx<'_>) -> Result<BankConnection, CommandError> {
+    store::live_read_connection(&mut cx.tx, "rho")
+        .await?
+        .ok_or_else(|| {
+            CommandError::Conflict(
+                "no read-only Rho connection; a person connects one with bank.connect".into(),
+            )
+        })
 }
 
 #[derive(Deserialize)]
@@ -59,11 +84,103 @@ pub struct Connect {
     account_id: Option<String>,
 }
 
+/// Rho is read-only: it validates with accounts:read, never retires the
+/// paying connection, and stores mode read_only so the pay path can't
+/// pick it up by mistake.
+async fn connect_rho(cx: &mut Cx<'_>, input: &Connect) -> Result<Value, CommandError> {
+    let bank = cx.bank()?;
+    if let Some(m) = input.mode.as_deref()
+        && m != "read_only"
+    {
+        return Err(CommandError::Invalid(
+            "Rho is read-only; mode is read_only".into(),
+        ));
+    }
+    let environment = input.environment.as_deref().unwrap_or("production");
+    let base = match environment {
+        "production" => &bank.rho_production,
+        "sandbox" => &bank.rho_sandbox,
+        _ => {
+            return Err(CommandError::Invalid(
+                "environment is production or sandbox".into(),
+            ));
+        }
+    };
+    let token = input.token.trim();
+    if token.is_empty() {
+        return Err(CommandError::Invalid("token can't be empty".into()));
+    }
+    let client = Rho::new(base, token)?;
+    let accounts = client.accounts().await.map_err(|e| match e {
+        BankError::Unauthorized(m) => CommandError::Invalid(format!(
+            "Rho refused this token ({m}); create one in Rho Settings > API > Access Tokens with accounts:read and transactions:read, or reconnect — tokens expire after 45 days unused"
+        )),
+        e => e.into(),
+    })?;
+    let account = match &input.account_id {
+        Some(id) => accounts
+            .iter()
+            .find(|a| a.id == *id)
+            .ok_or_else(|| CommandError::Invalid(format!("no Rho account {id}")))?,
+        None if accounts.len() == 1 => &accounts[0],
+        None if accounts.is_empty() => {
+            return Err(CommandError::Invalid(
+                "Rho returned no accounts for this token".into(),
+            ));
+        }
+        // Several accounts: the first is the display account; every
+        // account stays readable through bank.accounts.
+        None => &accounts[0],
+    };
+    let id = Uuid::new_v4();
+    let sealed = bank.sealer.seal(cx.org, &sealed_as(id), token)?;
+    let previous = store::live_read_connection(&mut cx.tx, "rho").await?;
+    let replaced = match &previous {
+        Some(p) => store::retire_connection_by_id(&mut cx.tx, p.id, cx.now, &cx.actor.name).await?,
+        None => false,
+    };
+    let c = store::insert_connection(
+        &mut cx.tx,
+        cx.org,
+        &NewConnection {
+            id,
+            provider: "rho",
+            environment,
+            mode: "read_only",
+            account_id: &account.id,
+            account_name: &account.name,
+            token_sealed: &sealed,
+            created_at: cx.now,
+            created_by: &cx.actor.name,
+        },
+    )
+    .await?;
+    cx.emit(
+        "bank.connected",
+        c.id,
+        json!({ "connection_id": c.id, "provider": "rho", "environment": environment,
+                "mode": "read_only", "capability": "read_only", "account_name": account.name,
+                "replaced_previous": replaced }),
+    )
+    .await?;
+    Ok(json!({ "connection": c, "capability": "read_only",
+        "display_account": { "id": account.id, "name": account.name },
+        "note": if input.account_id.is_none() && accounts.len() > 1 {
+            format!("{} is the display account (the first of {} Rho accounts); every account stays readable with bank.accounts. Pass account_id to choose another.", account.name, accounts.len())
+        } else {
+            format!("{} is the display account; every account stays readable with bank.accounts.", account.name)
+        },
+        "how_it_works": "Rho is read-only in Payvy: it shows accounts, balances and transactions (bank.accounts, bank.transactions). It cannot pay bills — releases still go through a paying bank such as Mercury." }))
+}
+
 pub async fn connect(cx: &mut Cx<'_>, input: Connect) -> Result<Value, CommandError> {
     let bank = cx.bank()?;
+    if input.provider == "rho" {
+        return connect_rho(cx, &input).await;
+    }
     if input.provider != "mercury" {
         return Err(CommandError::Invalid(
-            "provider is mercury (Ramp, Brex, Wise and Airwallex are planned)".into(),
+            "provider is mercury or rho (Ramp, Brex, Wise and Airwallex are planned)".into(),
         ));
     }
     let environment = input.environment.unwrap_or_else(|| "production".into());
@@ -116,7 +233,7 @@ pub async fn connect(cx: &mut Cx<'_>, input: Connect) -> Result<Value, CommandEr
     };
     let id = Uuid::new_v4();
     let sealed = bank.sealer.seal(cx.org, &sealed_as(id), token)?;
-    let replaced = store::retire_connection(&mut cx.tx, cx.now, &cx.actor.name).await?;
+    let replaced = store::retire_paying_connection(&mut cx.tx, cx.now, &cx.actor.name).await?;
     let c = store::insert_connection(
         &mut cx.tx,
         cx.org,
@@ -151,23 +268,100 @@ pub async fn connect(cx: &mut Cx<'_>, input: Connect) -> Result<Value, CommandEr
     Ok(json!({ "connection": c, "how_payments_work": how }))
 }
 
-pub async fn get(cx: &mut Cx<'_>) -> Result<Value, CommandError> {
-    Ok(json!({ "connection": store::live_connection(&mut cx.tx).await? }))
+fn capability(c: &BankConnection) -> &'static str {
+    if c.mode == "read_only" {
+        "read_only"
+    } else {
+        "pay"
+    }
 }
 
-pub async fn disconnect(cx: &mut Cx<'_>) -> Result<Value, CommandError> {
-    let c = live(cx).await?;
-    store::retire_connection(&mut cx.tx, cx.now, &cx.actor.name).await?;
+pub async fn get(cx: &mut Cx<'_>) -> Result<Value, CommandError> {
+    let paying = store::live_paying_connection(&mut cx.tx).await?;
+    let all = store::live_connections(&mut cx.tx).await?;
+    let connections: Vec<Value> = all
+        .iter()
+        .map(|c| {
+            let mut v = serde_json::to_value(c).unwrap_or(Value::Null);
+            v["capability"] = json!(capability(c));
+            v
+        })
+        .collect();
+    Ok(json!({ "connection": paying, "connections": connections }))
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields, default)]
+pub struct Disconnect {
+    provider: Option<String>,
+}
+
+pub async fn disconnect(cx: &mut Cx<'_>, input: Disconnect) -> Result<Value, CommandError> {
+    let c = match input.provider.as_deref() {
+        None => live(cx).await?,
+        Some("rho") => live_rho(cx).await?,
+        Some(p) => {
+            let paying = live(cx).await?;
+            if paying.provider != p {
+                return Err(CommandError::NotFound("live bank connection"));
+            }
+            paying
+        }
+    };
+    store::retire_connection_by_id(&mut cx.tx, c.id, cx.now, &cx.actor.name).await?;
     cx.emit(
         "bank.disconnected",
         c.id,
-        json!({ "connection_id": c.id, "account_name": c.account_name }),
+        json!({ "connection_id": c.id, "provider": c.provider, "account_name": c.account_name }),
     )
     .await?;
     Ok(json!({
         "disconnected": c.id,
-        "note": "No new payments are sent. Payments already sent are still tracked until they finish.",
+        "provider": c.provider,
+        "note": if c.mode == "read_only" {
+            "This read-only connection stops reporting. Nothing about payments changes."
+        } else {
+            "No new payments are sent. Payments already sent are still tracked until they finish."
+        },
     }))
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields, default)]
+pub struct Accounts {}
+
+pub async fn accounts(cx: &mut Cx<'_>, _input: Accounts) -> Result<Value, CommandError> {
+    let c = live_rho(cx).await?;
+    let accounts = rho_client(cx, &c)?.accounts().await?;
+    Ok(json!({ "provider": "rho", "accounts": accounts }))
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields, default)]
+pub struct Transactions {
+    account_id: Option<String>,
+    posted_after: Option<String>,
+    posted_before: Option<String>,
+    initiated_after: Option<String>,
+    initiated_before: Option<String>,
+    search: Option<String>,
+    limit: Option<usize>,
+}
+
+pub async fn transactions(cx: &mut Cx<'_>, input: Transactions) -> Result<Value, CommandError> {
+    let c = live_rho(cx).await?;
+    let txns = rho_client(cx, &c)?
+        .transactions(&RhoTransactionQuery {
+            account_id: text(input.account_id),
+            posted_after: text(input.posted_after),
+            posted_before: text(input.posted_before),
+            initiated_after: text(input.initiated_after),
+            initiated_before: text(input.initiated_before),
+            search: text(input.search),
+            limit: input.limit.unwrap_or(100),
+        })
+        .await?;
+    Ok(json!({ "provider": "rho", "transactions": txns }))
 }
 
 #[derive(Deserialize)]
@@ -285,7 +479,7 @@ pub async fn decide_payee(
         )));
     }
     if accept {
-        let live = store::live_connection(&mut cx.tx).await?;
+        let live = store::live_paying_connection(&mut cx.tx).await?;
         if live.as_ref().map(|c| c.id) != Some(p.connection_id) {
             return Err(CommandError::Conflict(
                 "this was proposed for a bank connection that has since been replaced; propose it again".into(),

@@ -58,6 +58,11 @@ Conventions follow Visirent (`~/Code/visirent`).
   leaves the payment `submitting` to be resent with the same key, never a new one. Only the
   bank's answer marks a released bill paid (`payments::apply`). New banks implement the same
   shape in `payvy-pay`; tests use a fake bank (`tests/payments.rs`), never a real one.
+- **Rho is a read-only connection** (`payvy-pay`'s `Rho`, mode `read_only`): it coexists with
+  the paying bank (one live paying connection per org, plus one read-only connection per
+  provider), its client has no pay method, and `bill.release` with only Rho behaves exactly
+  as with no paying bank — paid elsewhere, then `bill.mark_paid`. Never route a payment,
+  recipient or payee through it; tests use a fake Rho (`tests/rho.rs`), never a real one.
 - **The web app (`web/`) is one more caller of the commands.** Vite, React 19 and Astryx
   (`@astryxdesign/*`, exact versions pinned; it is in beta). It calls `/api/commands/{name}` with
   the session cookie and the `x-payvy-client` header, which the server requires for cookie
