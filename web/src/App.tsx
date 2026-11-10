@@ -8,9 +8,13 @@ import { Shell } from './Shell';
 import { SignIn } from './pages/SignIn';
 import { Bills } from './pages/Bills';
 import { Inbox } from './pages/Inbox';
+import { Documents } from './pages/Documents';
 
 // The bill page brings pdf.js; load it only when a bill is opened.
 const BillPage = lazy(() => import('./pages/Bill').then((m) => ({ default: m.BillPage })));
+const DocumentReview = lazy(() =>
+  import('./pages/DocumentReview').then((m) => ({ default: m.DocumentReview })),
+);
 
 type State = { kind: 'loading' } | { kind: 'signed_out' } | { kind: 'signed_in'; me: Me };
 
@@ -73,6 +77,15 @@ export function App() {
             element={
               <Suspense fallback={<Spinner label="Loading" />}>
                 <BillPage />
+              </Suspense>
+            }
+          />
+          <Route path="/documents" element={<Documents />} />
+          <Route
+            path="/documents/:id"
+            element={
+              <Suspense fallback={<Spinner label="Loading" />}>
+                <DocumentReview />
               </Suspense>
             }
           />

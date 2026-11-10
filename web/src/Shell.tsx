@@ -9,6 +9,7 @@ import { useSession } from './session';
 
 const NAV = [
   { href: '/', label: 'Waiting on you' },
+  { href: '/documents', label: 'Documents' },
   { href: '/bills', label: 'All bills' },
 ];
 
@@ -36,7 +37,7 @@ export function Shell({ children }: { children: ReactNode }) {
                 key={n.href}
                 label={n.label}
                 href={n.href}
-                isSelected={pathname === n.href}
+                isSelected={n.href === '/' ? pathname === '/' : pathname.startsWith(n.href)}
               />
             ))}
           </SideNavSection>

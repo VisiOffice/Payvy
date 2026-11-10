@@ -17,8 +17,9 @@ import { ReasonDialog } from '../inbox/ReasonDialog';
 import { ReleaseDialog } from '../inbox/ReleaseDialog';
 import { METHOD, type Bill as BillT } from '../inbox/types';
 import { date, money } from '../money';
-import { dateForms } from '../viewer/match';
-import { DocumentViewer, type Highlight } from '../viewer/DocumentViewer';
+import { DocumentViewer } from '../viewer/DocumentViewer';
+import { highlightsOf, type DocumentDetail, type Read } from '../documents/types';
+import { ReadFields } from '../documents/ReadFields';
 
 interface Step {
   id: string;
@@ -43,42 +44,6 @@ interface Detail {
   }[];
   documents: { id: string; filename: string; content_type: string }[];
   history: { id: string; kind: string; actor: string; at: string }[];
-}
-
-interface DocumentDetail {
-  extractions: { extraction: { answer: Read | null } }[];
-}
-
-/** What the model read from the document, as printed. */
-interface Read {
-  vendor_name: string | null;
-  invoice_number: string | null;
-  invoice_date: string | null;
-  due_date: string | null;
-  po_number: string | null;
-  account_number: string | null;
-  terms: string | null;
-  total: string | null;
-}
-
-const FIELDS: { key: keyof Read; label: string; isDate?: boolean; isAmount?: boolean }[] = [
-  { key: 'vendor_name', label: 'Vendor' },
-  { key: 'invoice_number', label: 'Invoice number' },
-  { key: 'invoice_date', label: 'Invoice date', isDate: true },
-  { key: 'due_date', label: 'Due date', isDate: true },
-  { key: 'total', label: 'Total', isAmount: true },
-  { key: 'po_number', label: 'PO number' },
-  { key: 'account_number', label: 'Account number' },
-  { key: 'terms', label: 'Terms' },
-];
-
-function candidates(value: string, f: (typeof FIELDS)[number]): string[] {
-  if (f.isDate) return dateForms(value);
-  if (f.isAmount) {
-    const bare = value.replace(/^\$\s*/, '');
-    return [value, `$${bare}`, bare];
-  }
-  return [value];
 }
 
 const STATE_VARIANT: Record<Step['state'], 'success' | 'warning' | 'neutral'> = {
@@ -106,7 +71,7 @@ export function BillPage() {
         const doc = r.result.documents[0];
         if (doc) {
           run<DocumentDetail>('document.get', { document_id: doc.id })
-            .then((d) => setRead(d.result.extractions.at(-1)?.extraction.answer ?? null))
+            .then((d) => setRead(d.result.extractions[0]?.extraction.answer ?? null))
             .catch(() => setRead(null));
         }
       })
@@ -114,16 +79,7 @@ export function BillPage() {
   }, [id]);
   useEffect(load, [load]);
 
-  const highlights = useMemo<Highlight[]>(
-    () =>
-      read
-        ? FIELDS.flatMap((f) => {
-            const v = read[f.key];
-            return v ? [{ key: f.key, label: f.label, candidates: candidates(v, f) }] : [];
-          })
-        : [],
-    [read],
-  );
+  const highlights = useMemo(() => highlightsOf(read), [read]);
 
   if (error) return <Banner status="error" title="Couldn't load this bill" description={error} />;
   if (!detail) return <Spinner label="Loading the bill" />;
@@ -176,25 +132,7 @@ export function BillPage() {
             <MetadataListItem label="Entered by">{b.created_by}</MetadataListItem>
           </MetadataList>
 
-          {read && (
-            <VStack gap={2}>
-              <Heading level={2}>Read from the document</Heading>
-              <Text type="supporting">Choose a field to find it on the page.</Text>
-              <VStack gap={1}>
-                {FIELDS.filter((f) => read[f.key]).map((f) => (
-                  <button
-                    key={f.key}
-                    type="button"
-                    className={focus === f.key ? 'payvy-field payvy-field-on' : 'payvy-field'}
-                    onClick={() => setFocus(focus === f.key ? null : f.key)}
-                  >
-                    <Text type="supporting">{f.label}</Text>
-                    <Text hasTabularNumbers>{read[f.key]}</Text>
-                  </button>
-                ))}
-              </VStack>
-            </VStack>
-          )}
+          {read && <ReadFields read={read} focus={focus} onFocus={setFocus} />}
 
           {steps.length > 0 && (
             <VStack gap={2}>
