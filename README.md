@@ -1,5 +1,7 @@
 # Payvy
 
+[![CI](https://github.com/VisiOffice/Payvy/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/VisiOffice/Payvy/actions/workflows/ci.yml)
+
 **The open-source Bill.com alternative.** Bills come in, follow the workflow you set for each
 vendor, and get paid from **your own** bank account: Mercury, Ramp or Brex. Payvy never touches
 your money, so it doesn't charge you to move it.

@@ -40,7 +40,7 @@ jobs:
           for i in $(seq 60); do curl -s -o /dev/null http://127.0.0.1:8336 && break; sleep 1; done
 
       - name: Load .env.example
-        run: grep -E '^[A-Z_]+=' .env.example >> "$GITHUB_ENV"
+        run: grep -E '^[A-Z0-9_]+=' .env.example >> "$GITHUB_ENV"
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -104,9 +104,11 @@ jobs:
         run: pnpm --dir web exec playwright install --with-deps chromium
 
       # Builds the app and the server, then runs every browser test against
-      # a fresh database, the SeaweedFS bucket and the fake model and banks.
+      # a fresh database, the SeaweedFS bucket and the fake model and banks,
+      # through the Cloudflare Worker in local workerd (so edge.spec.ts runs).
       - name: Browser tests
         env:
+          PAYVY_E2E_EDGE_PORT: 7434
           PLAYWRIGHT_HTML_OPEN: never
         run: pnpm --dir web -s e2e --reporter=github,list,html
 
