@@ -4,6 +4,8 @@
 //! It also checks open Mercury invitations every few minutes through
 //! `vendor.refresh_payee_invite`, so a completed one turns into a proposed
 //! payee without anyone pressing "Check invitation". A person still accepts it.
+//! And it pays bills whose workflow pays automatically (`bill.auto_pay`, as
+//! the agent `workflow`) once they reach that step.
 
 use std::time::Duration;
 
@@ -23,6 +25,9 @@ pub async fn run(state: AppState) {
     loop {
         if let Err(e) = tick(&state).await {
             tracing::warn!("payment checker: {e:#}");
+        }
+        if let Err(e) = auto_pay(&state).await {
+            tracing::warn!("auto-pay: {e:#}");
         }
         if let Err(e) = check_invites(&state).await {
             tracing::warn!("invitation checker: {e:#}");
@@ -101,4 +106,49 @@ pub async fn check_invites(state: &AppState) -> anyhow::Result<usize> {
         }
     }
     Ok(proposed)
+}
+
+/// Pays every bill that has reached an automatic pay step. Bills that can't
+/// be paid this way yet (no accepted payee, no Mercury) wait quietly.
+/// Returns how many payments were attempted.
+pub async fn auto_pay(state: &AppState) -> anyhow::Result<usize> {
+    let mut attempted = 0;
+    for org in state.store.org_ids().await? {
+        let actor = Actor::agent(org, "workflow");
+        let ready = commands::run(
+            state,
+            &actor,
+            "bill.list",
+            json!({ "status": "ready_to_pay", "limit": PER_TICK }),
+            Mode::Commit {
+                confirm_token: None,
+            },
+        )
+        .await?;
+        let ids: Vec<String> = ready["result"]["bills"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|b| b["bill"]["id"].as_str().map(str::to_owned))
+            .collect();
+        for id in ids {
+            let mode = Mode::Commit {
+                confirm_token: None,
+            };
+            match commands::run(
+                state,
+                &actor,
+                "bill.auto_pay",
+                json!({ "bill_id": id }),
+                mode,
+            )
+            .await
+            {
+                Ok(_) => attempted += 1,
+                Err(commands::CommandError::Conflict(_)) => {}
+                Err(e) => tracing::warn!(bill = %id, "auto-pay: {e}"),
+            }
+        }
+    }
+    Ok(attempted)
 }

@@ -130,7 +130,7 @@ export function StepEditor({
             <Banner
               status="warning"
               title="Bills are paid as soon as they get here"
-              description="No one releases them. Put an approval before this step unless every bill from this vendor should be paid unseen."
+              description="No one releases them: Payvy pays through Mercury to the vendor's accepted payment details within a minute. Put an approval before this step unless every bill from this vendor should be paid unseen. If a payment fails, the bill waits for a person and isn't retried."
             />
           ) : (
             <MultiSelector

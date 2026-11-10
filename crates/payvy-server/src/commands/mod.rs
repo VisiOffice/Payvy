@@ -210,6 +210,7 @@ async fn execute(cx: &mut Cx<'_>, name: &str, input: &Value) -> Result<Value, Co
         "bill.reject" => bills::reject(cx, parse(input)?).await,
         "bill.signal" => bills::signal(cx, parse(input)?).await,
         "bill.release" => bills::release(cx, parse(input)?).await,
+        "bill.auto_pay" => bills::auto_pay(cx, parse(input)?).await,
         "bill.mark_paid" => bills::mark_paid(cx, parse(input)?).await,
         "bill.void" => bills::void(cx, parse(input)?).await,
         "document.upload" => documents::upload(cx, parse(input)?).await,

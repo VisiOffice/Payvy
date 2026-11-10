@@ -243,6 +243,10 @@ export interface BillReleaseInput {
   pay_elsewhere?: boolean;
 }
 
+export interface BillAutoPayInput {
+  bill_id: string;
+}
+
 export interface BillMarkPaidInput {
   bill_id: string;
   paid_on: string;
@@ -414,6 +418,7 @@ export interface CommandInputs {
   "bill.reject": BillRejectInput;
   "bill.signal": BillSignalInput;
   "bill.release": BillReleaseInput;
+  "bill.auto_pay": BillAutoPayInput;
   "bill.mark_paid": BillMarkPaidInput;
   "bill.void": BillVoidInput;
   "inbox.get": InboxGetInput;
@@ -466,6 +471,7 @@ export const COMMANDS: Record<CommandName, { tier: Tier; personOnly: boolean; su
   "bill.reject": { tier: "routine", personOnly: true, summary: "Reject a bill: it will not be paid. Final." },
   "bill.signal": { tier: "routine", personOnly: false, summary: "Report that something outside Payvy happened for a bill, e.g. customer_funded when the customer has paid for this cost. A workflow's wait_for step waits for its signal. Name the bill by bill_id or by the external_ref it was created with." },
   "bill.release": { tier: "confirmed", personOnly: true, summary: "Release a bill for payment at its pay step. With a bank connected, this sends the payment through it to the vendor's accepted payee; the preview shows exactly what will be sent. Preview first; commit with the returned token." },
+  "bill.auto_pay": { tier: "routine", personOnly: false, summary: "Pay a bill whose workflow pays automatically (status ready_to_pay) through the connected Mercury account, to the vendor's accepted payee. Payvy does this on its own within a minute of the bill getting there; run it to pay one now. If the payment doesn't go, the bill waits for a person to release it and is never retried automatically." },
   "bill.mark_paid": { tier: "confirmed", personOnly: false, summary: "Record that a released or ready bill was paid outside Payvy (a check, a payment made in the bank's own app). Payments sent through the connected bank are recorded on their own. Preview first; commit with the returned token." },
   "bill.void": { tier: "confirmed", personOnly: true, summary: "Void a bill entered by mistake. It no longer counts for duplicate detection. Preview first; commit with the returned token." },
   "inbox.get": { tier: "read", personOnly: false, summary: "What is waiting on the caller: bills a step needs them to approve or release (action approve or release), and payee changes and workflow proposals a person must accept or decline. Agents see it too, to remind people." },

@@ -483,6 +483,9 @@ pub struct Bill {
     pub received_at: DateTime<Utc>,
     pub released_at: Option<DateTime<Utc>>,
     pub released_by: Option<String>,
+    /// A payment didn't go or came back: an automatic pay step now waits
+    /// for a person to release the bill.
+    pub release_by_person: bool,
     pub paid_on: Option<NaiveDate>,
     pub paid_method: Option<String>,
     pub paid_reference: Option<String>,
@@ -494,7 +497,7 @@ macro_rules! bill_cols {
     () => {
         "b.id, b.vendor_id, v.name AS vendor_name, b.workflow_id, b.invoice_number, b.invoice_date,
     b.due_date, b.amount_cents, b.memo, b.external_ref, b.state, b.received_at, b.released_at, b.released_by,
-    b.paid_on, b.paid_method, b.paid_reference, b.closed_reason, b.created_by"
+    b.release_by_person, b.paid_on, b.paid_method, b.paid_reference, b.closed_reason, b.created_by"
     };
 }
 
@@ -515,6 +518,7 @@ fn bill(r: &PgRow) -> anyhow::Result<Bill> {
         received_at: r.get("received_at"),
         released_at: r.get("released_at"),
         released_by: r.get("released_by"),
+        release_by_person: r.get("release_by_person"),
         paid_on: r.get("paid_on"),
         paid_method: r.get("paid_method"),
         paid_reference: r.get("paid_reference"),
@@ -1931,7 +1935,7 @@ pub async fn payments_to_check(
 /// Takes back a release whose payment didn't go, so the bill waits for a
 /// person again.
 pub async fn unrelease_bill(tx: &mut Tx, bill_id: Uuid) -> anyhow::Result<()> {
-    sqlx::query("UPDATE bills SET released_at = NULL, released_by = NULL WHERE id = $1")
+    sqlx::query("UPDATE bills SET released_at = NULL, released_by = NULL, release_by_person = true WHERE id = $1")
         .bind(bill_id)
         .execute(&mut **tx)
         .await?;
@@ -1942,7 +1946,7 @@ pub async fn unrelease_bill(tx: &mut Tx, bill_id: Uuid) -> anyhow::Result<()> {
 pub async fn reopen_returned_bill(tx: &mut Tx, bill_id: Uuid) -> anyhow::Result<()> {
     sqlx::query(
         "UPDATE bills SET state = 'open', paid_on = NULL, paid_method = NULL, paid_reference = NULL,
-                          released_at = NULL, released_by = NULL
+                          released_at = NULL, released_by = NULL, release_by_person = true
          WHERE id = $1",
     )
     .bind(bill_id)

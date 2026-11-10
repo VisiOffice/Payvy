@@ -186,6 +186,13 @@ pub const COMMANDS: &[CommandSpec] = &[
         input_schema: r#"{"type":"object","required":["bill_id"],"properties":{"bill_id":{"type":"string","format":"uuid"},"pay_elsewhere":{"type":"boolean","description":"Release without paying through the connected bank; record the payment later with bill.mark_paid"}}}"#,
     },
     CommandSpec {
+        name: "bill.auto_pay",
+        summary: "Pay a bill whose workflow pays automatically (status ready_to_pay) through the connected Mercury account, to the vendor's accepted payee. Payvy does this on its own within a minute of the bill getting there; run it to pay one now. If the payment doesn't go, the bill waits for a person to release it and is never retried automatically.",
+        tier: RiskTier::Routine,
+        person_only: false,
+        input_schema: r#"{"type":"object","required":["bill_id"],"properties":{"bill_id":{"type":"string","format":"uuid"}}}"#,
+    },
+    CommandSpec {
         name: "bill.mark_paid",
         summary: "Record that a released or ready bill was paid outside Payvy (a check, a payment made in the bank's own app). Payments sent through the connected bank are recorded on their own. Preview first; commit with the returned token.",
         tier: RiskTier::Confirmed,

@@ -41,6 +41,7 @@ fn evaluate(
             approvals,
             signals,
             released_at: bill.released_at,
+            release_by_person: bill.release_by_person,
             now: cx.now,
         },
     )
@@ -498,6 +499,61 @@ pub async fn release(cx: &mut Cx<'_>, input: Release) -> Result<Value, CommandEr
     if pay.is_none() {
         out["next"] = json!("pay it outside Payvy, then record it with bill.mark_paid");
     }
+    Ok(out)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AutoPay {
+    bill_id: Uuid,
+}
+
+/// Pays a bill whose workflow pays automatically, now that it has reached
+/// that step. The authority is the workflow a person accepted, not the
+/// caller, so anyone may run it (the payment worker does, as `workflow`);
+/// it pays only through Mercury, only to the vendor's accepted payee, under
+/// the same idempotency rule as a release. A payment that doesn't go sends
+/// the bill to a person (`release_by_person`); it is never retried here.
+pub async fn auto_pay(cx: &mut Cx<'_>, input: AutoPay) -> Result<Value, CommandError> {
+    let (bill, _, progress) = open_bill(cx, input.bill_id).await?;
+    if progress.status != Status::ReadyToPay {
+        return Err(CommandError::Conflict(format!(
+            "this bill doesn't pay automatically now; it is {}",
+            status_name(&progress)
+        )));
+    }
+    let c = store::live_paying_connection(&mut cx.tx)
+        .await?
+        .filter(|c| c.provider == "mercury")
+        .ok_or_else(|| {
+            CommandError::Conflict(
+                "no paying bank is connected: pay it outside Payvy, then record it with bill.mark_paid"
+                    .into(),
+            )
+        })?;
+    let payee = store::active_payee(&mut cx.tx, bill.vendor_id)
+        .await?
+        .filter(|p| p.connection_id == c.id)
+        .ok_or_else(|| {
+            CommandError::Conflict(format!(
+                "{} has no accepted payee at {} yet, so it can't be paid automatically",
+                bill.vendor_name, c.account_name
+            ))
+        })?;
+    store::release_bill(&mut cx.tx, bill.id, "workflow", cx.now).await?;
+    let plan = payments::plan(&bill, &c, &payee);
+    cx.emit(
+        "bill.auto_released",
+        bill.id,
+        json!({ "bill_id": bill.id, "amount_cents": bill.amount_cents,
+                "workflow_id": bill.workflow_id, "payment": plan }),
+    )
+    .await?;
+    if !cx.preview {
+        payments::submit(cx, &bill, &c, &payee).await?;
+    }
+    let mut out = detail(cx, bill.id).await?;
+    out["payment_plan"] = plan;
     Ok(out)
 }
 

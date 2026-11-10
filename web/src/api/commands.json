@@ -141,6 +141,13 @@
       "tier": "confirmed"
     },
     {
+      "input_schema": "{\"type\":\"object\",\"required\":[\"bill_id\"],\"properties\":{\"bill_id\":{\"type\":\"string\",\"format\":\"uuid\"}}}",
+      "name": "bill.auto_pay",
+      "person_only": false,
+      "summary": "Pay a bill whose workflow pays automatically (status ready_to_pay) through the connected Mercury account, to the vendor's accepted payee. Payvy does this on its own within a minute of the bill getting there; run it to pay one now. If the payment doesn't go, the bill waits for a person to release it and is never retried automatically.",
+      "tier": "routine"
+    },
+    {
       "input_schema": "{\"type\":\"object\",\"required\":[\"bill_id\",\"paid_on\",\"method\"],\"properties\":{\"bill_id\":{\"type\":\"string\",\"format\":\"uuid\"},\"paid_on\":{\"type\":\"string\",\"format\":\"date\"},\"method\":{\"type\":\"string\",\"enum\":[\"ach\",\"check\",\"wire\",\"card\",\"other\"]},\"reference\":{\"type\":\"string\",\"description\":\"Check number, transfer id\"}}}",
       "name": "bill.mark_paid",
       "person_only": false,

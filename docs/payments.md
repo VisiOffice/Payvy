@@ -128,6 +128,27 @@ the same check on demand; `payment.list` shows them):
 While a payment is open, the bill can't be marked paid by hand, rejected or voided. Cancel it in
 the bank first.
 
+### Paying automatically
+
+When a bill reaches a workflow `pay` step set to `auto` (status `ready_to_pay`), the payment
+worker pays it within a minute: `bill.auto_pay`, run as the agent `workflow`, releases the bill
+and sends the payment exactly as a release would (same plan, same idempotency key rule), with
+the event `bill.auto_released`. The authority is the workflow a person accepted, so any key may
+run `bill.auto_pay` to pay a ready bill now; it pays nothing a person hasn't set to pay
+automatically. It needs:
+
+- a live Mercury connection (with Rho only, or no bank, the bill waits to be paid elsewhere and
+  marked paid, as before), and
+- an accepted payee for the vendor at that connection (without one the bill waits; nothing is
+  sent).
+
+In `request` mode the payment still waits for a Mercury admin's approval.
+
+A payment that fails, is cancelled or rejected, or comes back as an ACH return sets the bill's
+`release_by_person`: from then on its automatic pay step waits for a person to release it
+(`awaiting_release`, shown in Waiting on you). Auto-pay never retries a bill. This matters for
+recurring identical bills, which Mercury's 24-hour duplicate rule refuses (below).
+
 ## Never paying twice
 
 Every attempt has an idempotency key (`payvy-{bill}-{attempt}`) that Mercury honours. If the bank
@@ -166,7 +187,8 @@ built yet — reads are live from Rho each time.
 
 ## Not yet
 
-- Paying automatically when a workflow's `pay` step is `auto` (today a person releases).
+- An amount ceiling on automatic payments (today the controls are the workflow a person accepted,
+  any approval steps before it, and Mercury's own approval in `request` mode).
 - Direct recipient creation inside Payvy; invitations are supported.
 - Bills in other currencies, and Wise and Airwallex for international payments.
 - Ramp and Brex.

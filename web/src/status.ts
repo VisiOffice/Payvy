@@ -4,7 +4,7 @@ type Variant = 'neutral' | 'info' | 'success' | 'warning' | 'error';
 const STATUS: Record<string, { label: string; variant: Variant }> = {
   awaiting_approval: { label: 'Needs approval', variant: 'warning' },
   awaiting_release: { label: 'Ready to pay', variant: 'info' },
-  ready_to_pay: { label: 'Paying', variant: 'info' },
+  ready_to_pay: { label: 'Pays automatically', variant: 'info' },
   held: { label: 'On hold', variant: 'neutral' },
   waiting_for: { label: 'Waiting', variant: 'neutral' },
   released: { label: 'Released', variant: 'neutral' },
@@ -23,6 +23,7 @@ const EVENT: Record<string, string> = {
   'bill.approved': 'Approved',
   'bill.rejected': 'Rejected',
   'bill.released': 'Released for payment',
+  'bill.auto_released': 'Paid automatically by its workflow',
   'bill.signalled': 'Signal received',
   'bill.paid': 'Paid',
   'bill.payment_failed': 'Payment failed',

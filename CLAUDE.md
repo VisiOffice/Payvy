@@ -64,6 +64,10 @@ Conventions follow Visirent (`~/Code/visirent`).
   resend. This is an intentional two-transaction command. Its preview skips the
   checkpoint and the POST. Completion only proposes a payee; the payment worker checks open invitations every five minutes (`check_invites`), and only a person recovers one by its Mercury ID. Invite error bodies
   and onboarding links must never reach events or logs. See `docs/payments.md`.
+- **Auto-pay is pre-authorization, not a bypass.** `bill.auto_pay` (the payment worker runs it as
+  agent `workflow`) pays only `ready_to_pay` bills, only through Mercury, only to an accepted payee,
+  via the same `payments::submit`. A payment that doesn't go sets `bills.release_by_person`, which
+  turns the auto pay step into `awaiting_release` (`workflow::Facts`); auto-pay never retries.
 - **Rho is a read-only connection** (`payvy-pay`'s `Rho`, mode `read_only`): it coexists with
   the paying bank (one live paying connection per org, plus one read-only connection per
   provider), its client has no pay method, and `bill.release` with only Rho behaves exactly

@@ -292,6 +292,9 @@ pub struct Facts<'a> {
     pub approvals: &'a [Approval],
     pub signals: &'a [Signal],
     pub released_at: Option<DateTime<Utc>>,
+    /// A payment for this bill didn't go or came back, so even an automatic
+    /// pay step waits for a person to release it.
+    pub release_by_person: bool,
     pub now: DateTime<Utc>,
 }
 
@@ -488,8 +491,10 @@ pub fn evaluate(workflow: &Workflow, facts: &Facts) -> Progress {
                 }
                 None => {
                     status = Some(match release {
-                        Release::Auto => Status::ReadyToPay,
-                        Release::Manual => Status::AwaitingRelease { by: by.clone() },
+                        Release::Auto if !facts.release_by_person => Status::ReadyToPay,
+                        Release::Auto | Release::Manual => {
+                            Status::AwaitingRelease { by: by.clone() }
+                        }
                     });
                     steps.push(progress(StepState::Active));
                 }
@@ -537,6 +542,7 @@ mod tests {
             approvals,
             signals,
             released_at: None,
+            release_by_person: false,
             now: t(now),
         }
     }
@@ -582,6 +588,15 @@ mod tests {
         );
         let ready = evaluate(&quarry(), &facts(10_000, &[], &signals, 8));
         assert_eq!(ready.status, Status::ReadyToPay);
+        // After a payment that didn't go, a person releases it instead.
+        let failed = Facts {
+            release_by_person: true,
+            ..facts(10_000, &[], &signals, 8)
+        };
+        assert_eq!(
+            evaluate(&quarry(), &failed).status,
+            Status::AwaitingRelease { by: vec![] }
+        );
     }
 
     #[test]

@@ -1139,3 +1139,134 @@ async fn only_a_person_recovers_an_invitation_by_its_mercury_id() {
     ));
     db.drop().await;
 }
+
+/// King Environmental with an accepted payee, switched to a workflow that
+/// pays automatically.
+async fn auto_king(db: &TestDb) -> String {
+    let v = king_vendor(db).await;
+    set_workflow(
+        &db.state,
+        &person("robert"),
+        Some(&v),
+        json!([{ "id": "pay", "type": "pay", "release": "auto" }]),
+    )
+    .await;
+    v
+}
+
+#[tokio::test]
+async fn an_automatic_pay_step_pays_once_through_mercury() {
+    let Some((db, fake)) = db().await else { return };
+    connect(&db, "direct").await;
+    let v = auto_king(&db).await;
+    let b = bill(&db, &v).await;
+    assert_eq!(
+        status(&db.state, &person("robert"), &b).await,
+        "ready_to_pay"
+    );
+
+    assert_eq!(payment_worker::auto_pay(&db.state).await.unwrap(), 1);
+    let got = get_bill(&db, &b).await;
+    assert_eq!(got["bill"]["released_by"], "workflow");
+    assert_eq!(got["payments"][0]["status"], "pending");
+    assert_eq!(got["payments"][0]["created_by"], "workflow");
+    assert_eq!(fake.posts().len(), 1);
+    assert_eq!(fake.posts()[0]["amount"], 459.0);
+    let events = commit(
+        &db.state,
+        &person("robert"),
+        "event.list",
+        json!({"entity_id": b}),
+    )
+    .await
+    .unwrap();
+    assert!(events.to_string().contains("bill.auto_released"));
+
+    // Released now, so the next pass sends nothing more.
+    assert_eq!(payment_worker::auto_pay(&db.state).await.unwrap(), 0);
+    assert_eq!(fake.posts().len(), 1);
+    db.drop().await;
+}
+
+#[tokio::test]
+async fn auto_pay_waits_without_a_payee_and_skips_manual_workflows() {
+    let Some((db, fake)) = db().await else { return };
+    connect(&db, "direct").await;
+    let robert = person("robert");
+    // Automatic, but no accepted payee: nothing is sent, nothing breaks.
+    let lone = vendor(&db.state, &robert, "Lone Vendor").await;
+    set_workflow(
+        &db.state,
+        &robert,
+        Some(&lone),
+        json!([{ "id": "pay", "type": "pay", "release": "auto" }]),
+    )
+    .await;
+    let waiting = bill(&db, &lone).await;
+    // Manual: waits for a person even with a payee.
+    let manual = king_vendor(&db).await;
+    let b = common::bill(&db.state, &agent("claude-ap"), &manual, "manual-1", 1_000).await;
+
+    assert_eq!(payment_worker::auto_pay(&db.state).await.unwrap(), 0);
+    assert!(fake.posts().is_empty());
+    assert_eq!(status(&db.state, &robert, &waiting).await, "ready_to_pay");
+    assert_eq!(status(&db.state, &robert, &b).await, "awaiting_release");
+    let refused = commit(
+        &db.state,
+        &agent("bot"),
+        "bill.auto_pay",
+        json!({"bill_id": b}),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(refused, CommandError::Conflict(_)));
+    db.drop().await;
+}
+
+#[tokio::test]
+async fn auto_pay_needs_a_mercury_connection() {
+    let Some((db, fake)) = db().await else { return };
+    let v = vendor(&db.state, &person("robert"), "No Bank Co").await;
+    set_workflow(
+        &db.state,
+        &person("robert"),
+        Some(&v),
+        json!([{ "id": "pay", "type": "pay", "release": "auto" }]),
+    )
+    .await;
+    let b = bill(&db, &v).await;
+    assert_eq!(payment_worker::auto_pay(&db.state).await.unwrap(), 0);
+    assert!(fake.posts().is_empty());
+    // Paid outside Payvy, as before.
+    assert_eq!(
+        status(&db.state, &person("robert"), &b).await,
+        "ready_to_pay"
+    );
+    db.drop().await;
+}
+
+#[tokio::test]
+async fn a_failed_automatic_payment_waits_for_a_person_and_is_not_retried() {
+    let Some((db, fake)) = db().await else { return };
+    connect(&db, "direct").await;
+    let v = auto_king(&db).await;
+    let b = bill(&db, &v).await;
+
+    fake.fail_next(400, "duplicate payment within 24 hours", false);
+    assert_eq!(payment_worker::auto_pay(&db.state).await.unwrap(), 1);
+    let robert = person("robert");
+    assert_eq!(status(&db.state, &robert, &b).await, "awaiting_release");
+    // It shows up as waiting on a person, and auto-pay leaves it alone.
+    let mine = commit(&db.state, &robert, "bill.list", json!({"mine": true}))
+        .await
+        .unwrap();
+    assert!(mine.to_string().contains(&b));
+    assert_eq!(payment_worker::auto_pay(&db.state).await.unwrap(), 0);
+    assert_eq!(fake.posts().len(), 1);
+
+    // A person releases it; that payment goes.
+    let out = release(&db, &b).await;
+    assert_eq!(out["payments"][0]["status"], "pending");
+    assert_eq!(fake.posts().len(), 2);
+    db.drop().await;
+}
