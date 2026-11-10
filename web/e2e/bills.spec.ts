@@ -38,7 +38,7 @@ test('an invoice is checked, becomes a bill, and is released', async ({ page }) 
   await page.getByRole('button', { name: 'Create bill' }).click();
   await expect(page).toHaveURL(/\/bills\/[0-9a-f-]{36}$/);
   await expect(page.getByRole('heading', { name: 'Desert Plumbing & Drain' })).toBeVisible();
-  await expect(page.getByText('awaiting release')).toBeVisible();
+  await expect(page.getByText('Ready to pay')).toBeVisible();
   await expect(page.getByText('Replace 40 gal water heater')).toBeVisible();
 
   // No bank is connected: the preview says so, and the bill is paid outside.
@@ -47,7 +47,7 @@ test('an invoice is checked, becomes a bill, and is released', async ({ page }) 
   await expect(dialog.getByText('Release $1,420.00 to Desert Plumbing & Drain')).toBeVisible();
   await dialog.getByRole('button', { name: /^Release/ }).click();
   await expect(toast(page, "Released. Mark it paid once you've paid it.")).toBeVisible();
-  await expect(page.getByText('released', { exact: true })).toBeVisible();
+  await expect(page.getByText('Released', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Pay…' })).toHaveCount(0);
 
   // The document is filed with the bill.
@@ -107,7 +107,7 @@ test('a bill is rejected with a reason', async ({ page }) => {
   const dialog = page.getByRole('dialog');
   await dialog.getByLabel('Why').fill('Roof work was never done at this property');
   await dialog.getByRole('button', { name: 'Reject' }).click();
-  await expect(page.getByText('rejected', { exact: true })).toBeVisible();
+  await expect(page.getByText('Rejected', { exact: true }).first()).toBeVisible();
   await expect(page.getByRole('button', { name: 'Pay…' })).toHaveCount(0);
 });
 

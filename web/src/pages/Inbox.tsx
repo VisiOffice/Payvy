@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Badge } from '@astryxdesign/core/Badge';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
 import { Card } from '@astryxdesign/core/Card';
@@ -12,12 +11,14 @@ import { Spinner } from '@astryxdesign/core/Spinner';
 import { Text } from '@astryxdesign/core/Text';
 import { useToast } from '@astryxdesign/core/Toast';
 import { VStack } from '@astryxdesign/core/VStack';
+import { Page } from '../Page';
 import { run } from '../api/client';
 import { ReasonDialog } from '../inbox/ReasonDialog';
 import { ReleaseDialog } from '../inbox/ReleaseDialog';
 import { METHOD, type Bill, type BillItem, type Inbox as InboxData, type PayeeChange, type WorkflowProposal } from '../inbox/types';
 import { date, money } from '../money';
-import { describeStep } from '../workflow';
+import { describeStep, type Names } from '../workflow';
+import { loadPeople } from '../workflows/Builder';
 
 type Open =
   | { kind: 'release'; bill: Bill }
@@ -30,7 +31,15 @@ export function Inbox() {
   const [data, setData] = useState<InboxData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState<Open>(null);
+  const [names, setNames] = useState<Names>(() => (a: string) => a);
   const toast = useToast();
+
+  // Steps name people by name, not by actor id. Without the list, ids will do.
+  useEffect(() => {
+    loadPeople()
+      .then((ps) => setNames(() => (a: string) => ps.find((p) => p.value === a)?.label ?? a))
+      .catch(() => {});
+  }, []);
 
   const load = useCallback(() => {
     run<InboxData>('inbox.get', {})
@@ -59,11 +68,7 @@ export function Inbox() {
   );
 
   return (
-    <VStack gap={6} padding={6} maxWidth={880}>
-      <VStack gap={1}>
-        <Heading level={1}>Waiting on you</Heading>
-        <Text type="supporting">Bills to approve or pay, and changes only a person can accept.</Text>
-      </VStack>
+    <Page narrow title="Waiting on you" description="Bills to approve or pay, and changes only a person can accept.">
 
       {error && <Banner status="error" title="Couldn't load your inbox" description={error} />}
       {!data && !error && <Spinner label="Loading" />}
@@ -125,6 +130,7 @@ export function Inbox() {
             <WorkflowCard
               key={w.proposal.id}
               proposal={w}
+              names={names}
               onAccept={() =>
                 act(
                   () => run('workflow.accept', { proposal_id: w.proposal.id }),
@@ -198,7 +204,7 @@ export function Inbox() {
           }
         />
       )}
-    </VStack>
+    </Page>
   );
 }
 
@@ -220,10 +226,7 @@ function BillCard({
         <VStack gap={1}>
           <HStack gap={2} vAlign="center">
             <Link href={`/bills/${b.id}`} isStandalone>{b.vendor_name}</Link>
-            <Badge
-              label={item.action === 'approve' ? 'Approve' : item.action === 'release' ? 'Pay' : 'Look'}
-              variant={item.action === 'release' ? 'info' : 'warning'}
-            />
+
           </HStack>
           <Text type="supporting">
             Invoice {b.invoice_number} · {date(b.invoice_date)}
@@ -282,10 +285,12 @@ function PayeeCard({
 
 function WorkflowCard({
   proposal,
+  names,
   onAccept,
   onDecline,
 }: {
   proposal: WorkflowProposal;
+  names: Names;
   onAccept: () => Promise<void>;
   onDecline: () => void;
 }) {
@@ -297,10 +302,10 @@ function WorkflowCard({
           {proposal.vendor_name ?? 'Default for vendors without their own'}
         </Text>
         <HStack gap={6} wrap="wrap" vAlign="start">
-          <Steps title="Proposed" steps={p.workflow.steps.map((s) => describeStep(s))} />
+          <Steps title="Proposed" steps={p.workflow.steps.map((s) => describeStep(s, names))} />
           <Steps
             title="Now"
-            steps={proposal.current ? proposal.current.steps.map((s) => describeStep(s)) : ['The default workflow']}
+            steps={proposal.current ? proposal.current.steps.map((s) => describeStep(s, names)) : ['The default workflow']}
           />
         </HStack>
         <Text type="supporting">

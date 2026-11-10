@@ -179,8 +179,8 @@ export function DocumentReview() {
         : undefined;
 
   return (
-    <div style={{ display: 'flex', height: '100%', minHeight: 0 }}>
-      <div style={{ flex: '0 0 440px', overflow: 'auto', borderRight: '1px solid var(--color-border)' }}>
+    <div className="payvy-split">
+      <div className="payvy-split-side">
         <VStack gap={5} padding={5}>
           <VStack gap={1}>
             <Heading level={1}>{doc.filename}</Heading>
@@ -255,7 +255,7 @@ export function DocumentReview() {
                   onChange={(v) => set({ invoice_number: v })}
                 />
               </Field>
-              <HStack gap={3}>
+              <HStack gap={3} wrap="wrap">
                 <Field focusKey="invoice_date" onFocus={setFocus}>
                   <DateInput
                     label="Invoice date"
@@ -329,7 +329,7 @@ export function DocumentReview() {
               <Heading level={2}>Checks</Heading>
               {x.checks.map((c) => (
                 <HStack key={c.check} gap={2} vAlign="start">
-                  <Badge label={c.ok ? 'ok' : 'check'} variant={c.ok ? 'success' : 'warning'} />
+                  <Badge label={c.ok ? 'OK' : 'Check'} variant={c.ok ? 'success' : 'warning'} />
                   <Text type="supporting">{c.detail}</Text>
                 </HStack>
               ))}
@@ -337,7 +337,7 @@ export function DocumentReview() {
           )}
         </VStack>
       </div>
-      <div style={{ flex: 1, minWidth: 0 }}>
+      <div className="payvy-split-doc">
         <DocumentViewer documentId={doc.id} contentType={doc.content_type} highlights={highlights} focus={focus} />
       </div>
 

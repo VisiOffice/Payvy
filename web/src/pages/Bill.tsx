@@ -4,7 +4,6 @@ import { Badge } from '@astryxdesign/core/Badge';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
 import { Card } from '@astryxdesign/core/Card';
-import { EmptyState } from '@astryxdesign/core/EmptyState';
 import { Heading } from '@astryxdesign/core/Heading';
 import { Link } from '@astryxdesign/core/Link';
 import { HStack } from '@astryxdesign/core/HStack';
@@ -14,6 +13,8 @@ import { Text } from '@astryxdesign/core/Text';
 import { useToast } from '@astryxdesign/core/Toast';
 import { VStack } from '@astryxdesign/core/VStack';
 import { run } from '../api/client';
+import { Page } from '../Page';
+import { billStatus, eventLabel } from '../status';
 import { ReasonDialog } from '../inbox/ReasonDialog';
 import { ReleaseDialog } from '../inbox/ReleaseDialog';
 import { METHOD, type Bill as BillT } from '../inbox/types';
@@ -47,11 +48,11 @@ interface Detail {
   history: { id: string; kind: string; actor: string; at: string }[];
 }
 
-const STATE_VARIANT: Record<Step['state'], 'success' | 'warning' | 'neutral'> = {
-  done: 'success',
-  active: 'warning',
-  pending: 'neutral',
-  skipped: 'neutral',
+const STEP_STATE: Record<Step['state'], { label: string; variant: 'success' | 'info' | 'neutral' }> = {
+  done: { label: 'Done', variant: 'success' },
+  active: { label: 'Now', variant: 'info' },
+  pending: { label: 'Next', variant: 'neutral' },
+  skipped: { label: 'Skipped', variant: 'neutral' },
 };
 
 export function BillPage() {
@@ -82,8 +83,18 @@ export function BillPage() {
 
   const highlights = useMemo(() => highlightsOf(read), [read]);
 
-  if (error) return <Banner status="error" title="Couldn't load this bill" description={error} />;
-  if (!detail) return <Spinner label="Loading the bill" />;
+  if (error)
+    return (
+      <Page title="Bill">
+        <Banner status="error" title="Couldn't load this bill" description={error} />
+      </Page>
+    );
+  if (!detail)
+    return (
+      <Page title="">
+        <Spinner label="Loading the bill" />
+      </Page>
+    );
 
   const b = detail.bill;
   const p = detail.progress;
@@ -102,108 +113,114 @@ export function BillPage() {
   }
 
   const isOpen = !['paid', 'released', 'rejected', 'void'].includes(status);
+  const badge = billStatus(status);
+
+  const side = (
+    <VStack gap={5} padding={5}>
+      <VStack gap={2}>
+        <HStack gap={2} vAlign="center" wrap="wrap">
+          <Heading level={1}>{b.vendor_name}</Heading>
+          <Badge label={badge.label} variant={badge.variant} />
+        </HStack>
+        <Text type="supporting">
+          Invoice {b.invoice_number} · <Link href={`/vendors/${b.vendor_id}`}>Vendor details</Link>
+        </Text>
+        <Text size="xl" weight="semibold" hasTabularNumbers>
+          {money(b.amount_cents)}
+        </Text>
+      </VStack>
+
+      {isOpen && (
+        <HStack gap={2}>
+          {status === 'awaiting_approval' && <Button label="Approve" variant="primary" clickAction={approve} />}
+          {status === 'awaiting_release' && <Button label="Pay…" variant="primary" onClick={() => setOpen('release')} />}
+          <Button label="Reject" variant="ghost" onClick={() => setOpen('reject')} />
+        </HStack>
+      )}
+
+      <MetadataList>
+        <MetadataListItem label="Invoice date">{date(b.invoice_date)}</MetadataListItem>
+        <MetadataListItem label="Due">{b.due_date ? date(b.due_date) : 'Not set'}</MetadataListItem>
+        {b.memo && <MetadataListItem label="Memo">{b.memo}</MetadataListItem>}
+        <MetadataListItem label="Entered by">{b.created_by}</MetadataListItem>
+      </MetadataList>
+
+      {read && <ReadFields read={read} focus={focus} onFocus={setFocus} />}
+
+      {steps.length > 0 && (
+        <VStack gap={2}>
+          <Heading level={2}>Workflow</Heading>
+          {steps.map((s) => (
+            <HStack key={s.id} gap={2} vAlign="center">
+              <Badge label={STEP_STATE[s.state].label} variant={STEP_STATE[s.state].variant} />
+              <Text>{s.describe}</Text>
+              {s.at && <Text type="supporting">{date(s.at)}</Text>}
+              {s.reason && <Text type="supporting">{s.reason}</Text>}
+            </HStack>
+          ))}
+        </VStack>
+      )}
+
+      {detail.lines.length > 0 && (
+        <VStack gap={2}>
+          <Heading level={2}>Lines</Heading>
+          {detail.lines.map((l, i) => (
+            <HStack key={i} hAlign="between" gap={3}>
+              <Text>{l.description}</Text>
+              <Text hasTabularNumbers>{money(l.amount_cents)}</Text>
+            </HStack>
+          ))}
+        </VStack>
+      )}
+
+      {detail.payments.length > 0 && (
+        <VStack gap={2}>
+          <Heading level={2}>Payments</Heading>
+          {detail.payments.map((pm) => (
+            <Card key={pm.id}>
+              <HStack hAlign="between" gap={3}>
+                <VStack gap={0}>
+                  <Text>{pm.method ? (METHOD[pm.method] ?? pm.method) : 'Paid elsewhere'}</Text>
+                  <Text type="supporting">{date(pm.created_at)}</Text>
+                </VStack>
+                <VStack gap={0} hAlign="end">
+                  <Text hasTabularNumbers>{money(pm.amount_cents)}</Text>
+                  <Badge label={pm.state.replaceAll('_', ' ')} />
+                </VStack>
+              </HStack>
+            </Card>
+          ))}
+        </VStack>
+      )}
+
+      {detail.history.length > 0 && (
+        <VStack gap={2}>
+          <Heading level={2}>History</Heading>
+          {detail.history.map((h) => (
+            <HStack key={h.id} gap={2}>
+              <Text type="supporting">{date(h.at)}</Text>
+              <Text>{eventLabel(h.kind)}</Text>
+              <Text type="supporting">by {h.actor}</Text>
+            </HStack>
+          ))}
+        </VStack>
+      )}
+      {!doc && <Text type="supporting">No invoice is attached: this bill was entered without one.</Text>}
+    </VStack>
+  );
 
   return (
-    <div style={{ display: 'flex', height: '100%', minHeight: 0 }}>
-      <div style={{ flex: '0 0 440px', overflow: 'auto', borderRight: '1px solid var(--color-border)' }}>
-        <VStack gap={5} padding={5}>
-          <VStack gap={2}>
-            <HStack gap={2} vAlign="center" wrap="wrap">
-              <Heading level={1}>{b.vendor_name}</Heading>
-              <Badge label={status.replaceAll('_', ' ')} variant={status === 'paid' ? 'success' : 'warning'} />
-            </HStack>
-            <Text type="supporting">
-              Invoice {b.invoice_number} · <Link href={`/vendors/${b.vendor_id}`}>{b.vendor_name}</Link>
-            </Text>
-            <Text size="xl" weight="semibold" hasTabularNumbers>
-              {money(b.amount_cents)}
-            </Text>
-          </VStack>
-
-          {isOpen && (
-            <HStack gap={2}>
-              {status === 'awaiting_approval' && <Button label="Approve" variant="primary" clickAction={approve} />}
-              {status === 'awaiting_release' && <Button label="Pay…" variant="primary" onClick={() => setOpen('release')} />}
-              <Button label="Reject" variant="ghost" onClick={() => setOpen('reject')} />
-            </HStack>
-          )}
-
-          <MetadataList>
-            <MetadataListItem label="Invoice date">{date(b.invoice_date)}</MetadataListItem>
-            <MetadataListItem label="Due">{b.due_date ? date(b.due_date) : 'Not set'}</MetadataListItem>
-            {b.memo && <MetadataListItem label="Memo">{b.memo}</MetadataListItem>}
-            <MetadataListItem label="Entered by">{b.created_by}</MetadataListItem>
-          </MetadataList>
-
-          {read && <ReadFields read={read} focus={focus} onFocus={setFocus} />}
-
-          {steps.length > 0 && (
-            <VStack gap={2}>
-              <Heading level={2}>Workflow</Heading>
-              {steps.map((s) => (
-                <HStack key={s.id} gap={2} vAlign="center">
-                  <Badge label={s.state} variant={STATE_VARIANT[s.state]} />
-                  <Text>{s.describe}</Text>
-                  {s.at && <Text type="supporting">{date(s.at)}</Text>}
-                  {s.reason && <Text type="supporting">{s.reason}</Text>}
-                </HStack>
-              ))}
-            </VStack>
-          )}
-
-          {detail.lines.length > 0 && (
-            <VStack gap={2}>
-              <Heading level={2}>Lines</Heading>
-              {detail.lines.map((l, i) => (
-                <HStack key={i} hAlign="between" gap={3}>
-                  <Text>{l.description}</Text>
-                  <Text hasTabularNumbers>{money(l.amount_cents)}</Text>
-                </HStack>
-              ))}
-            </VStack>
-          )}
-
-          {detail.payments.length > 0 && (
-            <VStack gap={2}>
-              <Heading level={2}>Payments</Heading>
-              {detail.payments.map((pm) => (
-                <Card key={pm.id}>
-                  <HStack hAlign="between" gap={3}>
-                    <VStack gap={0}>
-                      <Text>{pm.method ? (METHOD[pm.method] ?? pm.method) : 'Paid elsewhere'}</Text>
-                      <Text type="supporting">{date(pm.created_at)}</Text>
-                    </VStack>
-                    <VStack gap={0} hAlign="end">
-                      <Text hasTabularNumbers>{money(pm.amount_cents)}</Text>
-                      <Badge label={pm.state.replaceAll('_', ' ')} />
-                    </VStack>
-                  </HStack>
-                </Card>
-              ))}
-            </VStack>
-          )}
-
-          {detail.history.length > 0 && (
-            <VStack gap={2}>
-              <Heading level={2}>History</Heading>
-              {detail.history.map((h) => (
-                <HStack key={h.id} gap={2}>
-                  <Text type="supporting">{date(h.at)}</Text>
-                  <Text>{h.kind}</Text>
-                  <Text type="supporting">by {h.actor}</Text>
-                </HStack>
-              ))}
-            </VStack>
-          )}
-        </VStack>
-      </div>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        {doc ? (
-          <DocumentViewer documentId={doc.id} contentType={doc.content_type} highlights={highlights} focus={focus} />
-        ) : (
-          <EmptyState title="No document" description="This bill was entered without an invoice attached." />
-        )}
-      </div>
+    <>
+      {doc ? (
+        <div className="payvy-split">
+          <div className="payvy-split-side">{side}</div>
+          <div className="payvy-split-doc">
+            <DocumentViewer documentId={doc.id} contentType={doc.content_type} highlights={highlights} focus={focus} />
+          </div>
+        </div>
+      ) : (
+        <div className="payvy-page payvy-page-narrow">{side}</div>
+      )}
 
       {open === 'release' && (
         <ReleaseDialog
@@ -230,6 +247,6 @@ export function BillPage() {
           }}
         />
       )}
-    </div>
+    </>
   );
 }

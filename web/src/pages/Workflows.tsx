@@ -8,6 +8,7 @@ import { Spinner } from '@astryxdesign/core/Spinner';
 import { Table, type TableColumn } from '@astryxdesign/core/Table';
 import { Text } from '@astryxdesign/core/Text';
 import { VStack } from '@astryxdesign/core/VStack';
+import { Page } from '../Page';
 import { run } from '../api/client';
 import type { Current } from '../workflow';
 import { Builder, loadPeople } from '../workflows/Builder';
@@ -44,14 +45,10 @@ export function Workflows() {
   }, [loadBase]);
 
   return (
-    <VStack gap={6} padding={6}>
-      <VStack gap={1}>
-        <Heading level={1}>Workflows</Heading>
-        <Text type="supporting">
-          The path each bill takes before it's paid. Every vendor follows the default unless it has its own, which
-          you set on the vendor's page. A bill keeps the workflow it arrived under.
-        </Text>
-      </VStack>
+    <Page
+      title="Workflows"
+      description="The path each bill takes before it's paid. Every vendor follows the default unless it has its own, which you set on the vendor's page. A bill keeps the workflow it arrived under."
+    >
       {error && <Banner status="error" title="Couldn't load workflows" description={error} />}
       {!error && (!base || !people) && <Spinner label="Loading" />}
 
@@ -64,7 +61,7 @@ export function Workflows() {
 
       {exceptions && (
         <VStack gap={3}>
-          <Heading level={2}>Vendors with their own</Heading>
+          <Heading level={2}>Vendors that differ</Heading>
           {exceptions.length === 0 ? (
             <Text type="supporting">
               None: every vendor follows the default. To give one its own, open it from Vendors.
@@ -74,6 +71,6 @@ export function Workflows() {
           )}
         </VStack>
       )}
-    </VStack>
+    </Page>
   );
 }

@@ -2,13 +2,12 @@ import { useEffect, useState } from 'react';
 import { Badge } from '@astryxdesign/core/Badge';
 import { Banner } from '@astryxdesign/core/Banner';
 import { EmptyState } from '@astryxdesign/core/EmptyState';
-import { Heading } from '@astryxdesign/core/Heading';
 import { HStack } from '@astryxdesign/core/HStack';
 import { Link } from '@astryxdesign/core/Link';
 import { Spinner } from '@astryxdesign/core/Spinner';
 import { Table, type TableColumn } from '@astryxdesign/core/Table';
 import { Text } from '@astryxdesign/core/Text';
-import { VStack } from '@astryxdesign/core/VStack';
+import { Page } from '../Page';
 import { run } from '../api/client';
 import { money } from '../money';
 
@@ -69,17 +68,13 @@ export function Vendors() {
   }, []);
 
   return (
-    <VStack gap={4} padding={6}>
-      <VStack gap={1}>
-        <Heading level={1}>Vendors</Heading>
-        <Text type="supporting">Who you pay, what's open with each, and how their bills are approved.</Text>
-      </VStack>
+    <Page title="Vendors" description="Who you pay, what's open with each, and how their bills are approved.">
       {error && <Banner status="error" title="Couldn't load vendors" description={error} />}
       {!vendors && !error && <Spinner label="Loading vendors" />}
       {vendors && vendors.length === 0 && (
         <EmptyState title="No vendors yet" description="Vendors are added as their bills come in." />
       )}
       {vendors && vendors.length > 0 && <Table data={vendors} columns={columns} idKey="id" hasHover />}
-    </VStack>
+    </Page>
   );
 }

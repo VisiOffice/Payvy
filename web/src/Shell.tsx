@@ -4,7 +4,7 @@ import { AppShell } from '@astryxdesign/core/AppShell';
 import { Button } from '@astryxdesign/core/Button';
 import { SideNav, SideNavHeading, SideNavItem, SideNavSection } from '@astryxdesign/core/SideNav';
 import { Text } from '@astryxdesign/core/Text';
-import { VStack } from '@astryxdesign/core/VStack';
+import { HStack } from '@astryxdesign/core/HStack';
 import { useSession } from './session';
 
 const NAV = [
@@ -25,12 +25,12 @@ export function Shell({ children }: { children: ReactNode }) {
         <SideNav
           header={<SideNavHeading heading="Payvy" subheading={me.organization.name} />}
           footer={
-            <VStack gap={1} padding={2}>
+            <HStack gap={2} padding={2} hAlign="between" vAlign="center">
               <Text type="supporting" maxLines={1}>
                 {me.person.name}
               </Text>
               <Button label="Sign out" variant="ghost" size="sm" clickAction={signOut} />
-            </VStack>
+            </HStack>
           }
         >
           <SideNavSection title="Bills" isHeaderHidden>

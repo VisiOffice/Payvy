@@ -2,7 +2,9 @@
 import { Badge } from '@astryxdesign/core/Badge';
 import { Link } from '@astryxdesign/core/Link';
 import { Table, type TableColumn } from '@astryxdesign/core/Table';
+import { Text } from '@astryxdesign/core/Text';
 import { date, money } from '../money';
+import { billStatus } from '../status';
 
 interface BillRow extends Record<string, unknown> {
   id: string;
@@ -10,6 +12,7 @@ interface BillRow extends Record<string, unknown> {
   invoice: string;
   due: string;
   amount: string;
+  /** awaiting_release, paid, … */
   status: string;
 }
 
@@ -29,27 +32,22 @@ export interface Listed {
 function statusOf(l: Listed): string {
   const p = l.progress as { status?: string } | string | null;
   const s = typeof p === 'string' ? p : (p?.status ?? l.bill.state);
-  return s.replaceAll('_', ' ');
+  return s;
 }
 
-const STATUS_VARIANT: Record<string, 'neutral' | 'info' | 'success' | 'warning' | 'error'> = {
-  paid: 'success',
-  released: 'info',
-  'awaiting approval': 'warning',
-  'awaiting release': 'warning',
-  rejected: 'error',
-  void: 'neutral',
-};
 
 const COLUMNS: TableColumn<BillRow>[] = [
   { key: 'vendor', header: 'Vendor', renderCell: (row) => <Link href={`/bills/${row.id}`}>{row.vendor}</Link> },
   { key: 'invoice', header: 'Invoice', renderCell: (row) => <Link href={`/bills/${row.id}`}>{row.invoice}</Link> },
-  { key: 'due', header: 'Due' },
+  { key: 'due', header: 'Due', renderCell: (row) => row.due || <Text type="supporting">Not set</Text> },
   { key: 'amount', header: 'Amount', align: 'end' },
   {
     key: 'status',
     header: 'Status',
-    renderCell: (row) => <Badge label={row.status} variant={STATUS_VARIANT[row.status] ?? 'neutral'} />,
+    renderCell: (row) => {
+      const s = billStatus(row.status);
+      return <Badge label={s.label} variant={s.variant} />;
+    },
   },
 ];
 

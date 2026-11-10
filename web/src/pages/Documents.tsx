@@ -3,14 +3,12 @@ import { useNavigate } from 'react-router';
 import { Banner } from '@astryxdesign/core/Banner';
 import { EmptyState } from '@astryxdesign/core/EmptyState';
 import { FileInput } from '@astryxdesign/core/FileInput';
-import { Heading } from '@astryxdesign/core/Heading';
 import { Link } from '@astryxdesign/core/Link';
 import { SegmentedControl, SegmentedControlItem } from '@astryxdesign/core/SegmentedControl';
 import { Spinner } from '@astryxdesign/core/Spinner';
 import { Table, type TableColumn } from '@astryxdesign/core/Table';
-import { Text } from '@astryxdesign/core/Text';
 import { useToast } from '@astryxdesign/core/Toast';
-import { VStack } from '@astryxdesign/core/VStack';
+import { Page } from '../Page';
 import { run } from '../api/client';
 import type { Doc } from '../documents/types';
 import { date } from '../money';
@@ -120,13 +118,10 @@ export function Documents() {
   }
 
   return (
-    <VStack gap={4} padding={6}>
-      <VStack gap={1}>
-        <Heading level={1}>Documents</Heading>
-        <Text type="supporting">
-          Invoices that arrived by email or were uploaded. Check what was read from each, then make it a bill.
-        </Text>
-      </VStack>
+    <Page
+      title="Documents"
+      description="Invoices that arrived by email or were uploaded. Check what was read from each, then make it a bill."
+    >
       <FileInput
         label="Add invoices"
         isLabelHidden
@@ -158,6 +153,6 @@ export function Documents() {
         />
       )}
       {rows && rows.length > 0 && <Table data={rows} columns={columns} idKey="id" hasHover />}
-    </VStack>
+    </Page>
   );
 }

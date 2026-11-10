@@ -15,6 +15,7 @@ import { Spinner } from '@astryxdesign/core/Spinner';
 import { Text } from '@astryxdesign/core/Text';
 import { VStack } from '@astryxdesign/core/VStack';
 import { run } from '../api/client';
+import { Page } from '../Page';
 import { BillsTable, type Listed } from '../bills/BillsTable';
 import { METHOD } from '../inbox/types';
 import { date } from '../money';
@@ -68,27 +69,40 @@ export function VendorPage() {
     if (ready && hash === '#workflow') workflowRef.current?.scrollIntoView({ block: 'start' });
   }, [ready, hash]);
 
-  if (error) return <Banner status="error" title="Couldn't load this vendor" description={error} />;
-  if (!detail || !people) return <Spinner label="Loading" />;
+  if (error)
+    return (
+      <Page title="Vendor">
+        <Banner status="error" title="Couldn't load this vendor" description={error} />
+      </Page>
+    );
+  if (!detail || !people)
+    return (
+      <Page title="">
+        <Spinner label="Loading" />
+      </Page>
+    );
   const { vendor } = detail;
   const active = detail.payees.find((p) => p.status === 'active');
   const proposed = detail.payees.filter((p) => p.status === 'proposed');
 
   return (
-    <VStack gap={6} padding={6}>
-      <VStack gap={2}>
+    <Page
+      title={vendor.name}
+      above={
         <Breadcrumbs>
           <BreadcrumbItem href="/vendors">Vendors</BreadcrumbItem>
           <BreadcrumbItem isCurrent>{vendor.name}</BreadcrumbItem>
         </Breadcrumbs>
-        <Heading level={1}>{vendor.name}</Heading>
-        <MetadataList>
-          {vendor.email && <MetadataListItem label="Email">{vendor.email}</MetadataListItem>}
-          <MetadataListItem label="Terms">
-            {vendor.terms_days == null ? 'Not set: a bill is due when its invoice says' : `Net ${vendor.terms_days}`}
-          </MetadataListItem>
-        </MetadataList>
-      </VStack>
+      }
+      description={
+        <>
+          {vendor.email ? `${vendor.email} · ` : ''}
+          {vendor.terms_days == null
+            ? 'No payment terms: a bill is due when its invoice says'
+            : `Net ${vendor.terms_days}: a bill is due ${vendor.terms_days} days after its invoice date`}
+        </>
+      }
+    >
 
       <div ref={workflowRef} id="workflow" style={{ scrollMarginTop: 16 }}>
         <VStack gap={3}>
@@ -110,7 +124,7 @@ export function VendorPage() {
       </VStack>
 
       <HStack gap={6} wrap="wrap" vAlign="start">
-        <VStack gap={3} width={420}>
+        <VStack gap={3} width={420} maxWidth="100%">
           <Heading level={2}>Paid to</Heading>
           <Card>
             <VStack gap={3}>
@@ -141,7 +155,7 @@ export function VendorPage() {
           </Card>
         </VStack>
 
-        <VStack gap={3} width={420}>
+        <VStack gap={3} width={420} maxWidth="100%">
           <Heading level={2}>Account numbers</Heading>
           <Card>
             {detail.accounts.length === 0 ? (
@@ -158,6 +172,6 @@ export function VendorPage() {
           </Card>
         </VStack>
       </HStack>
-    </VStack>
+    </Page>
   );
 }
