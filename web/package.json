@@ -6,6 +6,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "check": "tsc -b",
+    "e2e": "pnpm build && cargo build -q -p payvy-server && playwright test",
+    "e2e:only": "playwright test",
     "gen:api": "cargo run -q -p payvy-server --bin payvy -- commands > src/api/commands.json && node scripts/gen-api.mjs",
     "astryx": "node node_modules/@astryxdesign/cli/clients/cli/bin/astryx.mjs"
   },
@@ -20,11 +22,14 @@
   },
   "devDependencies": {
     "@astryxdesign/cli": "0.7.12",
+    "@playwright/test": "1.64.1",
     "@types/node": "^24.19.2",
+    "@types/pg": "8.15.5",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "6.3.0",
     "json-schema-to-typescript": "16.0.0",
+    "pg": "8.16.3",
     "typescript": "5.9.3",
     "vite": "8.3.7"
   }

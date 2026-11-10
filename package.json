@@ -5,6 +5,7 @@
   "scripts": {
     "web": "pnpm --dir web dev",
     "build": "pnpm --dir web build",
-    "check": "pnpm -r check"
+    "check": "pnpm -r check",
+    "e2e": "pnpm --dir web e2e"
   }
 }

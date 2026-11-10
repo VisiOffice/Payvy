@@ -90,7 +90,20 @@ cargo run -- person add --email you@example.com --name You   # someone who signs
 pnpm install                              # once: the web app and the email worker
 pnpm web                                  # the app on http://127.0.0.1:5173; the sign-in link
                                           # is printed in the server's log
+pnpm e2e                                  # builds both, then the browser tests (web/e2e)
 ```
 
 Before committing: `cargo clippy --all-targets -- -D warnings && cargo fmt --all -- --check`,
 and `pnpm -r check` when `web/` or `workers/` changed.
+
+### End-to-end tests (`web/e2e`)
+
+Playwright drives the built app on the real server (`target/debug/payvy`, port 7431) against a
+fresh database it drops afterwards, and a `payvy-e2e` bucket in the compose SeaweedFS. Nothing
+else is mocked except the model: `fake-model.ts` answers as an OpenAI-compatible API with what
+each fixture invoice prints, so extraction, checks and vendor matching run for real. Sign-in
+links are read from the server log (no mailer configured), so the tests sign in as a person
+does. Setup data is made through the command API with an agent key; what only a person may do
+(accept, approve, release, reject) is done in the browser. Run them when a change touches the
+web app or a command it uses. First time: `pnpm --dir web exec playwright install chromium`.
+`pnpm --dir web e2e:only` reruns without rebuilding.

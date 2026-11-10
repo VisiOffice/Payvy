@@ -86,6 +86,11 @@ struct StorageArgs {
     /// self-hosted stores. Set false for AWS virtual-hosted buckets.
     #[arg(long, env = "PAYVY_S3_PATH_STYLE", default_value_t = true, action = clap::ArgAction::Set)]
     s3_path_style: bool,
+    /// Create the bucket at startup if it doesn't exist: for a fresh local
+    /// store (SeaweedFS, Garage) or the end-to-end tests. Off by default;
+    /// production keys usually can't create buckets, and shouldn't.
+    #[arg(long, env = "PAYVY_S3_CREATE_BUCKET", default_value_t = false, action = clap::ArgAction::Set)]
+    s3_create_bucket: bool,
 }
 
 impl StorageArgs {
@@ -281,10 +286,15 @@ async fn main() -> anyhow::Result<()> {
                 "PAYVY_API_KEY must be at least 32 characters"
             );
             let mut state = payvy_server::AppState::connect(&database_url()?, &api_key).await?;
+            let create_bucket = storage.s3_create_bucket;
             match storage.config() {
                 Some(config) => {
                     tracing::info!(endpoint = %config.endpoint, bucket = %config.bucket, "document storage");
-                    state = state.with_storage(payvy_storage::Storage::new(&config)?);
+                    let store = payvy_storage::Storage::new(&config)?;
+                    if create_bucket {
+                        store.ensure_bucket().await?;
+                    }
+                    state = state.with_storage(store);
                 }
                 None => tracing::warn!("no document storage configured; document commands are off"),
             }
