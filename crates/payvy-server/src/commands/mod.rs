@@ -3,6 +3,7 @@
 //! per area; the registry itself is `payvy_domain::commands::COMMANDS`.
 
 mod auto_pay;
+mod approval_rules;
 mod bank;
 mod bills;
 mod documents;
@@ -197,6 +198,8 @@ async fn execute(cx: &mut Cx<'_>, name: &str, input: &Value) -> Result<Value, Co
         "auto_pay.lower_limit" => auto_pay::set(cx, parse(input)?, auto_pay::Way::Lower).await,
         "auto_pay.raise_limit" => auto_pay::set(cx, parse(input)?, auto_pay::Way::Raise).await,
         "inbox.get" => inbox::get(cx).await,
+        "approval_rules.get" => approval_rules::get(cx).await,
+        "approval_rules.set" => approval_rules::set(cx, parse(input)?).await,
         "person.list" => people::list(cx).await,
         "person.add" => people::add(cx, parse(input)?).await,
         "person.remove" => people::remove(cx, parse(input)?).await,

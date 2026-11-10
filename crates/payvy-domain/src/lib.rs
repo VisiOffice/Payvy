@@ -4,6 +4,7 @@
 pub mod bills;
 pub mod commands;
 pub mod documents;
+pub mod duties;
 pub mod email;
 pub mod extraction;
 pub mod workflow;

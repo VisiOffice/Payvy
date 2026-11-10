@@ -21,6 +21,7 @@ import { DueText } from '../Due';
 import { date, dueLabel, money } from '../money';
 import { describeStep, type Names } from '../workflow';
 import { loadPeople } from '../workflows/Builder';
+import { waitingOnOthers } from '../approval';
 
 type Open =
   | { kind: 'release'; bill: Bill }
@@ -101,14 +102,14 @@ export function Inbox() {
       {data && (['approve', 'release', 'look'] as const).map(action => {
         const items = data.bills.filter(b => b.action === action);
         if (!items.length || (view !== 'all' && view !== action)) return null;
-        return <section className="payvy-queue-section" key={action} aria-label={action === 'approve' ? 'Bills to approve' : action === 'release' ? 'Bills to pay' : 'Bills to review'}>
+        return <section className="payvy-queue-section" key={action} aria-label={action === 'approve' ? 'Bills to approve' : action === 'release' ? 'Bills to pay' : 'Bills waiting on someone else'}>
           <div className="payvy-section-heading">
-            <Heading level={2}>{action === 'approve' ? 'Needs approval' : action === 'release' ? 'Ready to pay' : 'Review bills'}</Heading>
+            <Heading level={2}>{action === 'approve' ? 'Needs approval' : action === 'release' ? 'Ready to pay' : 'Waiting on someone else'}</Heading>
             <span className="payvy-count">{items.length}</span>
             <span className="payvy-section-total">{money(items.reduce((s, i) => s + i.bill.amount_cents, 0))}</span>
           </div>
           <div className="payvy-queue">
-            {items.map(item => <BillCard key={item.bill.id} item={item}
+            {items.map(item => <BillCard key={item.bill.id} item={item} names={names}
               onApprove={() => act(() => run('bill.approve', { bill_id: item.bill.id }), `Approved ${item.bill.vendor_name} ${item.bill.invoice_number}`)}
               onRelease={() => setOpen({ kind: 'release', bill: item.bill })}
               onReject={() => setOpen({ kind: 'reject', bill: item.bill })} />)}
@@ -233,11 +234,13 @@ export function Inbox() {
 
 function BillCard({
   item,
+  names,
   onApprove,
   onRelease,
   onReject,
 }: {
   item: BillItem;
+  names: Names;
   onApprove: () => Promise<void>;
   onRelease: () => void;
   onReject: () => void;
@@ -250,6 +253,9 @@ function BillCard({
         <Link href={`/bills/${b.id}`} isStandalone>{b.vendor_name}</Link>
         <span className="payvy-muted">{b.invoice_number}{b.memo ? ` · ${b.memo}` : ''}</span>
         {item.progress?.reason && <span className="payvy-muted">{item.progress.reason}</span>}
+        {item.approval && !item.approval.can_approve && (
+          <span className="payvy-muted">{waitingOnOthers(item.approval, names)}</span>
+        )}
       </div>
       <div className="payvy-queue-due">
         <span>{b.due_date ? date(b.due_date) : 'No due date'}</span>

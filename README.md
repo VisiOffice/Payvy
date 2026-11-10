@@ -57,7 +57,9 @@ international payments are planned through Wise and Airwallex.
 | `pay` | Pay automatically, or wait for a person to release it. |
 
 Agents can propose workflows; a person accepts them. A bill keeps the workflow it arrived under,
-so changing a workflow never changes a bill already on its way.
+so changing a workflow never changes a bill already on its way. One person gives a bill one
+approval, so two approval steps always mean two people; a company can also require that whoever
+entered a bill isn't the one who approves it ([docs/approvals.md](docs/approvals.md)).
 
 **Agents prepare, people sign off.** Every action is a command, served the same way over REST
 (`POST /api/commands/{name}`) and MCP (`POST /mcp`). Agent keys can read bills, enter them, file

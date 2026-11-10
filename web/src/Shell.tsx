@@ -53,6 +53,7 @@ export function Shell({ children }: { children: ReactNode }) {
             items={[
               { label: 'Bank settings', href: '/settings/bank' },
               { label: 'Bill inbox', href: '/settings/email' },
+              { label: 'Approvals', href: '/settings/approvals' },
               { label: 'Default workflow', href: '/workflows' },
               { label: 'People', href: '/settings/people' },
               { label: 'Company', href: '/settings/company' },
@@ -91,6 +92,7 @@ export function Shell({ children }: { children: ReactNode }) {
             <SideNavItem label="People" href="/settings/people" isSelected={pathname.startsWith('/settings/people')} />
             <SideNavItem label="Company" href="/settings/company" isSelected={pathname.startsWith('/settings/company')} />
             <SideNavItem label="Auto-pay limit" href="/settings/auto-pay" isSelected={pathname.startsWith('/settings/auto-pay')} />
+            <SideNavItem label="Approvals" href="/settings/approvals" isSelected={pathname.startsWith('/settings/approvals')} />
           </SideNavSection>
         </SideNav>
       }

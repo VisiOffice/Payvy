@@ -1,6 +1,8 @@
 //! What is waiting on a person: bills to approve or release, and payee and
 //! workflow proposals to accept. One call for the web app's inbox and for an
-//! agent asking what to nudge people about.
+//! agent asking what to nudge people about. Bills waiting on the caller that
+//! the approval rules keep them from approving come back with action `look`
+//! and an `approval` saying who else can; they aren't in `count`.
 
 use std::collections::HashMap;
 
@@ -11,14 +13,19 @@ use uuid::Uuid;
 use super::{CommandError, Cx, bills, parse};
 
 pub async fn get(cx: &mut Cx<'_>) -> Result<Value, CommandError> {
-    let listed = bills::list(cx, parse(&json!({ "mine": true, "limit": 500 }))?).await?;
+    let mut mine: bills::List = parse(&json!({ "mine": true, "limit": 500 }))?;
+    mine.include_blocked = true;
+    let listed = bills::list(cx, mine).await?;
     let bills: Vec<Value> = listed["bills"]
         .as_array()
         .cloned()
         .unwrap_or_default()
         .into_iter()
         .map(|mut b| {
+            // A bill the approval rules keep you from approving waits on
+            // someone else: shown, with who, but not counted as yours.
             let action = match b["progress"]["status"].as_str() {
+                Some("awaiting_approval") if b["approval"]["can_approve"] == false => "look",
                 Some("awaiting_approval") => "approve",
                 Some("awaiting_release") => "release",
                 _ => "look",
@@ -27,6 +34,7 @@ pub async fn get(cx: &mut Cx<'_>) -> Result<Value, CommandError> {
             b
         })
         .collect();
+    let yours = bills.iter().filter(|b| b["action"] != "look").count();
 
     let mut names: HashMap<Uuid, String> = HashMap::new();
     let mut name_of = async |tx: &mut store::Tx, id: Uuid| -> Result<String, CommandError> {
@@ -65,10 +73,6 @@ pub async fn get(cx: &mut Cx<'_>) -> Result<Value, CommandError> {
         "bills": bills,
         "payee_changes": payees,
         "workflow_proposals": workflows,
-        "count": bills_len(&listed) + payees.len() + workflows.len(),
+        "count": yours + payees.len() + workflows.len(),
     }))
-}
-
-fn bills_len(listed: &Value) -> usize {
-    listed["bills"].as_array().map_or(0, Vec::len)
 }

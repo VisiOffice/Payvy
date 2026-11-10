@@ -1026,6 +1026,72 @@ pub async fn bill_documents(tx: &mut Tx, bill_id: Uuid) -> anyhow::Result<Vec<Do
     Ok(rows.iter().map(document).collect())
 }
 
+/// Who uploaded the documents filed with these bills: (bill, actor).
+pub async fn bill_uploaders(tx: &mut Tx, bill_ids: &[Uuid]) -> anyhow::Result<Vec<(Uuid, String)>> {
+    let rows = sqlx::query(
+        "SELECT DISTINCT bill_id, created_by FROM documents WHERE bill_id = ANY($1) ORDER BY 1, 2",
+    )
+    .bind(bill_ids)
+    .fetch_all(&mut **tx)
+    .await?;
+    Ok(rows
+        .iter()
+        .map(|r| (r.get("bill_id"), r.get("created_by")))
+        .collect())
+}
+
+// ── Approval rules ──────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ApprovalRules {
+    pub submitter_cannot_approve: bool,
+    /// None until a person first changes a rule.
+    pub updated_by: Option<String>,
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
+/// The organization's approval rules; all off when none were ever set.
+pub async fn approval_rules(tx: &mut Tx) -> anyhow::Result<ApprovalRules> {
+    let row = sqlx::query(
+        "SELECT submitter_cannot_approve, updated_by, updated_at FROM approval_rules FOR SHARE",
+    )
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(match row {
+        Some(r) => ApprovalRules {
+            submitter_cannot_approve: r.get("submitter_cannot_approve"),
+            updated_by: Some(r.get("updated_by")),
+            updated_at: Some(r.get("updated_at")),
+        },
+        None => ApprovalRules {
+            submitter_cannot_approve: false,
+            updated_by: None,
+            updated_at: None,
+        },
+    })
+}
+
+pub async fn set_approval_rules(
+    tx: &mut Tx,
+    org_id: Uuid,
+    submitter_cannot_approve: bool,
+    by: &str,
+    at: DateTime<Utc>,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "INSERT INTO approval_rules (org_id, submitter_cannot_approve, updated_by, updated_at)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (org_id) DO UPDATE SET submitter_cannot_approve = $2, updated_by = $3, updated_at = $4",
+    )
+    .bind(org_id)
+    .bind(submitter_cannot_approve)
+    .bind(by)
+    .bind(at)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
 pub async fn file_document(tx: &mut Tx, id: Uuid, bill_id: Uuid) -> anyhow::Result<()> {
     sqlx::query("UPDATE documents SET status = 'filed', bill_id = $2 WHERE id = $1")
         .bind(id)

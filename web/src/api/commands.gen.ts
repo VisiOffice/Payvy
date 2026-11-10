@@ -350,6 +350,13 @@ export interface AutoPayRaiseLimitInput {
 
 export interface InboxGetInput {}
 
+export interface ApprovalRulesGetInput {}
+
+export interface ApprovalRulesSetInput {
+  submitter_cannot_approve: boolean;
+  reason?: string;
+}
+
 export interface PersonListInput {}
 
 export interface PersonAddInput {
@@ -544,6 +551,8 @@ export interface CommandInputs {
   "auto_pay.lower_limit": AutoPayLowerLimitInput;
   "auto_pay.raise_limit": AutoPayRaiseLimitInput;
   "inbox.get": InboxGetInput;
+  "approval_rules.get": ApprovalRulesGetInput;
+  "approval_rules.set": ApprovalRulesSetInput;
   "person.list": PersonListInput;
   "person.add": PersonAddInput;
   "person.remove": PersonRemoveInput;
@@ -598,8 +607,8 @@ export const COMMANDS: Record<CommandName, { tier: Tier; personOnly: boolean; su
   "workflow.decline": { tier: "routine", personOnly: true, summary: "Decline a workflow proposal." },
   "bill.create": { tier: "routine", personOnly: false, summary: "Enter a bill, optionally from an inbox document. It follows the vendor's current workflow from now on. Refused if this vendor already has a bill with the same invoice number (ignoring case, spaces, punctuation and leading zeros) unless allow_duplicate is true." },
   "bill.list": { tier: "read", personOnly: false, summary: "List bills, newest first. Filter by state (open, rejected, void, paid), by where open bills stand (status: awaiting_approval, held, waiting_for, awaiting_release, ready_to_pay, released), by vendor, or to bills waiting on you (mine)." },
-  "bill.get": { tier: "read", personOnly: false, summary: "A bill with its lines, its workflow progress step by step, approvals, signals and history." },
-  "bill.approve": { tier: "routine", personOnly: true, summary: "Approve a bill at its current approval step. You must be one of that step's approvers." },
+  "bill.get": { tier: "read", personOnly: false, summary: "A bill with its lines, its workflow progress step by step, approvals, signals and history. While it waits for approval, approval says whether you can give it and, if not, why and who else can." },
+  "bill.approve": { tier: "routine", personOnly: true, summary: "Approve a bill at its current approval step. You must be one of that step's approvers. One person gives a bill one approval, so you can't approve a second step, or a step a later one needs you for; and when approval_rules has submitter_cannot_approve on, whoever entered the bill or uploaded its document can't approve it. A refusal says who else can. bill.get shows it in approval before you try." },
   "bill.reject": { tier: "routine", personOnly: true, summary: "Reject a bill: it will not be paid. Final." },
   "bill.signal": { tier: "routine", personOnly: false, summary: "Report that something outside Payvy happened for a bill, e.g. customer_funded when the customer has paid for this cost. A workflow's wait_for step waits for its signal. Name the bill by bill_id or by the external_ref it was created with." },
   "bill.release": { tier: "confirmed", personOnly: true, summary: "Release a bill for payment at its pay step. With a bank connected, this sends the payment through it to the vendor's accepted payee; the preview shows exactly what will be sent. Preview first; commit with the returned token." },
@@ -610,6 +619,8 @@ export const COMMANDS: Record<CommandName, { tier: Tier; personOnly: boolean; su
   "auto_pay.lower_limit": { tier: "routine", personOnly: true, summary: "Lower the company's auto-pay limit, or with vendor_id set or lower one vendor's own limit (below the company's). Bills over the new limit wait for a person to release them. Only a person may change a limit. To raise one, use auto_pay.raise_limit." },
   "auto_pay.raise_limit": { tier: "confirmed", personOnly: true, summary: "Raise the company's auto-pay limit, or with vendor_id raise a vendor's own limit (it stays below the company's) or remove it with limit_cents null so the vendor follows the company's. Only a person may change a limit. The preview lists the bills that would start paying automatically; commit with the returned token." },
   "inbox.get": { tier: "read", personOnly: false, summary: "What is waiting on the caller: bills a step needs them to approve or release (action approve or release), and payee changes and workflow proposals a person must accept or decline. Agents see it too, to remind people." },
+  "approval_rules.get": { tier: "read", personOnly: false, summary: "The company's approval rules. submitter_cannot_approve: whoever entered a bill or uploaded its document can't approve it (bills an agent entered are unaffected). One approval per person per bill always applies." },
+  "approval_rules.set": { tier: "routine", personOnly: true, summary: "Turn submitter_cannot_approve on or off for the whole company. It applies to approvals from now on, including bills already waiting." },
   "person.list": { tier: "read", personOnly: false, summary: "Everyone who can sign in to the web app, with the actor name their actions are recorded under." },
   "person.add": { tier: "routine", personOnly: true, summary: "Let someone sign in to the web app with a link sent to their email. They act as the person named by actor, with every right a person has: approving, releasing payments, accepting payees and workflows." },
   "person.remove": { tier: "routine", personOnly: true, summary: "Stop someone signing in, and sign them out everywhere. Their past actions stay on the record. Refused for yourself (someone else removes you) and for the last person who can sign in." },

@@ -130,14 +130,14 @@
       "input_schema": "{\"type\":\"object\",\"required\":[\"bill_id\"],\"properties\":{\"bill_id\":{\"type\":\"string\",\"format\":\"uuid\"}}}",
       "name": "bill.get",
       "person_only": false,
-      "summary": "A bill with its lines, its workflow progress step by step, approvals, signals and history.",
+      "summary": "A bill with its lines, its workflow progress step by step, approvals, signals and history. While it waits for approval, approval says whether you can give it and, if not, why and who else can.",
       "tier": "read"
     },
     {
       "input_schema": "{\"type\":\"object\",\"required\":[\"bill_id\"],\"properties\":{\"bill_id\":{\"type\":\"string\",\"format\":\"uuid\"},\"note\":{\"type\":\"string\"}}}",
       "name": "bill.approve",
       "person_only": true,
-      "summary": "Approve a bill at its current approval step. You must be one of that step's approvers.",
+      "summary": "Approve a bill at its current approval step. You must be one of that step's approvers. One person gives a bill one approval, so you can't approve a second step, or a step a later one needs you for; and when approval_rules has submitter_cannot_approve on, whoever entered the bill or uploaded its document can't approve it. A refusal says who else can. bill.get shows it in approval before you try.",
       "tier": "routine"
     },
     {
@@ -209,6 +209,20 @@
       "person_only": false,
       "summary": "What is waiting on the caller: bills a step needs them to approve or release (action approve or release), and payee changes and workflow proposals a person must accept or decline. Agents see it too, to remind people.",
       "tier": "read"
+    },
+    {
+      "input_schema": "{\"type\":\"object\",\"properties\":{}}",
+      "name": "approval_rules.get",
+      "person_only": false,
+      "summary": "The company's approval rules. submitter_cannot_approve: whoever entered a bill or uploaded its document can't approve it (bills an agent entered are unaffected). One approval per person per bill always applies.",
+      "tier": "read"
+    },
+    {
+      "input_schema": "{\"type\":\"object\",\"required\":[\"submitter_cannot_approve\"],\"properties\":{\"submitter_cannot_approve\":{\"type\":\"boolean\"},\"reason\":{\"type\":\"string\"}}}",
+      "name": "approval_rules.set",
+      "person_only": true,
+      "summary": "Turn submitter_cannot_approve on or off for the whole company. It applies to approvals from now on, including bills already waiting.",
+      "tier": "routine"
     },
     {
       "input_schema": "{\"type\":\"object\",\"properties\":{}}",
