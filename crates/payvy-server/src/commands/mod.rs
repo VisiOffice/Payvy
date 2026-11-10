@@ -2,11 +2,13 @@
 //! same validation, risk tiers, events and errors. Handlers live one module
 //! per area; the registry itself is `payvy_domain::commands::COMMANDS`.
 
+mod bank;
 mod bills;
 mod documents;
 mod email;
 mod events;
 mod extract;
+mod payments;
 mod vendors;
 mod workflows;
 
@@ -42,6 +44,9 @@ pub enum CommandError {
     Forbidden(String),
     #[error("{0}")]
     NotConfigured(&'static str),
+    /// The customer's bank refused or didn't answer.
+    #[error("{0}")]
+    Bank(String),
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
 }
@@ -58,6 +63,7 @@ impl CommandError {
             CommandError::PersonOnly(_) => "person_only",
             CommandError::Forbidden(_) => "forbidden",
             CommandError::NotConfigured(_) => "not_configured",
+            CommandError::Bank(_) => "bank_error",
             CommandError::Internal(_) => "internal",
         }
     }
@@ -71,6 +77,7 @@ impl CommandError {
             | CommandError::BadToken(_) => StatusCode::CONFLICT,
             CommandError::PersonOnly(_) | CommandError::Forbidden(_) => StatusCode::FORBIDDEN,
             CommandError::NotConfigured(_) => StatusCode::SERVICE_UNAVAILABLE,
+            CommandError::Bank(_) => StatusCode::BAD_GATEWAY,
             CommandError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -143,6 +150,7 @@ pub async fn run(
         storage: state.storage.as_deref(),
         inbound_domain: state.inbound.as_ref().map(|i| i.domain.as_str()),
         extractor: state.extractor.as_deref(),
+        bank: state.bank.as_deref(),
     };
     let result = execute(&mut cx, spec.name, &input).await?;
     let Cx { tx, events, .. } = cx;
@@ -170,6 +178,15 @@ async fn execute(cx: &mut Cx<'_>, name: &str, input: &Value) -> Result<Value, Co
         "vendor.list" => vendors::list(cx).await,
         "vendor.get" => vendors::get(cx, parse(input)?).await,
         "vendor.add_account" => vendors::add_account(cx, parse(input)?).await,
+        "vendor.propose_payee" => bank::propose_payee(cx, parse(input)?).await,
+        "vendor.accept_payee" => bank::decide_payee(cx, parse(input)?, true).await,
+        "vendor.decline_payee" => bank::decide_payee(cx, parse(input)?, false).await,
+        "bank.connect" => bank::connect(cx, parse(input)?).await,
+        "bank.get" => bank::get(cx).await,
+        "bank.disconnect" => bank::disconnect(cx).await,
+        "bank.recipients" => bank::recipients(cx, parse(input)?).await,
+        "payment.refresh" => payments::refresh(cx, parse(input)?).await,
+        "payment.list" => payments::list(cx, parse(input)?).await,
         "workflow.get" => workflows::get(cx, parse(input)?).await,
         "workflow.propose" => workflows::propose(cx, parse(input)?).await,
         "workflow.accept" => workflows::decide(cx, parse(input)?, true).await,
@@ -212,6 +229,7 @@ pub(crate) struct Cx<'a> {
     storage: Option<&'a payvy_storage::Storage>,
     inbound_domain: Option<&'a str>,
     extractor: Option<&'a payvy_extract::Extractor>,
+    bank: Option<&'a crate::Bank>,
 }
 
 impl<'a> Cx<'a> {
@@ -230,6 +248,12 @@ impl<'a> Cx<'a> {
     pub fn extractor(&self) -> Result<&'a payvy_extract::Extractor, CommandError> {
         self.extractor.ok_or(CommandError::NotConfigured(
             "reading documents isn't configured (set PAYVY_EXTRACT_PROVIDER and its key)",
+        ))
+    }
+
+    pub fn bank(&self) -> Result<&'a crate::Bank, CommandError> {
+        self.bank.ok_or(CommandError::NotConfigured(
+            "paying through a bank isn't configured (set PAYVY_SECRETS_KEY)",
         ))
     }
 

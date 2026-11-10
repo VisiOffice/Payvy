@@ -60,6 +60,8 @@ env:
     - PAYVY_S3_SECRET_KEY
     - PAYVY_INBOUND_SECRET
     - PAYVY_EXTRACT_API_KEY
+    # Seals bank API tokens (docs/payments.md). Losing it means reconnecting every bank.
+    - PAYVY_SECRETS_KEY
 
 accessories:
   db:

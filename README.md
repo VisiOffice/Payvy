@@ -8,8 +8,8 @@ Self-host it for free, or let us run it for one flat price per company.
 
 > **Status: early.** Working today: vendor workflows, bills, the document inbox on any
 > S3-compatible storage, email intake, reading bills with Claude or any OpenAI-compatible model,
-> the audit log, the REST API and the MCP server. Coming next: paying through Mercury, the web app,
-> and sync to VisiBooks, QuickBooks Online and Xero.
+> paying through Mercury, the audit log, the REST API and the MCP server. Coming next: the web
+> app, sync to VisiBooks, QuickBooks Online and Xero, and Ramp, Brex, Wise and Airwallex.
 
 ## Why not Bill.com
 
@@ -38,7 +38,8 @@ issue and we'll fix it.
 
 **What Bill.com has that Payvy doesn't (yet):** a network of millions of vendors already set up
 to be paid, broad international payouts with currency conversion, 1099 e-filing, and a mobile
-app. Payvy pays wherever your bank can, which for Mercury includes international wires.
+app. Through Mercury, Payvy pays by ACH, check, domestic wire and real-time payment today;
+international payments are planned through Wise and Airwallex.
 
 ## How it works
 
@@ -75,6 +76,13 @@ the vendor, flags duplicates and keeps a draft that someone enters with one comm
 anything with an OpenAI-compatible API: OpenAI, Gemini, Grok, OpenRouter, or a model on your own
 server so invoices never leave it. Sample invoices in the repo score any model before you trust it.
 See [`docs/extraction.md`](docs/extraction.md).
+
+**Paid from your bank, never twice.** Connect Mercury with an API token and link each vendor to
+a recipient you already have there. Payvy never stores account numbers, and only a person can
+change where a vendor is paid. A release sends the payment under a key the bank honours, so a
+retry can't pay twice; in request mode it also waits for approval in Mercury. Payvy watches the
+bank and marks the bill paid when the money has gone, or brings it back if the payment fails or an
+ACH is returned. See [`docs/payments.md`](docs/payments.md).
 
 **Every change is on the record.** Each change writes an event in the same database
 transaction, and organizations are isolated by Postgres row-level security.

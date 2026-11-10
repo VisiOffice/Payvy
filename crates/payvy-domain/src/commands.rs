@@ -67,6 +67,27 @@ pub const COMMANDS: &[CommandSpec] = &[
         person_only: false,
         input_schema: r#"{"type":"object","required":["vendor_id","account_number"],"properties":{"vendor_id":{"type":"string","format":"uuid"},"account_number":{"type":"string"},"location":{"type":"string","description":"e.g. 1420 Elm St site"}}}"#,
     },
+    CommandSpec {
+        name: "vendor.propose_payee",
+        summary: "Propose who this vendor's bills are paid to: a recipient already set up in the connected bank (see bank.recipients) and a method. The account's last four digits are shown for checking. Nothing changes until a person accepts it with vendor.accept_payee. Use this when a vendor's bank details change.",
+        tier: RiskTier::Routine,
+        person_only: false,
+        input_schema: r#"{"type":"object","required":["vendor_id","recipient_id","method"],"properties":{"vendor_id":{"type":"string","format":"uuid"},"recipient_id":{"type":"string","description":"The recipient's id in the bank"},"method":{"type":"string","enum":["ach","check","domestic_wire","real_time_payment"]},"reason":{"type":"string","description":"Why, for the person reviewing it, e.g. where the new details came from"}}}"#,
+    },
+    CommandSpec {
+        name: "vendor.accept_payee",
+        summary: "Accept a payee proposal: this vendor's bills are paid to it from now on. Check the destination with the vendor first; changed bank details are the most common way AP fraud happens.",
+        tier: RiskTier::Routine,
+        person_only: true,
+        input_schema: r#"{"type":"object","required":["proposal_id"],"properties":{"proposal_id":{"type":"string","format":"uuid"},"reason":{"type":"string"}}}"#,
+    },
+    CommandSpec {
+        name: "vendor.decline_payee",
+        summary: "Decline a payee proposal.",
+        tier: RiskTier::Routine,
+        person_only: true,
+        input_schema: r#"{"type":"object","required":["proposal_id"],"properties":{"proposal_id":{"type":"string","format":"uuid"},"reason":{"type":"string"}}}"#,
+    },
     // ── Workflows ───────────────────────────────────────────────────────────
     CommandSpec {
         name: "workflow.get",
@@ -145,14 +166,14 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "bill.release",
-        summary: "Release a bill for payment at its pay step. Preview first; commit with the returned token.",
+        summary: "Release a bill for payment at its pay step. With a bank connected, this sends the payment through it to the vendor's accepted payee; the preview shows exactly what will be sent. Preview first; commit with the returned token.",
         tier: RiskTier::Confirmed,
         person_only: true,
-        input_schema: r#"{"type":"object","required":["bill_id"],"properties":{"bill_id":{"type":"string","format":"uuid"}}}"#,
+        input_schema: r#"{"type":"object","required":["bill_id"],"properties":{"bill_id":{"type":"string","format":"uuid"},"pay_elsewhere":{"type":"boolean","description":"Release without paying through the connected bank; record the payment later with bill.mark_paid"}}}"#,
     },
     CommandSpec {
         name: "bill.mark_paid",
-        summary: "Record that a released or ready bill was paid outside Payvy (a check, a payment made in the bank's own app). Preview first; commit with the returned token.",
+        summary: "Record that a released or ready bill was paid outside Payvy (a check, a payment made in the bank's own app). Payments sent through the connected bank are recorded on their own. Preview first; commit with the returned token.",
         tier: RiskTier::Confirmed,
         person_only: false,
         input_schema: r#"{"type":"object","required":["bill_id","paid_on","method"],"properties":{"bill_id":{"type":"string","format":"uuid"},"paid_on":{"type":"string","format":"date"},"method":{"type":"string","enum":["ach","check","wire","card","other"]},"reference":{"type":"string","description":"Check number, transfer id"}}}"#,
@@ -163,6 +184,49 @@ pub const COMMANDS: &[CommandSpec] = &[
         tier: RiskTier::Confirmed,
         person_only: true,
         input_schema: r#"{"type":"object","required":["bill_id","reason"],"properties":{"bill_id":{"type":"string","format":"uuid"},"reason":{"type":"string"}}}"#,
+    },
+    // ── Bank and payments ───────────────────────────────────────────────────
+    CommandSpec {
+        name: "bank.connect",
+        summary: "Connect the bank bills are paid from (Mercury) with an API token from its dashboard, replacing any earlier connection. Payvy keeps the token encrypted and never holds money or account numbers. mode request (default): payments wait in Mercury for a Mercury admin to approve them; needs a Custom token with the RequestSendMoney scope. mode direct: payments go at once; needs a Read and Write token that allows this server's IP.",
+        tier: RiskTier::Routine,
+        person_only: true,
+        input_schema: r#"{"type":"object","required":["provider","token"],"properties":{"provider":{"type":"string","enum":["mercury"]},"token":{"type":"string"},"environment":{"type":"string","enum":["production","sandbox"]},"mode":{"type":"string","enum":["request","direct"]},"account_id":{"type":"string","description":"The account to pay from, if there is more than one"}}}"#,
+    },
+    CommandSpec {
+        name: "bank.get",
+        summary: "The connected bank: provider, account paid from and mode. Null when none is connected.",
+        tier: RiskTier::Read,
+        person_only: false,
+        input_schema: r#"{"type":"object","properties":{}}"#,
+    },
+    CommandSpec {
+        name: "bank.disconnect",
+        summary: "Disconnect the bank. No new payments are sent; ones already sent are still tracked.",
+        tier: RiskTier::Routine,
+        person_only: true,
+        input_schema: r#"{"type":"object","properties":{}}"#,
+    },
+    CommandSpec {
+        name: "bank.recipients",
+        summary: "Recipients set up in the connected bank, with the ways each can be paid and the last four digits of each account. Use one with vendor.propose_payee.",
+        tier: RiskTier::Read,
+        person_only: false,
+        input_schema: r#"{"type":"object","properties":{"search":{"type":"string","description":"Part of the name"}}}"#,
+    },
+    CommandSpec {
+        name: "payment.list",
+        summary: "Payments sent through the bank, newest first, or only those still waiting on the bank.",
+        tier: RiskTier::Read,
+        person_only: false,
+        input_schema: r#"{"type":"object","properties":{"open":{"type":"boolean"},"limit":{"type":"integer","minimum":1,"maximum":500}}}"#,
+    },
+    CommandSpec {
+        name: "payment.refresh",
+        summary: "Ask the bank where a payment stands now and record it: sent marks the bill paid; failed, cancelled or rejected sends the bill back for release; returned reopens a paid bill. Payvy does this on its own every minute or two.",
+        tier: RiskTier::Routine,
+        person_only: false,
+        input_schema: r#"{"type":"object","required":["payment_id"],"properties":{"payment_id":{"type":"string","format":"uuid"}}}"#,
     },
     // ── Documents ───────────────────────────────────────────────────────────
     CommandSpec {

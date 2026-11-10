@@ -49,6 +49,14 @@ Conventions follow Visirent (`~/Code/visirent`).
   (Claude Messages API, OpenAI-compatible chat completions); don't add a provider-specific schema.
   An extraction never creates a bill: `bill.create` with `extraction_id` does, and records what was
   corrected. When the prompt or schema changes, run `payvy extract-eval fixtures/invoices`.
+- **Payvy never moves money; the customer's bank does** (`payvy-pay`, `commands/bank.rs`,
+  `commands/payments.rs`). Store the bank's recipient id and the last four digits, never an
+  account or routing number. Bank tokens are sealed with `PAYVY_SECRETS_KEY` (`secrets.rs`) and
+  never appear in a result or event. Payees are proposed by anyone and accepted only by a person.
+  Every attempt has a deterministic idempotency key; an unclear answer (`BankError::Unclear`)
+  leaves the payment `submitting` to be resent with the same key, never a new one. Only the
+  bank's answer marks a released bill paid (`payments::apply`). New banks implement the same
+  shape in `payvy-pay`; tests use a fake bank (`tests/payments.rs`), never a real one.
 - **The README compares Payvy with Bill.com.** Keep every Bill.com figure sourced and dated, and
   keep the "what Bill.com has that Payvy doesn't" list honest.
 - SQL is static strings (`concat!` with the column macros); sqlx 0.9 refuses runtime-built SQL.

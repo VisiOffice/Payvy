@@ -4,6 +4,7 @@ members = [
     "crates/payvy-store",
     "crates/payvy-storage",
     "crates/payvy-extract",
+    "crates/payvy-pay",
     "crates/payvy-server",
 ]
 resolver = "2"
@@ -19,6 +20,7 @@ payvy-domain = { path = "crates/payvy-domain" }
 payvy-store = { path = "crates/payvy-store" }
 payvy-storage = { path = "crates/payvy-storage" }
 payvy-extract = { path = "crates/payvy-extract" }
+payvy-pay = { path = "crates/payvy-pay" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
@@ -35,6 +37,7 @@ hmac = "0.12"
 sha2 = "0.10"
 hex = "0.4"
 getrandom = "0.3"
+chacha20poly1305 = "0.10"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 rusty-s3 = "0.11"
 url = "2"

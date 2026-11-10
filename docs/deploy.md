@@ -35,7 +35,8 @@ Kamal runs under the mise Ruby; if it reports `can't find gem kamal`:
 
 1. Create the secrets in 1Password without seeing them (each `openssl rand -hex 32 | vp create
    api-credential --stdin --title ... --vault ...`): Postgres superuser password, app role
-   password, `PAYVY_API_KEY`, `PAYVY_INBOUND_SECRET`. Add an R2 API token scoped to
+   password, `PAYVY_API_KEY`, `PAYVY_INBOUND_SECRET`, `PAYVY_SECRETS_KEY` (seals bank tokens;
+   losing it means reconnecting every bank). Add an R2 API token scoped to
    `payvy-documents` (Object Read & Write) as two items, and an Anthropic API key for reading
    documents (`PAYVY_EXTRACT_API_KEY`). Put the references in `.kamal/secrets`.
 2. Cloudflare: A record `api.payvy.com` → 5.78.94.150 (DNS only); Email Routing → add the
@@ -47,3 +48,5 @@ Kamal runs under the mise Ruby; if it reports `can't find gem kamal`:
 5. Legacy worker: `wrangler secret put PAYVY_INBOUND_SECRET` and deploy it.
 6. Create the first person key (`kamal app exec "payvy key create --actor robert --kind person"`)
    and the inbound address (`email.new_address`), then send a test bill.
+7. Paying through Mercury: in direct mode, add 5.78.94.150 to the token's IP allowlist; request
+   mode needs none. Connect with `bank.connect` (see `docs/payments.md`).

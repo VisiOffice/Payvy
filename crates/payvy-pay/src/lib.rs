@@ -1,0 +1,525 @@
+//! Paying a bill from the customer's own bank account.
+//!
+//! Payvy never holds or moves money. It asks the customer's bank, through
+//! the bank's API and with the customer's own token, to pay a recipient the
+//! customer already set up there. Bank account numbers stay in the bank:
+//! Payvy keeps the recipient's id and shows people only the last four digits.
+//!
+//! Mercury is the first bank. Its two kinds of token map to two modes:
+//!
+//! - **request**: a Custom token with the `RequestSendMoney` scope. The
+//!   payment waits in Mercury until a Mercury admin approves it there (not the
+//!   person who made the token). No IP allowlist needed. The default.
+//! - **direct**: a Read and Write token. Mercury sends at once. Mercury
+//!   requires the server's IP on the token's allowlist.
+//!
+//! Ramp, Brex, Wise and Airwallex fit the same shape: list recipients, send
+//! or request a payment under an idempotency key, read its status.
+
+use std::time::Duration;
+
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Method {
+    Ach,
+    Check,
+    DomesticWire,
+    RealTimePayment,
+}
+
+impl Method {
+    pub fn parse(s: &str) -> Option<Self> {
+        serde_json::from_value(json!(s)).ok()
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Method::Ach => "ach",
+            Method::Check => "check",
+            Method::DomesticWire => "domestic_wire",
+            Method::RealTimePayment => "real_time_payment",
+        }
+    }
+
+    fn mercury(self) -> &'static str {
+        match self {
+            Method::Ach => "ach",
+            Method::Check => "check",
+            Method::DomesticWire => "domesticWire",
+            Method::RealTimePayment => "realTimePayment",
+        }
+    }
+}
+
+/// Where a payment stands at the bank, the same for every bank.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Status {
+    /// Waiting for someone to approve it inside the bank.
+    AwaitingBankApproval,
+    /// Accepted by the bank, not yet sent.
+    Pending,
+    Sent,
+    Failed,
+    Cancelled,
+    /// A bank approver turned it down.
+    Rejected,
+    /// Sent, then came back (an ACH return).
+    Returned,
+}
+
+impl Status {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Status::AwaitingBankApproval => "awaiting_bank_approval",
+            Status::Pending => "pending",
+            Status::Sent => "sent",
+            Status::Failed => "failed",
+            Status::Cancelled => "cancelled",
+            Status::Rejected => "rejected",
+            Status::Returned => "returned",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        serde_json::from_value(json!(s)).ok()
+    }
+
+    /// Nothing more will happen to it without a person, except that a sent
+    /// ACH can still come back as returned.
+    pub fn is_final(self) -> bool {
+        !matches!(self, Status::AwaitingBankApproval | Status::Pending)
+    }
+
+    /// The money didn't go (or came back): the bill needs paying again.
+    pub fn did_not_pay(self) -> bool {
+        matches!(
+            self,
+            Status::Failed | Status::Cancelled | Status::Rejected | Status::Returned
+        )
+    }
+
+    fn from_mercury_transaction(s: &str) -> Self {
+        match s {
+            "pending" => Status::Pending,
+            "sent" => Status::Sent,
+            "cancelled" => Status::Cancelled,
+            "reversed" => Status::Returned,
+            // failed, blocked, and anything new: treat as not paid, so a
+            // person looks at it rather than Payvy assuming it went.
+            _ => Status::Failed,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Mode {
+    Request,
+    Direct,
+}
+
+impl Mode {
+    pub fn parse(s: &str) -> Option<Self> {
+        serde_json::from_value(json!(s)).ok()
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Mode::Request => "request",
+            Mode::Direct => "direct",
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum BankError {
+    #[error("the bank refused the token: {0}")]
+    Unauthorized(String),
+    /// The bank answered and did not create anything (a bad request, a
+    /// duplicate it blocked, an unknown recipient). Safe to report as failed.
+    #[error("the bank refused: {0}")]
+    Refused(String),
+    /// No clear answer (a timeout, a 5xx): the payment may or may not exist.
+    /// Retry with the same idempotency key to find out.
+    #[error("the bank didn't answer clearly: {0}")]
+    Unclear(String),
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Account {
+    pub id: String,
+    pub name: String,
+    pub status: String,
+    pub available_cents: i64,
+    pub can_send_real_time: bool,
+}
+
+/// A payee as set up in the bank. Only the last four digits of an account
+/// number ever leave this crate.
+#[derive(Debug, Clone, Serialize)]
+pub struct Recipient {
+    pub id: String,
+    pub name: String,
+    pub active: bool,
+    pub emails: Vec<String>,
+    /// The ways this recipient can be paid, with the account's last four.
+    pub methods: Vec<RecipientMethod>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RecipientMethod {
+    pub method: Method,
+    /// "…6789" for electronic methods; the city for a check.
+    pub destination: String,
+}
+
+impl Recipient {
+    pub fn accepts(&self, method: Method) -> bool {
+        self.methods.iter().any(|m| m.method == method)
+    }
+
+    pub fn destination(&self, method: Method) -> Option<&str> {
+        self.methods
+            .iter()
+            .find(|m| m.method == method)
+            .map(|m| m.destination.as_str())
+    }
+}
+
+pub struct Payment<'a> {
+    pub account_id: &'a str,
+    pub recipient_id: &'a str,
+    pub amount_cents: i64,
+    pub method: Method,
+    /// The same key always means the same payment: a retry can't pay twice.
+    pub idempotency_key: &'a str,
+    /// Shown to the customer in the bank.
+    pub note: &'a str,
+    /// Shown to the vendor, e.g. the invoice number.
+    pub memo: &'a str,
+}
+
+/// What the bank says about one payment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Observed {
+    pub status: Status,
+    /// The bank's transaction id, once there is one.
+    pub transaction_id: Option<String>,
+    /// The approval request's id, in request mode.
+    pub request_id: Option<String>,
+    pub failure: Option<String>,
+    /// The link to it in the bank's own app.
+    pub link: Option<String>,
+}
+
+pub struct Mercury {
+    base: String,
+    token: String,
+    http: reqwest::Client,
+}
+
+pub const MERCURY_PRODUCTION: &str = "https://api.mercury.com/api/v1";
+pub const MERCURY_SANDBOX: &str = "https://api-sandbox.mercury.com/api/v1";
+
+fn cents(amount: &Value) -> i64 {
+    (amount.as_f64().unwrap_or(0.0).abs() * 100.0).round() as i64
+}
+
+fn last4(number: &str) -> String {
+    let digits: Vec<char> = number.chars().filter(char::is_ascii_alphanumeric).collect();
+    let tail: String = digits[digits.len().saturating_sub(4)..].iter().collect();
+    format!("…{tail}")
+}
+
+fn observed_transaction(t: &Value) -> Observed {
+    Observed {
+        status: Status::from_mercury_transaction(t["status"].as_str().unwrap_or("")),
+        transaction_id: t["id"].as_str().map(str::to_owned),
+        request_id: t["requestId"].as_str().map(str::to_owned),
+        failure: t["reasonForFailure"].as_str().map(str::to_owned),
+        link: t["dashboardLink"].as_str().map(str::to_owned),
+    }
+}
+
+fn observed_request(r: &Value) -> Observed {
+    let status = match r["status"].as_str().unwrap_or("") {
+        "pendingApproval" => Status::AwaitingBankApproval,
+        // Approved: Mercury now makes the transaction; it shows up under
+        // the request's id.
+        "approved" => Status::Pending,
+        "rejected" => Status::Rejected,
+        _ => Status::Cancelled,
+    };
+    Observed {
+        status,
+        transaction_id: None,
+        request_id: r["requestId"].as_str().map(str::to_owned),
+        failure: (status == Status::Rejected).then(|| "rejected by an approver in Mercury".into()),
+        link: None,
+    }
+}
+
+impl Mercury {
+    pub fn new(base: &str, token: &str) -> anyhow::Result<Self> {
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(60))
+            .build()?;
+        Ok(Self {
+            base: base.trim_end_matches('/').to_owned(),
+            token: token.trim().to_owned(),
+            http,
+        })
+    }
+
+    async fn call(&self, req: reqwest::RequestBuilder) -> Result<(u16, Value), BankError> {
+        let res = req
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| BankError::Unclear(format!("couldn't reach Mercury: {e}")))?;
+        let status = res.status().as_u16();
+        let body: Value = res.json().await.unwrap_or(Value::Null);
+        Ok((status, body))
+    }
+
+    fn error(status: u16, body: &Value) -> BankError {
+        let message = body["errors"]["message"]
+            .as_str()
+            .or_else(|| body["message"].as_str())
+            .or_else(|| body["error"].as_str())
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("HTTP {status}"));
+        match status {
+            401 | 403 => BankError::Unauthorized(message),
+            400..=499 => BankError::Refused(message),
+            _ => BankError::Unclear(message),
+        }
+    }
+
+    async fn get(&self, path: &str) -> Result<Value, BankError> {
+        let (status, body) = self
+            .call(self.http.get(format!("{}{path}", self.base)))
+            .await?;
+        if (200..300).contains(&status) {
+            Ok(body)
+        } else {
+            Err(Self::error(status, &body))
+        }
+    }
+
+    pub async fn accounts(&self) -> Result<Vec<Account>, BankError> {
+        let body = self.get("/accounts").await?;
+        Ok(body["accounts"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|a| Account {
+                id: a["id"].as_str().unwrap_or_default().to_owned(),
+                name: a["name"].as_str().unwrap_or_default().to_owned(),
+                status: a["status"].as_str().unwrap_or_default().to_owned(),
+                available_cents: cents(&a["availableBalance"]),
+                can_send_real_time: a["canSendRealTimePayments"].as_bool().unwrap_or(false),
+            })
+            .collect())
+    }
+
+    fn recipient(r: &Value) -> Recipient {
+        let mut methods = Vec::new();
+        for (key, method) in [
+            ("electronicRoutingInfo", Method::Ach),
+            ("domesticWireRoutingInfo", Method::DomesticWire),
+            ("realTimePaymentRoutingInfo", Method::RealTimePayment),
+        ] {
+            if let Some(n) = r[key]["accountNumber"].as_str() {
+                methods.push(RecipientMethod {
+                    method,
+                    destination: last4(n),
+                });
+            }
+        }
+        if r["checkInfo"]["address"].is_object() {
+            let a = &r["checkInfo"]["address"];
+            methods.push(RecipientMethod {
+                method: Method::Check,
+                destination: format!(
+                    "check to {}, {}",
+                    a["city"].as_str().unwrap_or("?"),
+                    a["region"].as_str().unwrap_or("?")
+                ),
+            });
+        }
+        Recipient {
+            id: r["id"].as_str().unwrap_or_default().to_owned(),
+            name: r["name"].as_str().unwrap_or_default().to_owned(),
+            active: r["status"] == "active",
+            emails: r["emails"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|e| e.as_str().map(str::to_owned))
+                .collect(),
+            methods,
+        }
+    }
+
+    /// Every recipient, following Mercury's pages.
+    pub async fn recipients(&self) -> Result<Vec<Recipient>, BankError> {
+        let mut out = Vec::new();
+        let mut after: Option<String> = None;
+        loop {
+            let path = match &after {
+                Some(a) => format!("/recipients?limit=1000&start_after={a}"),
+                None => "/recipients?limit=1000".to_owned(),
+            };
+            let body = self.get(&path).await?;
+            let page: Vec<Recipient> = body["recipients"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(Self::recipient)
+                .collect();
+            let next = body["page"]["nextPage"].as_str().map(str::to_owned);
+            let empty = page.is_empty();
+            out.extend(page);
+            match next {
+                Some(n) if !empty && after.as_deref() != Some(n.as_str()) => after = Some(n),
+                _ => return Ok(out),
+            }
+        }
+    }
+
+    pub async fn recipient_by_id(&self, id: &str) -> Result<Option<Recipient>, BankError> {
+        match self.get(&format!("/recipient/{id}")).await {
+            Ok(r) => Ok(Some(Self::recipient(&r))),
+            Err(BankError::Refused(_)) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Sends (direct) or asks to send (request). Retrying with the same
+    /// idempotency key returns the payment already made instead of a second.
+    pub async fn pay(&self, mode: Mode, p: &Payment<'_>) -> Result<Observed, BankError> {
+        let amount = serde_json::Number::from_f64(p.amount_cents as f64 / 100.0)
+            .ok_or_else(|| BankError::Refused("amount isn't a number".into()))?;
+        let mut body = json!({
+            "recipientId": p.recipient_id,
+            "amount": amount,
+            "paymentMethod": p.method.mercury(),
+            "idempotencyKey": p.idempotency_key,
+            "note": p.note,
+            "externalMemo": p.memo,
+        });
+        if p.method == Method::DomesticWire {
+            body["purpose"] =
+                json!({ "simple": { "category": "vendor", "additionalInfo": p.memo } });
+        }
+        let path = match mode {
+            Mode::Direct => format!("/account/{}/transactions", p.account_id),
+            Mode::Request => format!("/account/{}/request-send-money", p.account_id),
+        };
+        let (status, body) = self
+            .call(self.http.post(format!("{}{path}", self.base)).json(&body))
+            .await?;
+        // 409: this key was used already; the body is what it made.
+        if (200..300).contains(&status) || status == 409 {
+            return Ok(match mode {
+                Mode::Direct => observed_transaction(&body),
+                Mode::Request => observed_request(&body),
+            });
+        }
+        Err(Self::error(status, &body))
+    }
+
+    /// Where a payment stands now. In request mode, once approved, the
+    /// transaction is found by the request's id.
+    pub async fn status(
+        &self,
+        account_id: &str,
+        transaction_id: Option<&str>,
+        request_id: Option<&str>,
+    ) -> Result<Observed, BankError> {
+        if let Some(t) = transaction_id {
+            let mut o = observed_transaction(
+                &self
+                    .get(&format!("/account/{account_id}/transaction/{t}"))
+                    .await?,
+            );
+            o.request_id = o.request_id.or(request_id.map(str::to_owned));
+            return Ok(o);
+        }
+        let Some(r) = request_id else {
+            return Err(BankError::Refused(
+                "nothing to look up: no transaction or request id".into(),
+            ));
+        };
+        let request = observed_request(&self.get(&format!("/request-send-money/{r}")).await?);
+        if request.status != Status::Pending {
+            return Ok(request);
+        }
+        let found = self
+            .get(&format!(
+                "/account/{account_id}/transactions?requestId={r}&limit=10"
+            ))
+            .await?;
+        Ok(
+            match found["transactions"].as_array().and_then(|t| t.first()) {
+                Some(t) => {
+                    let mut o = observed_transaction(t);
+                    o.request_id = Some(r.to_owned());
+                    o
+                }
+                // Approved, transaction not made yet.
+                None => request,
+            },
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recipients_keep_only_the_last_four() {
+        let r = Mercury::recipient(&json!({
+            "id": "r1", "name": "King Environmental", "status": "active", "emails": ["ar@kingenv.com"],
+            "electronicRoutingInfo": { "accountNumber": "000123456789", "routingNumber": "121000248" },
+            "checkInfo": { "address": { "address1": "PO Box 4410", "city": "Mesa", "region": "AZ" } }
+        }));
+        assert_eq!(r.destination(Method::Ach), Some("…6789"));
+        assert_eq!(r.destination(Method::Check), Some("check to Mesa, AZ"));
+        assert!(!r.accepts(Method::DomesticWire));
+        let shown = serde_json::to_string(&r).unwrap();
+        assert!(!shown.contains("123456789") && !shown.contains("121000248"));
+    }
+
+    #[test]
+    fn mercury_statuses_map_conservatively() {
+        let t = |s: &str| observed_transaction(&json!({ "id": "t", "status": s })).status;
+        assert_eq!(t("pending"), Status::Pending);
+        assert_eq!(t("sent"), Status::Sent);
+        assert_eq!(t("reversed"), Status::Returned);
+        assert_eq!(t("blocked"), Status::Failed);
+        assert_eq!(t("something-new"), Status::Failed);
+        let r = |s: &str| observed_request(&json!({ "requestId": "q", "status": s })).status;
+        assert_eq!(r("pendingApproval"), Status::AwaitingBankApproval);
+        assert_eq!(r("approved"), Status::Pending);
+        assert_eq!(r("rejected"), Status::Rejected);
+        assert!(Status::Returned.did_not_pay() && Status::Sent.is_final());
+        assert!(!Status::Pending.is_final());
+    }
+
+    #[test]
+    fn amounts_are_dollars_on_the_wire() {
+        assert_eq!(cents(&json!(-1234.56)), 123_456);
+        assert_eq!(cents(&json!(0.1)), 10);
+        let n = serde_json::Number::from_f64(45_900_f64 / 100.0).unwrap();
+        assert_eq!(n.to_string(), "459.0");
+        let n = serde_json::Number::from_f64(123_456_f64 / 100.0).unwrap();
+        assert_eq!(n.to_string(), "1234.56");
+    }
+}

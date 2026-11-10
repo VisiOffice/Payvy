@@ -52,7 +52,8 @@ pub async fn get(cx: &mut Cx<'_>, input: Get) -> Result<Value, CommandError> {
         .ok_or(CommandError::NotFound("vendor"))?;
     let accounts = store::vendor_accounts(&mut cx.tx, v.id).await?;
     let workflow = workflows::current(cx, Some(v.id)).await?;
-    Ok(json!({ "vendor": v, "accounts": accounts, "workflow": workflow }))
+    let payees = store::vendor_payees(&mut cx.tx, v.id).await?;
+    Ok(json!({ "vendor": v, "accounts": accounts, "workflow": workflow, "payees": payees }))
 }
 
 #[derive(Deserialize)]

@@ -33,6 +33,11 @@ enum Command {
         /// called.
         #[arg(long, env = "PAYVY_EXTRACT_AUTO", default_value_t = true, action = clap::ArgAction::Set)]
         extract_auto: bool,
+        /// Seals customers' bank tokens in the database: 64 hex characters
+        /// (`openssl rand -hex 32`). Without it, bills are paid outside
+        /// Payvy and marked paid. Losing it means reconnecting every bank.
+        #[arg(long, env = "PAYVY_SECRETS_KEY", hide_env_values = true)]
+        secrets_key: Option<String>,
     },
     /// Score the configured extraction model against sample documents with
     /// known answers, e.g. fixtures/invoices. Sends each one to the model.
@@ -205,6 +210,7 @@ async fn main() -> anyhow::Result<()> {
             inbound,
             extract,
             extract_auto,
+            ref secrets_key,
         } => {
             let api_key = api_key.clone();
             anyhow::ensure!(
@@ -238,6 +244,15 @@ async fn main() -> anyhow::Result<()> {
                 None => tracing::warn!(
                     "no extraction model configured; documents aren't read automatically"
                 ),
+            }
+            match secrets_key {
+                Some(key) => {
+                    let sealer = payvy_server::secrets::Sealer::from_hex(key)?;
+                    state = state.with_bank(payvy_server::Bank::new(sealer));
+                    tokio::spawn(payvy_server::payment_worker::run(state.clone()));
+                    tracing::info!("paying through connected banks");
+                }
+                None => tracing::warn!("PAYVY_SECRETS_KEY not set; bills are paid outside Payvy"),
             }
             let listener = tokio::net::TcpListener::bind(bind).await?;
             tracing::info!("payvy listening on http://{bind}");

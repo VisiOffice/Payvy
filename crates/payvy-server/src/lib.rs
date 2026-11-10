@@ -4,6 +4,8 @@ pub mod eval;
 pub mod extract_worker;
 pub mod inbound;
 pub mod mcp;
+pub mod payment_worker;
+pub mod secrets;
 
 use std::sync::Arc;
 
@@ -74,6 +76,27 @@ pub struct AppState {
     /// None when no model is configured to read documents: document.extract
     /// says so, and the background reader doesn't run.
     pub extractor: Option<Arc<payvy_extract::Extractor>>,
+    /// None when PAYVY_SECRETS_KEY isn't set: bank commands say so, and
+    /// bills are paid outside Payvy and marked paid.
+    pub bank: Option<Arc<Bank>>,
+}
+
+/// Paying through the customer's bank: the key bank tokens are sealed with,
+/// and where each bank's API is (tests point these at a fake).
+pub struct Bank {
+    pub sealer: secrets::Sealer,
+    pub mercury_production: String,
+    pub mercury_sandbox: String,
+}
+
+impl Bank {
+    pub fn new(sealer: secrets::Sealer) -> Self {
+        Self {
+            sealer,
+            mercury_production: payvy_pay::MERCURY_PRODUCTION.into(),
+            mercury_sandbox: payvy_pay::MERCURY_SANDBOX.into(),
+        }
+    }
 }
 
 impl AppState {
@@ -90,6 +113,7 @@ impl AppState {
             storage: None,
             inbound: None,
             extractor: None,
+            bank: None,
         }
     }
 
@@ -105,6 +129,11 @@ impl AppState {
 
     pub fn with_extractor(mut self, extractor: payvy_extract::Extractor) -> Self {
         self.extractor = Some(Arc::new(extractor));
+        self
+    }
+
+    pub fn with_bank(mut self, bank: Bank) -> Self {
+        self.bank = Some(Arc::new(bank));
         self
     }
 

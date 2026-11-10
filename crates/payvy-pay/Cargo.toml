@@ -1,0 +1,19 @@
+[package]
+name = "payvy-pay"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Instructs the customer's own bank to pay. Payvy never holds or moves the
+# money: it asks the bank, through the bank's API, with the customer's token.
+# Mercury today; Ramp, Brex, Wise and Airwallex fit the same shape.
+[dependencies]
+anyhow.workspace = true
+reqwest = { workspace = true, features = ["json"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true

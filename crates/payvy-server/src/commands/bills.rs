@@ -12,7 +12,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use super::{CommandError, Cx, documents, extract, text};
+use super::{CommandError, Cx, documents, extract, payments, text};
 
 /// The workflow a bill follows: the version it arrived under.
 async fn workflow_of(cx: &mut Cx<'_>, bill: &Bill) -> Result<Workflow, CommandError> {
@@ -83,7 +83,9 @@ async fn detail(cx: &mut Cx<'_>, bill_id: Uuid) -> Result<Value, CommandError> {
     let lines = store::bill_lines(&mut cx.tx, bill.id).await?;
     let history = store::list_events(&mut cx.tx, Some(bill.id), 200).await?;
     let documents = store::bill_documents(&mut cx.tx, bill.id).await?;
+    let payments = store::bill_payments(&mut cx.tx, bill.id).await?;
     Ok(json!({
+        "payments": payments,
         "bill": bill,
         "lines": lines,
         "progress": progress,
@@ -425,6 +427,10 @@ pub async fn signal(cx: &mut Cx<'_>, input: SignalInput) -> Result<Value, Comman
 #[serde(deny_unknown_fields)]
 pub struct Release {
     bill_id: Uuid,
+    /// Release without sending a payment through the connected bank: it
+    /// will be paid some other way, then marked paid.
+    #[serde(default)]
+    pay_elsewhere: bool,
 }
 
 pub async fn release(cx: &mut Cx<'_>, input: Release) -> Result<Value, CommandError> {
@@ -449,14 +455,60 @@ pub async fn release(cx: &mut Cx<'_>, input: Release) -> Result<Value, CommandEr
             )));
         }
     }
+    // With a bank connected, a release pays through it, to the payee a
+    // person accepted for this vendor.
+    let connection = store::live_connection(&mut cx.tx).await?;
+    let pay = match (&connection, input.pay_elsewhere) {
+        (Some(c), false) => {
+            let vendor = store::get_vendor(&mut cx.tx, bill.vendor_id)
+                .await?
+                .ok_or(CommandError::NotFound("vendor"))?;
+            let payee = store::active_payee(&mut cx.tx, bill.vendor_id)
+                .await?
+                .filter(|p| p.connection_id == c.id)
+                .ok_or_else(|| {
+                    CommandError::Conflict(format!(
+                        "{} has no payee at {} yet: propose one with vendor.propose_payee and have a person \
+                         accept it, or release with pay_elsewhere: true to pay outside Payvy",
+                        vendor.name, c.account_name
+                    ))
+                })?;
+            Some((c.clone(), payee))
+        }
+        _ => None,
+    };
     store::release_bill(&mut cx.tx, bill.id, &cx.actor.name, cx.now).await?;
+    let plan = pay.as_ref().map(|(c, p)| payments::plan(&bill, c, p));
     cx.emit(
         "bill.released",
         bill.id,
-        json!({ "bill_id": bill.id, "amount_cents": bill.amount_cents }),
+        json!({ "bill_id": bill.id, "amount_cents": bill.amount_cents, "payment": plan }),
     )
     .await?;
-    detail(cx, bill.id).await
+    if let Some((c, payee)) = &pay
+        && !cx.preview
+    {
+        // The bank is asked only on commit; the preview shows the plan.
+        payments::submit(cx, &bill, c, payee).await?;
+    }
+    let mut out = detail(cx, bill.id).await?;
+    out["payment_plan"] = json!(plan);
+    if pay.is_none() {
+        out["next"] = json!("pay it outside Payvy, then record it with bill.mark_paid");
+    }
+    Ok(out)
+}
+
+/// Refuses while the bank is still working on a payment for this bill.
+async fn no_open_payment(cx: &mut Cx<'_>, bill_id: Uuid) -> Result<(), CommandError> {
+    let payments = store::bill_payments(&mut cx.tx, bill_id).await?;
+    if let Some(p) = payments.iter().find(|p| payments::is_open(&p.status)) {
+        return Err(CommandError::Conflict(format!(
+            "payment {} for this bill is {} at the bank; wait for it, or cancel it in the bank",
+            p.id, p.status
+        )));
+    }
+    Ok(())
 }
 
 // ── Closing ─────────────────────────────────────────────────────────────────
@@ -477,6 +529,7 @@ pub async fn mark_paid(cx: &mut Cx<'_>, input: MarkPaid) -> Result<Value, Comman
         ));
     }
     let (bill, _, progress) = open_bill(cx, input.bill_id).await?;
+    no_open_payment(cx, bill.id).await?;
     if !matches!(
         progress.status,
         Status::Released { .. } | Status::ReadyToPay
@@ -550,6 +603,7 @@ async fn close(
     let reason = text(Some(input.reason))
         .ok_or_else(|| CommandError::Invalid("reason can't be empty".into()))?;
     let (bill, _, progress) = open_bill(cx, input.bill_id).await?;
+    no_open_payment(cx, bill.id).await?;
     store::close_bill(&mut cx.tx, bill.id, state, &reason).await?;
     cx.emit(
         event,

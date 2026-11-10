@@ -22,8 +22,12 @@ impl Confirmer {
     }
 
     pub fn issue(&self, command: &str, input: &serde_json::Value) -> String {
-        let at = now();
-        let mac = self.mac(at, command, input).finalize().into_bytes();
+        // The nonce makes every preview's token distinct, so a second preview
+        // of the same input in the same second isn't refused as already used.
+        let mut nonce = [0u8; 8];
+        getrandom::fill(&mut nonce).expect("system randomness");
+        let at = format!("{}-{}", now(), hex::encode(nonce));
+        let mac = self.mac(&at, command, input).finalize().into_bytes();
         format!("{at}.{}", hex::encode(mac))
     }
 
@@ -34,26 +38,28 @@ impl Confirmer {
         command: &str,
         input: &serde_json::Value,
     ) -> Result<(), String> {
-        let (at, mac) = token
+        let (stamp, mac) = token
             .split_once('.')
             .ok_or_else(|| "Malformed confirm_token.".to_owned())?;
-        let at: u64 = at
-            .parse()
-            .map_err(|_| "Malformed confirm_token.".to_owned())?;
+        let at: u64 = stamp
+            .split('-')
+            .next()
+            .and_then(|s| s.parse().ok())
+            .ok_or_else(|| "Malformed confirm_token.".to_owned())?;
         let mac = hex::decode(mac).map_err(|_| "Malformed confirm_token.".to_owned())?;
         if now().saturating_sub(at) > TTL_SECS {
             return Err("confirm_token has expired (30 minutes). Preview again.".to_owned());
         }
-        self.mac(at, command, input).verify_slice(&mac).map_err(|_| {
+        self.mac(stamp, command, input).verify_slice(&mac).map_err(|_| {
             "confirm_token does not match: the command or its input changed since the preview. Preview again."
                 .to_owned()
         })
     }
 
     // serde_json objects keep keys sorted, so the same input always signs the same.
-    fn mac(&self, at: u64, command: &str, input: &serde_json::Value) -> HmacSha256 {
+    fn mac(&self, stamp: &str, command: &str, input: &serde_json::Value) -> HmacSha256 {
         let mut mac = HmacSha256::new_from_slice(&self.key).expect("HMAC takes any key length");
-        mac.update(format!("{at}\n{command}\n{input}").as_bytes());
+        mac.update(format!("{stamp}\n{command}\n{input}").as_bytes());
         mac
     }
 }
@@ -89,6 +95,16 @@ mod tests {
         assert!(
             c.check(&t, "bill.void", &json!({"amount_cents": 100}))
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn two_previews_get_two_tokens() {
+        let c = Confirmer::new(b"k");
+        let input = json!({"bill_id": "b"});
+        assert_ne!(
+            c.issue("bill.release", &input),
+            c.issue("bill.release", &input)
         );
     }
 

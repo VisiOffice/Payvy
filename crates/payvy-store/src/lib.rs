@@ -1401,3 +1401,489 @@ pub async fn bill_with_invoice_key(
     .await?;
     Ok(row.map(|r| r.get("id")))
 }
+
+// ── Paying through the customer's bank ──────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BankConnection {
+    pub id: Uuid,
+    pub provider: String,
+    pub environment: String,
+    pub mode: String,
+    pub account_id: String,
+    pub account_name: String,
+    #[serde(skip)]
+    pub token_sealed: Vec<u8>,
+    pub created_at: DateTime<Utc>,
+    pub created_by: String,
+    pub retired_at: Option<DateTime<Utc>>,
+}
+
+macro_rules! connection_cols {
+    () => {
+        "id, provider, environment, mode, account_id, account_name, token_sealed, created_at, created_by, retired_at"
+    };
+}
+
+fn connection(r: &PgRow) -> BankConnection {
+    BankConnection {
+        id: r.get("id"),
+        provider: r.get("provider"),
+        environment: r.get("environment"),
+        mode: r.get("mode"),
+        account_id: r.get("account_id"),
+        account_name: r.get("account_name"),
+        token_sealed: r.get("token_sealed"),
+        created_at: r.get("created_at"),
+        created_by: r.get("created_by"),
+        retired_at: r.get("retired_at"),
+    }
+}
+
+pub struct NewConnection<'a> {
+    pub id: Uuid,
+    pub provider: &'a str,
+    pub environment: &'a str,
+    pub mode: &'a str,
+    pub account_id: &'a str,
+    pub account_name: &'a str,
+    pub token_sealed: &'a [u8],
+    pub created_at: DateTime<Utc>,
+    pub created_by: &'a str,
+}
+
+pub async fn live_connection(tx: &mut Tx) -> anyhow::Result<Option<BankConnection>> {
+    let row = sqlx::query(concat!(
+        "SELECT ",
+        connection_cols!(),
+        " FROM bank_connections WHERE retired_at IS NULL"
+    ))
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(row.as_ref().map(connection))
+}
+
+pub async fn get_connection(tx: &mut Tx, id: Uuid) -> anyhow::Result<Option<BankConnection>> {
+    let row = sqlx::query(concat!(
+        "SELECT ",
+        connection_cols!(),
+        " FROM bank_connections WHERE id = $1"
+    ))
+    .bind(id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(row.as_ref().map(connection))
+}
+
+/// Retires the live connection, if any. True if there was one.
+pub async fn retire_connection(tx: &mut Tx, at: DateTime<Utc>, by: &str) -> anyhow::Result<bool> {
+    let done = sqlx::query(
+        "UPDATE bank_connections SET retired_at = $1, retired_by = $2 WHERE retired_at IS NULL",
+    )
+    .bind(at)
+    .bind(by)
+    .execute(&mut **tx)
+    .await?;
+    Ok(done.rows_affected() > 0)
+}
+
+pub async fn insert_connection(
+    tx: &mut Tx,
+    org_id: Uuid,
+    new: &NewConnection<'_>,
+) -> anyhow::Result<BankConnection> {
+    let row = sqlx::query(concat!(
+        "INSERT INTO bank_connections (id, org_id, provider, environment, mode, account_id, account_name,
+                                       token_sealed, created_at, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING ",
+        connection_cols!()
+    ))
+    .bind(new.id)
+    .bind(org_id)
+    .bind(new.provider)
+    .bind(new.environment)
+    .bind(new.mode)
+    .bind(new.account_id)
+    .bind(new.account_name)
+    .bind(new.token_sealed)
+    .bind(new.created_at)
+    .bind(new.created_by)
+    .fetch_one(&mut **tx)
+    .await?;
+    Ok(connection(&row))
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Payee {
+    pub id: Uuid,
+    pub vendor_id: Uuid,
+    pub connection_id: Uuid,
+    pub recipient_id: String,
+    pub recipient_name: String,
+    pub method: String,
+    pub destination: String,
+    pub status: String,
+    pub reason: Option<String>,
+    pub proposed_by: String,
+    pub decided_by: Option<String>,
+    pub decided_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}
+
+macro_rules! payee_cols {
+    () => {
+        "id, vendor_id, connection_id, recipient_id, recipient_name, method, destination, status, reason, proposed_by, decided_by, decided_at, created_at"
+    };
+}
+
+fn payee(r: &PgRow) -> Payee {
+    Payee {
+        id: r.get("id"),
+        vendor_id: r.get("vendor_id"),
+        connection_id: r.get("connection_id"),
+        recipient_id: r.get("recipient_id"),
+        recipient_name: r.get("recipient_name"),
+        method: r.get("method"),
+        destination: r.get("destination"),
+        status: r.get("status"),
+        reason: r.get("reason"),
+        proposed_by: r.get("proposed_by"),
+        decided_by: r.get("decided_by"),
+        decided_at: r.get("decided_at"),
+        created_at: r.get("created_at"),
+    }
+}
+
+pub struct NewPayee<'a> {
+    pub vendor_id: Uuid,
+    pub connection_id: Uuid,
+    pub recipient_id: &'a str,
+    pub recipient_name: &'a str,
+    pub method: &'a str,
+    pub destination: &'a str,
+    pub reason: Option<&'a str>,
+    pub proposed_by: &'a str,
+    pub created_at: DateTime<Utc>,
+}
+
+pub async fn insert_payee_proposal(
+    tx: &mut Tx,
+    org_id: Uuid,
+    new: &NewPayee<'_>,
+) -> anyhow::Result<Payee> {
+    let row = sqlx::query(concat!(
+        "INSERT INTO vendor_payees (id, org_id, vendor_id, connection_id, recipient_id, recipient_name, method,
+                                    destination, status, reason, proposed_by, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'proposed', $9, $10, $11) RETURNING ",
+        payee_cols!()
+    ))
+    .bind(Uuid::new_v4())
+    .bind(org_id)
+    .bind(new.vendor_id)
+    .bind(new.connection_id)
+    .bind(new.recipient_id)
+    .bind(new.recipient_name)
+    .bind(new.method)
+    .bind(new.destination)
+    .bind(new.reason)
+    .bind(new.proposed_by)
+    .bind(new.created_at)
+    .fetch_one(&mut **tx)
+    .await?;
+    Ok(payee(&row))
+}
+
+/// Locks the payee for the rest of the transaction.
+pub async fn get_payee(tx: &mut Tx, id: Uuid) -> anyhow::Result<Option<Payee>> {
+    let row = sqlx::query(concat!(
+        "SELECT ",
+        payee_cols!(),
+        " FROM vendor_payees WHERE id = $1 FOR UPDATE"
+    ))
+    .bind(id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(row.as_ref().map(payee))
+}
+
+/// The active payee and open proposals, active first.
+pub async fn vendor_payees(tx: &mut Tx, vendor_id: Uuid) -> anyhow::Result<Vec<Payee>> {
+    let rows = sqlx::query(concat!(
+        "SELECT ",
+        payee_cols!(),
+        " FROM vendor_payees WHERE vendor_id = $1 AND status IN ('active', 'proposed')
+          ORDER BY status = 'active' DESC, created_at"
+    ))
+    .bind(vendor_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    Ok(rows.iter().map(payee).collect())
+}
+
+pub async fn active_payee(tx: &mut Tx, vendor_id: Uuid) -> anyhow::Result<Option<Payee>> {
+    let row = sqlx::query(concat!(
+        "SELECT ",
+        payee_cols!(),
+        " FROM vendor_payees WHERE vendor_id = $1 AND status = 'active'"
+    ))
+    .bind(vendor_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(row.as_ref().map(payee))
+}
+
+/// Accepts (superseding the vendor's active payee) or declines a proposal.
+pub async fn decide_payee(
+    tx: &mut Tx,
+    id: Uuid,
+    vendor_id: Uuid,
+    accept: bool,
+    by: &str,
+    at: DateTime<Utc>,
+) -> anyhow::Result<()> {
+    if accept {
+        sqlx::query(
+            "UPDATE vendor_payees SET status = 'superseded' WHERE vendor_id = $1 AND status = 'active'",
+        )
+        .bind(vendor_id)
+        .execute(&mut **tx)
+        .await?;
+    }
+    sqlx::query(
+        "UPDATE vendor_payees SET status = $2, decided_by = $3, decided_at = $4 WHERE id = $1",
+    )
+    .bind(id)
+    .bind(if accept { "active" } else { "declined" })
+    .bind(by)
+    .bind(at)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PaymentRow {
+    pub id: Uuid,
+    pub bill_id: Uuid,
+    pub connection_id: Uuid,
+    pub payee_id: Uuid,
+    pub amount_cents: Cents,
+    pub method: String,
+    pub idempotency_key: String,
+    pub status: String,
+    pub request_id: Option<String>,
+    pub transaction_id: Option<String>,
+    pub failure: Option<String>,
+    pub link: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub created_by: String,
+    pub updated_at: DateTime<Utc>,
+    pub checked_at: DateTime<Utc>,
+}
+
+macro_rules! payment_cols {
+    () => {
+        "id, bill_id, connection_id, payee_id, amount_cents, method, idempotency_key, status, request_id, transaction_id, failure, link, created_at, created_by, updated_at, checked_at"
+    };
+}
+
+fn payment(r: &PgRow) -> PaymentRow {
+    PaymentRow {
+        id: r.get("id"),
+        bill_id: r.get("bill_id"),
+        connection_id: r.get("connection_id"),
+        payee_id: r.get("payee_id"),
+        amount_cents: r.get("amount_cents"),
+        method: r.get("method"),
+        idempotency_key: r.get("idempotency_key"),
+        status: r.get("status"),
+        request_id: r.get("request_id"),
+        transaction_id: r.get("transaction_id"),
+        failure: r.get("failure"),
+        link: r.get("link"),
+        created_at: r.get("created_at"),
+        created_by: r.get("created_by"),
+        updated_at: r.get("updated_at"),
+        checked_at: r.get("checked_at"),
+    }
+}
+
+pub struct NewPayment<'a> {
+    pub id: Uuid,
+    pub bill_id: Uuid,
+    pub connection_id: Uuid,
+    pub payee_id: Uuid,
+    pub amount_cents: Cents,
+    pub method: &'a str,
+    pub idempotency_key: &'a str,
+    pub created_at: DateTime<Utc>,
+    pub created_by: &'a str,
+}
+
+/// Starts as `submitting`; the caller records what the bank said.
+pub async fn insert_payment(
+    tx: &mut Tx,
+    org_id: Uuid,
+    new: &NewPayment<'_>,
+) -> anyhow::Result<PaymentRow> {
+    let row = sqlx::query(concat!(
+        "INSERT INTO payments (id, org_id, bill_id, connection_id, payee_id, amount_cents, method,
+                               idempotency_key, status, created_at, created_by, updated_at, checked_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'submitting', $9, $10, $9, $9) RETURNING ",
+        payment_cols!()
+    ))
+    .bind(new.id)
+    .bind(org_id)
+    .bind(new.bill_id)
+    .bind(new.connection_id)
+    .bind(new.payee_id)
+    .bind(new.amount_cents)
+    .bind(new.method)
+    .bind(new.idempotency_key)
+    .bind(new.created_at)
+    .bind(new.created_by)
+    .fetch_one(&mut **tx)
+    .await?;
+    Ok(payment(&row))
+}
+
+/// Locks the payment for the rest of the transaction.
+pub async fn get_payment(tx: &mut Tx, id: Uuid) -> anyhow::Result<Option<PaymentRow>> {
+    let row = sqlx::query(concat!(
+        "SELECT ",
+        payment_cols!(),
+        " FROM payments WHERE id = $1 FOR UPDATE"
+    ))
+    .bind(id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(row.as_ref().map(payment))
+}
+
+pub struct PaymentUpdate<'a> {
+    pub status: &'a str,
+    pub request_id: Option<&'a str>,
+    pub transaction_id: Option<&'a str>,
+    pub failure: Option<&'a str>,
+    pub link: Option<&'a str>,
+}
+
+/// Records what the bank said. Ids and links, once known, are kept.
+pub async fn update_payment(
+    tx: &mut Tx,
+    id: Uuid,
+    u: &PaymentUpdate<'_>,
+    at: DateTime<Utc>,
+) -> anyhow::Result<PaymentRow> {
+    let row = sqlx::query(concat!(
+        "UPDATE payments SET
+             updated_at = CASE WHEN status IS DISTINCT FROM $2 THEN $7 ELSE updated_at END,
+             status = $2,
+             request_id = coalesce($3, request_id),
+             transaction_id = coalesce($4, transaction_id),
+             failure = $5,
+             link = coalesce($6, link),
+             checked_at = $7
+         WHERE id = $1 RETURNING ",
+        payment_cols!()
+    ))
+    .bind(id)
+    .bind(u.status)
+    .bind(u.request_id)
+    .bind(u.transaction_id)
+    .bind(u.failure)
+    .bind(u.link)
+    .bind(at)
+    .fetch_one(&mut **tx)
+    .await?;
+    Ok(payment(&row))
+}
+
+pub async fn touch_payment(tx: &mut Tx, id: Uuid, at: DateTime<Utc>) -> anyhow::Result<()> {
+    sqlx::query("UPDATE payments SET checked_at = $2 WHERE id = $1")
+        .bind(id)
+        .bind(at)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
+/// Newest first.
+pub async fn bill_payments(tx: &mut Tx, bill_id: Uuid) -> anyhow::Result<Vec<PaymentRow>> {
+    let rows = sqlx::query(concat!(
+        "SELECT ",
+        payment_cols!(),
+        " FROM payments WHERE bill_id = $1 ORDER BY seq DESC"
+    ))
+    .bind(bill_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    Ok(rows.iter().map(payment).collect())
+}
+
+/// Newest first; `open_only` keeps those still going.
+pub async fn list_payments(
+    tx: &mut Tx,
+    open_only: bool,
+    limit: i64,
+) -> anyhow::Result<Vec<PaymentRow>> {
+    let rows = sqlx::query(concat!(
+        "SELECT ",
+        payment_cols!(),
+        " FROM payments WHERE NOT $1 OR status IN ('submitting', 'awaiting_bank_approval', 'pending')
+          ORDER BY seq DESC LIMIT $2"
+    ))
+    .bind(open_only)
+    .bind(limit)
+    .fetch_all(&mut **tx)
+    .await?;
+    Ok(rows.iter().map(payment).collect())
+}
+
+/// Payments to ask the bank about: those still going, and sent ones young
+/// enough to come back as an ACH return.
+pub async fn payments_to_check(
+    tx: &mut Tx,
+    now: DateTime<Utc>,
+    every: chrono::Duration,
+    watch_sent_for: chrono::Duration,
+    limit: i64,
+) -> anyhow::Result<Vec<Uuid>> {
+    let rows = sqlx::query(
+        "SELECT id FROM payments
+         WHERE checked_at < $1 - $2
+           AND (status IN ('submitting', 'awaiting_bank_approval', 'pending')
+                OR (status = 'sent' AND updated_at > $1 - $3))
+         ORDER BY checked_at LIMIT $4",
+    )
+    .bind(now)
+    .bind(every)
+    .bind(watch_sent_for)
+    .bind(limit)
+    .fetch_all(&mut **tx)
+    .await?;
+    Ok(rows.iter().map(|r| r.get("id")).collect())
+}
+
+/// Takes back a release whose payment didn't go, so the bill waits for a
+/// person again.
+pub async fn unrelease_bill(tx: &mut Tx, bill_id: Uuid) -> anyhow::Result<()> {
+    sqlx::query("UPDATE bills SET released_at = NULL, released_by = NULL WHERE id = $1")
+        .bind(bill_id)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
+/// A paid bill whose payment came back is open again, waiting for release.
+pub async fn reopen_returned_bill(tx: &mut Tx, bill_id: Uuid) -> anyhow::Result<()> {
+    sqlx::query(
+        "UPDATE bills SET state = 'open', paid_on = NULL, paid_method = NULL, paid_reference = NULL,
+                          released_at = NULL, released_by = NULL
+         WHERE id = $1",
+    )
+    .bind(bill_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
