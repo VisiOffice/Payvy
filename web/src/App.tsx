@@ -16,6 +16,7 @@ const BillPage = lazy(() => import('./pages/Bill').then((m) => ({ default: m.Bil
 const Workflows = lazy(() => import('./pages/Workflows').then((m) => ({ default: m.Workflows })));
 const Bank = lazy(() => import('./pages/Bank').then((m) => ({ default: m.Bank })));
 const EmailSettings = lazy(() => import('./pages/EmailSettings').then((m) => ({ default: m.EmailSettings })));
+const ApprovalSettings = lazy(() => import('./pages/ApprovalSettings').then((m) => ({ default: m.ApprovalSettings })));
 const VendorPage = lazy(() => import('./pages/Vendor').then((m) => ({ default: m.VendorPage })));
 const DocumentReview = lazy(() =>
   import('./pages/DocumentReview').then((m) => ({ default: m.DocumentReview })),
@@ -125,6 +126,14 @@ export function App() {
             element={
               <Suspense fallback={<Spinner label="Loading" />}>
                 <EmailSettings />
+              </Suspense>
+            }
+          />
+          <Route
+            path="/settings/approvals"
+            element={
+              <Suspense fallback={<Spinner label="Loading" />}>
+                <ApprovalSettings />
               </Suspense>
             }
           />

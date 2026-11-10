@@ -23,6 +23,7 @@ import { date, money } from '../money';
 import { DocumentViewer } from '../viewer/DocumentViewer';
 import { highlightsOf, type DocumentDetail, type Read } from '../documents/types';
 import { ReadFields } from '../documents/ReadFields';
+import { waitingOnOthers, type ApprovalTurn } from '../approval';
 
 interface Step {
   id: string;
@@ -37,6 +38,8 @@ interface Detail {
   lines: { description: string; amount_cents: number }[];
   progress: ({ status: string; waiting_on?: string[]; steps?: Step[] } & Record<string, unknown>) | string | null;
   approvals: { step_id: string; actor: string; at: string }[];
+  /** While it waits for approval: whether you can give it, and who else can. */
+  approval?: ApprovalTurn | null;
   payments: {
     id: string;
     state: string;
@@ -133,10 +136,15 @@ export function BillPage() {
 
       {isOpen && (
         <HStack gap={2}>
-          {status === 'awaiting_approval' && <Button label="Approve" variant="primary" clickAction={approve} />}
+          {status === 'awaiting_approval' && detail.approval?.can_approve !== false && (
+            <Button label="Approve" variant="primary" clickAction={approve} />
+          )}
           {status === 'awaiting_release' && <Button label="Pay…" variant="primary" onClick={() => setOpen('release')} />}
           <Button label="Reject" variant="ghost" onClick={() => setOpen('reject')} />
         </HStack>
+      )}
+      {status === 'awaiting_approval' && detail.approval && !detail.approval.can_approve && (
+        <Banner status="info" title="Waiting on someone else" description={waitingOnOthers(detail.approval)} />
       )}
 
       <MetadataList>

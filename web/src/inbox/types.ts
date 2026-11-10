@@ -1,3 +1,4 @@
+import type { ApprovalTurn } from '../approval';
 import type { Workflow } from '../workflow';
 
 export interface Bill {
@@ -15,6 +16,9 @@ export interface Bill {
 export interface BillItem {
   bill: Bill;
   progress: { status: string; waiting_on?: string[]; by?: string[] } | null;
+  /** While it waits for approval: whether you can give it, and who else can. */
+  approval?: ApprovalTurn;
+  /** look: waiting on someone other than you. */
   action: 'approve' | 'release' | 'look';
 }
 

@@ -110,7 +110,38 @@ export function problems(steps: Step[]): Record<string, string> {
         break;
     }
   }
+  const twice = needsAPersonTwice(steps);
+  if (twice && !out[twice]) out[twice] = 'One person gives a bill one approval, and an earlier step already needs these people. Choose someone else.';
   return out;
+}
+
+/**
+ * The first approval step whose named approvers can't be someone other than
+ * the people earlier steps need: one person gives a bill one approval. Steps
+ * anyone may approve never are. Mirrors `duties::needs_a_person_twice`.
+ */
+export function needsAPersonTwice(steps: Step[]): string | null {
+  const slots: { step: string; who: string[] }[] = [];
+  for (const s of steps) {
+    if (s.type !== 'approve' || !s.approvers?.length) continue;
+    if (s.require === 'all') for (const a of s.approvers) slots.push({ step: s.id, who: [a] });
+    else slots.push({ step: s.id, who: s.approvers });
+  }
+  const owner = new Map<string, number>();
+  const assign = (i: number, seen: Set<string>): boolean => {
+    for (const p of slots[i]!.who) {
+      if (seen.has(p)) continue;
+      seen.add(p);
+      const j = owner.get(p);
+      if (j === undefined || assign(j, seen)) {
+        owner.set(p, i);
+        return true;
+      }
+    }
+    return false;
+  };
+  for (let i = 0; i < slots.length; i++) if (!assign(i, new Set())) return slots[i]!.step;
+  return null;
 }
 
 /** The workflow as the server stores it: no empty optional fields. */
