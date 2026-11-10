@@ -88,3 +88,11 @@ An agent can also import a saved `.eml` directly with the `email.import` command
   that aren't PDFs or images, files already in the inbox (with a pointer to the existing
   document), and emails forwarded inside forwarded emails.
 - The receiving server's `Authentication-Results` (SPF, DKIM, DMARC), recorded for later use.
+
+## Outbound mail
+
+Not built yet. When Payvy starts sending (approval notifications first), self-hosters will use
+[Cloudflare Email Service](https://developers.cloudflare.com/email-service/) on the same domain:
+a REST call from the server with an API token. It is in beta and needs the Workers Paid plan;
+inbound Email Routing stays free. Hosted Payvy sends through Amazon SES. Both sit behind one
+optional setting, and without it Payvy simply doesn't send.

@@ -39,8 +39,9 @@ Conventions follow Visirent (`~/Code/visirent`).
   runs the `email.import` command as the agent `email`. Parsing is in `payvy-domain/src/email.rs`;
   the Cloudflare worker (`workers/email-inbound`) only signs and forwards raw bytes. Keep it that
   way so any mail front end works. The worker and server share a signature test vector
-  (`inbound::tests`); change both or neither. Outbound mail (notifications) will be SES behind an
-  optional adapter, like storage.
+  (`inbound::tests`); change both or neither. Outbound mail (notifications) goes through one
+  optional adapter, like storage, with two backends: Cloudflare Email Service's REST API for
+  self-hosters (same account as inbound) and SES for hosted Payvy. Not built yet.
 - **The README compares Payvy with Bill.com.** Keep every Bill.com figure sourced and dated, and
   keep the "what Bill.com has that Payvy doesn't" list honest.
 - SQL is static strings (`concat!` with the column macros); sqlx 0.9 refuses runtime-built SQL.
