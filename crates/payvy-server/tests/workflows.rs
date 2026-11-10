@@ -264,6 +264,12 @@ async fn proposals_wait_for_a_person() {
             .len(),
         1
     );
+    let listed = commit(s, &person("robert"), "vendor.list", json!({}))
+        .await
+        .unwrap();
+    let zippy = &listed["result"]["vendors"][0];
+    assert_eq!(zippy["own_workflow"], false);
+    assert_eq!(zippy["workflow_proposals"], 1);
 
     commit(
         s,
@@ -273,6 +279,21 @@ async fn proposals_wait_for_a_person() {
     )
     .await
     .unwrap();
+    let listed = commit(s, &person("robert"), "vendor.list", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(listed["result"]["vendors"][0]["workflow_proposals"], 0);
+    set_workflow(
+        s,
+        &agent("claude-ap"),
+        Some(&v),
+        json!([{"id": "pay", "type": "pay", "release": "manual", "by": ["robert"]}]),
+    )
+    .await;
+    let listed = commit(s, &person("robert"), "vendor.list", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(listed["result"]["vendors"][0]["own_workflow"], true);
     let e = commit(
         s,
         &person("robert"),

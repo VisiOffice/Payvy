@@ -297,10 +297,10 @@ function WorkflowCard({
           {proposal.vendor_name ?? 'Default for vendors without their own'}
         </Text>
         <HStack gap={6} wrap="wrap" vAlign="start">
-          <Steps title="Proposed" steps={p.workflow.steps.map(describeStep)} />
+          <Steps title="Proposed" steps={p.workflow.steps.map((s) => describeStep(s))} />
           <Steps
             title="Now"
-            steps={proposal.current ? proposal.current.steps.map(describeStep) : ['The default workflow']}
+            steps={proposal.current ? proposal.current.steps.map((s) => describeStep(s)) : ['The default workflow']}
           />
         </HStack>
         <Text type="supporting">
@@ -308,6 +308,7 @@ function WorkflowCard({
           {p.reason ? `: ${p.reason}` : ''}
         </Text>
         <HStack gap={2} hAlign="end">
+          <Button label="Open in builder" variant="ghost" href={`/workflows/${p.vendor_id ?? 'default'}`} />
           <Button label="Decline" variant="ghost" onClick={onDecline} />
           <Button label="Accept" variant="primary" clickAction={onAccept} />
         </HStack>

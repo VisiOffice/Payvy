@@ -15,7 +15,7 @@ import { useToast } from '@astryxdesign/core/Toast';
 import { VStack } from '@astryxdesign/core/VStack';
 import { ApiError, run } from '../api/client';
 import { ReasonDialog } from '../inbox/ReasonDialog';
-import { date, money } from '../money';
+import { cents, date, dollars, money } from '../money';
 import { DocumentViewer } from '../viewer/DocumentViewer';
 import { highlightsOf, type BillLine, type DocumentDetail, type ExtractionSummary } from '../documents/types';
 
@@ -37,16 +37,6 @@ interface Form {
 
 const EMPTY: Form = { vendor_id: '', invoice_number: '', invoice_date: '', due_date: '', amount: '', memo: '' };
 
-/** "1,234.56" or "$1234.5" → cents; null if it isn't an amount. */
-export function cents(dollars: string): number | null {
-  const m = /^\$?\s*(\d{1,3}(?:,\d{3})*|\d+)(?:\.(\d{1,2}))?$/.exec(dollars.trim());
-  if (!m) return null;
-  const whole = Number(m[1]!.replaceAll(',', ''));
-  const frac = Number((m[2] ?? '0').padEnd(2, '0'));
-  return whole * 100 + frac;
-}
-
-const dollars = (c: number) => (c / 100).toFixed(2);
 
 type ISODate = NonNullable<ComponentProps<typeof DateInput>['value']>;
 /** A form date for DateInput: YYYY-MM-DD, or nothing. */

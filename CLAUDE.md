@@ -66,6 +66,11 @@ Conventions follow Visirent (`~/Code/visirent`).
   `web/src/api/commands.{json,gen.ts}`. Nothing in the app may write around a command, and
   anything an agent can't do in the API, the app can't do for an agent either. Use Astryx
   components before writing CSS; `pnpm --dir web astryx component <Name> --dense` shows one.
+  The workflow builder (`/workflows`, `web/src/workflows`) edits the same steps the server
+  evaluates and saves through `workflow.propose` then `workflow.accept`, so a person's edit is
+  on the record like an agent's. Its checks (`problems` in `web/src/workflow.ts`) mirror
+  `Workflow::validate` for quick feedback; change both together, and the server still decides.
+  Workflows are one line of steps, so the chart is CSS, not a graph library.
 - **People sign in with a link sent by email** (`auth.rs`, `people` table). No passwords. The
   token travels after `#` and is posted by the app, so mail scanners can't use it up; only
   hashes of link and session tokens are stored; asking for a link answers the same for unknown

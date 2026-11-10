@@ -242,12 +242,21 @@ pub struct VendorSummary {
     pub vendor: Vendor,
     pub open_bills: i64,
     pub open_cents: Cents,
+    /// True when the vendor has its own active workflow rather than the
+    /// organization default.
+    pub own_workflow: bool,
+    /// Workflow proposals for this vendor waiting for a person.
+    pub workflow_proposals: i64,
 }
 
 pub async fn list_vendors(tx: &mut Tx) -> anyhow::Result<Vec<VendorSummary>> {
     let rows = sqlx::query(
         "SELECT v.id, v.name, v.email, v.terms_days,
-                count(b.id) AS open_bills, coalesce(sum(b.amount_cents), 0)::bigint AS open_cents
+                count(b.id) AS open_bills, coalesce(sum(b.amount_cents), 0)::bigint AS open_cents,
+                EXISTS (SELECT 1 FROM workflows w WHERE w.vendor_id = v.id AND w.status = 'active')
+                    AS own_workflow,
+                (SELECT count(*) FROM workflows w WHERE w.vendor_id = v.id AND w.status = 'proposed')
+                    AS workflow_proposals
          FROM vendors v LEFT JOIN bills b ON b.vendor_id = v.id AND b.state = 'open'
          GROUP BY v.id ORDER BY lower(v.name)",
     )
@@ -259,6 +268,8 @@ pub async fn list_vendors(tx: &mut Tx) -> anyhow::Result<Vec<VendorSummary>> {
             vendor: vendor(r),
             open_bills: r.get("open_bills"),
             open_cents: r.get("open_cents"),
+            own_workflow: r.get("own_workflow"),
+            workflow_proposals: r.get("workflow_proposals"),
         })
         .collect())
 }

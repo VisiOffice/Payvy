@@ -48,7 +48,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "vendor.list",
-        summary: "List vendors with their open bill count and amount.",
+        summary: "List vendors with their open bill count and amount, whether each has its own workflow (else it follows the organization default), and how many workflow proposals wait for a person.",
         tier: RiskTier::Read,
         person_only: false,
         input_schema: r#"{"type":"object","properties":{}}"#,

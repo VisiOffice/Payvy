@@ -403,7 +403,7 @@ export type Tier = 'read' | 'routine' | 'confirmed';
 
 export const COMMANDS: Record<CommandName, { tier: Tier; personOnly: boolean; summary: string }> = {
   "vendor.create": { tier: "routine", personOnly: false, summary: "Create a vendor." },
-  "vendor.list": { tier: "read", personOnly: false, summary: "List vendors with their open bill count and amount." },
+  "vendor.list": { tier: "read", personOnly: false, summary: "List vendors with their open bill count and amount, whether each has its own workflow (else it follows the organization default), and how many workflow proposals wait for a person." },
   "vendor.get": { tier: "read", personOnly: false, summary: "A vendor with its account numbers, the workflow its bills follow and any open workflow proposals." },
   "vendor.add_account": { tier: "routine", personOnly: false, summary: "Record an account number this vendor uses for you, optionally tied to a location (a job site, a store). Invoices quoting it are matched to this vendor and location." },
   "vendor.propose_payee": { tier: "routine", personOnly: false, summary: "Propose who this vendor's bills are paid to: a recipient already set up in the connected bank (see bank.recipients) and a method. The account's last four digits are shown for checking. Nothing changes until a person accepts it with vendor.accept_payee. Use this when a vendor's bank details change." },
