@@ -14,10 +14,12 @@ import { Link } from '@astryxdesign/core/Link';
 import { MetadataList, MetadataListItem } from '@astryxdesign/core/MetadataList';
 import { Spinner } from '@astryxdesign/core/Spinner';
 import { Text } from '@astryxdesign/core/Text';
+import { TextInput } from '@astryxdesign/core/TextInput';
 import { VStack } from '@astryxdesign/core/VStack';
 import { run } from '../api/client';
 import { Page } from '../Page';
 import { PayeeInvites, type PayeeInvite } from './PayeeInvites';
+import { VendorDialog } from './VendorDialog';
 import { BillsTable, type Listed } from '../bills/BillsTable';
 import { METHOD } from '../inbox/types';
 import { date } from '../money';
@@ -50,6 +52,11 @@ export function VendorPage() {
   const [bills, setBills] = useState<Listed[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [editingWorkflow, setEditingWorkflow] = useState(hash === '#workflow');
+  const [editing, setEditing] = useState(false);
+  const [accountNumber, setAccountNumber] = useState('');
+  const [location, setLocation] = useState('');
+  const [accountError, setAccountError] = useState<string | null>(null);
+  const [accountBusy, setAccountBusy] = useState(false);
   const workflowRef = useRef<HTMLDivElement>(null);
 
   const loadVendor = useCallback(async () => {
@@ -86,12 +93,26 @@ export function VendorPage() {
       </Page>
     );
   const { vendor } = detail;
+
+  async function changeAccounts(change: () => Promise<unknown>) {
+    setAccountBusy(true);
+    setAccountError(null);
+    try {
+      await change();
+      await loadVendor();
+    } catch (e) {
+      setAccountError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setAccountBusy(false);
+    }
+  }
   const active = detail.payees.find((p) => p.status === 'active');
   const proposed = detail.payees.filter((p) => p.status === 'proposed');
 
   return (
     <Page
       title={vendor.name}
+      actions={<Button label="Edit vendor" variant="secondary" onClick={() => setEditing(true)} />}
       above={
         <Breadcrumbs>
           <BreadcrumbItem href="/vendors">Vendors</BreadcrumbItem>
@@ -151,17 +172,52 @@ export function VendorPage() {
         <VStack gap={3} width={420} maxWidth="100%">
           <Heading level={2}>Account numbers</Heading>
           <Card>
-            {detail.accounts.length === 0 ? (
-              <Text type="supporting">None yet. Invoices that print one help match bills to this vendor.</Text>
-            ) : (
-              <MetadataList>
-                {detail.accounts.map((a) => (
-                  <MetadataListItem key={a.id} label={a.account_number}>
-                    {a.location ?? '—'}
-                  </MetadataListItem>
-                ))}
-              </MetadataList>
-            )}
+            <VStack gap={3}>
+              {detail.accounts.length === 0 ? (
+                <Text type="supporting">None yet. Invoices that print one help match bills to this vendor.</Text>
+              ) : (
+                <MetadataList>
+                  {detail.accounts.map((a) => (
+                    <MetadataListItem key={a.id} label={a.account_number}>
+                      <HStack gap={2} vAlign="center" hAlign="between">
+                        <Text>{a.location ?? '—'}</Text>
+                        <Button
+                          label="Remove"
+                          aria-label={`Remove account number ${a.account_number}`}
+                          variant="ghost"
+                          size="sm"
+                          isDisabled={accountBusy}
+                          clickAction={() =>
+                            changeAccounts(() => run('vendor.remove_account', { vendor_id: vendor.id, account_id: a.id }))
+                          }
+                        />
+                      </HStack>
+                    </MetadataListItem>
+                  ))}
+                </MetadataList>
+              )}
+              <HStack gap={2} wrap="wrap" vAlign="end">
+                <TextInput label="Account number" value={accountNumber} onChange={setAccountNumber} isDisabled={accountBusy} />
+                <TextInput label="Location" value={location} onChange={setLocation} placeholder="Optional, e.g. a job site" isDisabled={accountBusy} />
+                <Button
+                  label="Add"
+                  variant="secondary"
+                  isDisabled={accountBusy || !accountNumber.trim()}
+                  clickAction={() =>
+                    changeAccounts(async () => {
+                      await run('vendor.add_account', {
+                        vendor_id: vendor.id,
+                        account_number: accountNumber.trim(),
+                        ...(location.trim() ? { location: location.trim() } : {}),
+                      });
+                      setAccountNumber('');
+                      setLocation('');
+                    })
+                  }
+                />
+              </HStack>
+              {accountError && <Banner status="error" title={accountError} />}
+            </VStack>
           </Card>
         </VStack>
       </HStack>
@@ -182,6 +238,16 @@ export function VendorPage() {
             variant="secondary" onClick={() => setEditingWorkflow(true)} />}
         </div>}
       </section>
+      {editing && (
+        <VendorDialog
+          vendor={vendor}
+          onClose={() => setEditing(false)}
+          onSaved={async () => {
+            await loadVendor();
+            setEditing(false);
+          }}
+        />
+      )}
     </Page>
   );
 }

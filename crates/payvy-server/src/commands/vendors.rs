@@ -1,5 +1,5 @@
-use payvy_store as store;
-use serde::Deserialize;
+use payvy_store::{self as store, ActorKind};
+use serde::{Deserialize, Deserializer};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -85,6 +85,109 @@ pub async fn add_account(cx: &mut Cx<'_>, input: AddAccount) -> Result<Value, Co
     })?;
     cx.emit(
         "vendor.account_added",
+        input.vendor_id,
+        json!({ "vendor_id": input.vendor_id, "account_number": account.account_number, "location": account.location }),
+    )
+    .await?;
+    Ok(json!(account))
+}
+
+/// Tells a field left out (keep it) from one sent as null (clear it).
+fn present<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
+    d: D,
+) -> Result<Option<Option<T>>, D::Error> {
+    Option::<T>::deserialize(d).map(Some)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Update {
+    vendor_id: Uuid,
+    name: Option<String>,
+    #[serde(default, deserialize_with = "present")]
+    email: Option<Option<String>>,
+    #[serde(default, deserialize_with = "present")]
+    terms_days: Option<Option<i32>>,
+}
+
+/// Changes a vendor's name, email or payment terms. Name and email decide
+/// which vendor an incoming invoice matches, and email is where payment-detail
+/// invitations go, so only a person changes those; an agent may change terms.
+pub async fn update(cx: &mut Cx<'_>, input: Update) -> Result<Value, CommandError> {
+    let current = store::get_vendor(&mut cx.tx, input.vendor_id)
+        .await?
+        .ok_or(CommandError::NotFound("vendor"))?;
+    let name = match input.name {
+        Some(n) => {
+            text(Some(n)).ok_or_else(|| CommandError::Invalid("name can't be empty".into()))?
+        }
+        None => current.name.clone(),
+    };
+    let email = match input.email {
+        Some(e) => text(e),
+        None => current.email.clone(),
+    };
+    if let Some(e) = &email
+        && (!e.contains('@') || e.contains(char::is_whitespace))
+    {
+        return Err(CommandError::Invalid(format!("{e} isn't an email address")));
+    }
+    let terms_days = input.terms_days.unwrap_or(current.terms_days);
+    if terms_days.is_some_and(|d| !(0..=365).contains(&d)) {
+        return Err(CommandError::Invalid("terms_days is 0 to 365".into()));
+    }
+
+    let mut changes = serde_json::Map::new();
+    if name != current.name {
+        changes.insert("name".into(), json!({ "from": current.name, "to": name }));
+    }
+    if email != current.email {
+        changes.insert(
+            "email".into(),
+            json!({ "from": current.email, "to": email }),
+        );
+    }
+    if terms_days != current.terms_days {
+        changes.insert(
+            "terms_days".into(),
+            json!({ "from": current.terms_days, "to": terms_days }),
+        );
+    }
+    if changes.is_empty() {
+        return Ok(json!(current));
+    }
+    if cx.actor.kind != ActorKind::Person
+        && (changes.contains_key("name") || changes.contains_key("email"))
+    {
+        return Err(CommandError::Forbidden(
+            "only a person can change a vendor's name or email: they decide which invoices match it and where payment-detail invitations go".into(),
+        ));
+    }
+    let v = store::update_vendor(&mut cx.tx, current.id, &name, email.as_deref(), terms_days)
+        .await?
+        .ok_or(CommandError::NotFound("vendor"))?;
+    cx.emit(
+        "vendor.updated",
+        v.id,
+        json!({ "vendor_id": v.id, "changes": changes }),
+    )
+    .await?;
+    Ok(json!(v))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RemoveAccount {
+    vendor_id: Uuid,
+    account_id: Uuid,
+}
+
+pub async fn remove_account(cx: &mut Cx<'_>, input: RemoveAccount) -> Result<Value, CommandError> {
+    let account = store::delete_vendor_account(&mut cx.tx, input.vendor_id, input.account_id)
+        .await?
+        .ok_or(CommandError::NotFound("account number"))?;
+    cx.emit(
+        "vendor.account_removed",
         input.vendor_id,
         json!({ "vendor_id": input.vendor_id, "account_number": account.account_number, "location": account.location }),
     )

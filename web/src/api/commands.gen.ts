@@ -9,6 +9,16 @@ export interface VendorCreateInput {
   terms_days?: number;
 }
 
+export interface VendorUpdateInput {
+  vendor_id: string;
+  name?: string;
+  email?: string | null;
+  /**
+   * Payment terms, e.g. 30 for net 30
+   */
+  terms_days?: number | null;
+}
+
 export interface VendorListInput {}
 
 export interface VendorGetInput {
@@ -22,6 +32,14 @@ export interface VendorAddAccountInput {
    * e.g. 1420 Elm St site
    */
   location?: string;
+}
+
+export interface VendorRemoveAccountInput {
+  vendor_id: string;
+  /**
+   * The account's id from vendor.get
+   */
+  account_id: string;
 }
 
 export interface VendorInvitePayeeInput {
@@ -441,9 +459,11 @@ export interface EventListInput {
 
 export interface CommandInputs {
   "vendor.create": VendorCreateInput;
+  "vendor.update": VendorUpdateInput;
   "vendor.list": VendorListInput;
   "vendor.get": VendorGetInput;
   "vendor.add_account": VendorAddAccountInput;
+  "vendor.remove_account": VendorRemoveAccountInput;
   "vendor.invite_payee": VendorInvitePayeeInput;
   "vendor.refresh_payee_invite": VendorRefreshPayeeInviteInput;
   "vendor.propose_payee": VendorProposePayeeInput;
@@ -495,9 +515,11 @@ export type Tier = 'read' | 'routine' | 'confirmed';
 
 export const COMMANDS: Record<CommandName, { tier: Tier; personOnly: boolean; summary: string }> = {
   "vendor.create": { tier: "routine", personOnly: false, summary: "Create a vendor." },
+  "vendor.update": { tier: "routine", personOnly: false, summary: "Change a vendor's name, email or payment terms. Send null to clear email or terms; leave a field out to keep it. Only a person can change name or email, since they decide which invoices match the vendor and where payment-detail invitations go." },
   "vendor.list": { tier: "read", personOnly: false, summary: "List vendors with their open bill count and amount, whether each has its own workflow (else it follows the organization default), and how many workflow proposals wait for a person." },
   "vendor.get": { tier: "read", personOnly: false, summary: "A vendor with its account numbers, the workflow its bills follow and any open workflow proposals." },
   "vendor.add_account": { tier: "routine", personOnly: false, summary: "Record an account number this vendor uses for you, optionally tied to a location (a job site, a store). Invoices quoting it are matched to this vendor and location." },
+  "vendor.remove_account": { tier: "routine", personOnly: false, summary: "Remove an account number from a vendor, e.g. one recorded by mistake. Invoices quoting it no longer match this vendor by it." },
   "vendor.invite_payee": { tier: "confirmed", personOnly: true, summary: "Ask Mercury to email this vendor an invitation to supply payment details. Only a person may send it. Preview sends nothing. Completion proposes a payee; a person must still accept it. Uncertain delivery is never automatically retried." },
   "vendor.refresh_payee_invite": { tier: "routine", personOnly: false, summary: "Check a Mercury invitation. Once completed, propose its recipient for the vendor without accepting it. Payvy also checks open invitations itself every few minutes. If delivery was uncertain, a person can recover it by supplying the invitation ID from Mercury; the email and method must match." },
   "vendor.propose_payee": { tier: "routine", personOnly: false, summary: "Propose who this vendor's bills are paid to: a recipient already set up in the connected bank (see bank.recipients) and a method. The account's last four digits are shown for checking. Nothing changes until a person accepts it with vendor.accept_payee. Use this when a vendor's bank details change." },

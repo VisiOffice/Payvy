@@ -236,6 +236,28 @@ pub async fn get_vendor(tx: &mut Tx, id: Uuid) -> anyhow::Result<Option<Vendor>>
     Ok(row.as_ref().map(vendor))
 }
 
+/// Replaces a vendor's name, email and payment terms. None when there is no
+/// such vendor.
+pub async fn update_vendor(
+    tx: &mut Tx,
+    id: Uuid,
+    name: &str,
+    email: Option<&str>,
+    terms_days: Option<i32>,
+) -> anyhow::Result<Option<Vendor>> {
+    let row = sqlx::query(
+        "UPDATE vendors SET name = $2, email = $3, terms_days = $4 WHERE id = $1
+         RETURNING id, name, email, terms_days",
+    )
+    .bind(id)
+    .bind(name)
+    .bind(email)
+    .bind(terms_days)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(row.as_ref().map(vendor))
+}
+
 #[derive(Debug, Serialize)]
 pub struct VendorSummary {
     #[serde(flatten)]
@@ -299,6 +321,28 @@ pub async fn insert_vendor_account(
     .bind(vendor_id)
     .bind(account_number)
     .bind(location)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(row.map(|r| VendorAccount {
+        id: r.get("id"),
+        account_number: r.get("account_number"),
+        location: r.get("location"),
+    }))
+}
+
+/// Removes one of a vendor's account numbers. None when the vendor has no
+/// such account.
+pub async fn delete_vendor_account(
+    tx: &mut Tx,
+    vendor_id: Uuid,
+    account_id: Uuid,
+) -> anyhow::Result<Option<VendorAccount>> {
+    let row = sqlx::query(
+        "DELETE FROM vendor_accounts WHERE id = $1 AND vendor_id = $2
+         RETURNING id, account_number, location",
+    )
+    .bind(account_id)
+    .bind(vendor_id)
     .fetch_optional(&mut **tx)
     .await?;
     Ok(row.map(|r| VendorAccount {

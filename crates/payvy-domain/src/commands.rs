@@ -47,6 +47,13 @@ pub const COMMANDS: &[CommandSpec] = &[
         input_schema: r#"{"type":"object","required":["name"],"properties":{"name":{"type":"string"},"email":{"type":"string","format":"email"},"terms_days":{"type":"integer","minimum":0,"maximum":365,"description":"Payment terms, e.g. 30 for net 30"}}}"#,
     },
     CommandSpec {
+        name: "vendor.update",
+        summary: "Change a vendor's name, email or payment terms. Send null to clear email or terms; leave a field out to keep it. Only a person can change name or email, since they decide which invoices match the vendor and where payment-detail invitations go.",
+        tier: RiskTier::Routine,
+        person_only: false,
+        input_schema: r#"{"type":"object","required":["vendor_id"],"properties":{"vendor_id":{"type":"string","format":"uuid"},"name":{"type":"string"},"email":{"type":["string","null"],"format":"email"},"terms_days":{"type":["integer","null"],"minimum":0,"maximum":365,"description":"Payment terms, e.g. 30 for net 30"}}}"#,
+    },
+    CommandSpec {
         name: "vendor.list",
         summary: "List vendors with their open bill count and amount, whether each has its own workflow (else it follows the organization default), and how many workflow proposals wait for a person.",
         tier: RiskTier::Read,
@@ -66,6 +73,13 @@ pub const COMMANDS: &[CommandSpec] = &[
         tier: RiskTier::Routine,
         person_only: false,
         input_schema: r#"{"type":"object","required":["vendor_id","account_number"],"properties":{"vendor_id":{"type":"string","format":"uuid"},"account_number":{"type":"string"},"location":{"type":"string","description":"e.g. 1420 Elm St site"}}}"#,
+    },
+    CommandSpec {
+        name: "vendor.remove_account",
+        summary: "Remove an account number from a vendor, e.g. one recorded by mistake. Invoices quoting it no longer match this vendor by it.",
+        tier: RiskTier::Routine,
+        person_only: false,
+        input_schema: r#"{"type":"object","required":["vendor_id","account_id"],"properties":{"vendor_id":{"type":"string","format":"uuid"},"account_id":{"type":"string","format":"uuid","description":"The account's id from vendor.get"}}}"#,
     },
     CommandSpec {
         name: "vendor.invite_payee",

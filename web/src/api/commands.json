@@ -8,6 +8,13 @@
       "tier": "routine"
     },
     {
+      "input_schema": "{\"type\":\"object\",\"required\":[\"vendor_id\"],\"properties\":{\"vendor_id\":{\"type\":\"string\",\"format\":\"uuid\"},\"name\":{\"type\":\"string\"},\"email\":{\"type\":[\"string\",\"null\"],\"format\":\"email\"},\"terms_days\":{\"type\":[\"integer\",\"null\"],\"minimum\":0,\"maximum\":365,\"description\":\"Payment terms, e.g. 30 for net 30\"}}}",
+      "name": "vendor.update",
+      "person_only": false,
+      "summary": "Change a vendor's name, email or payment terms. Send null to clear email or terms; leave a field out to keep it. Only a person can change name or email, since they decide which invoices match the vendor and where payment-detail invitations go.",
+      "tier": "routine"
+    },
+    {
       "input_schema": "{\"type\":\"object\",\"properties\":{}}",
       "name": "vendor.list",
       "person_only": false,
@@ -26,6 +33,13 @@
       "name": "vendor.add_account",
       "person_only": false,
       "summary": "Record an account number this vendor uses for you, optionally tied to a location (a job site, a store). Invoices quoting it are matched to this vendor and location.",
+      "tier": "routine"
+    },
+    {
+      "input_schema": "{\"type\":\"object\",\"required\":[\"vendor_id\",\"account_id\"],\"properties\":{\"vendor_id\":{\"type\":\"string\",\"format\":\"uuid\"},\"account_id\":{\"type\":\"string\",\"format\":\"uuid\",\"description\":\"The account's id from vendor.get\"}}}",
+      "name": "vendor.remove_account",
+      "person_only": false,
+      "summary": "Remove an account number from a vendor, e.g. one recorded by mistake. Invoices quoting it no longer match this vendor by it.",
       "tier": "routine"
     },
     {

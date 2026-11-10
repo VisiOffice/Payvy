@@ -179,6 +179,8 @@ pub async fn run(
 async fn execute(cx: &mut Cx<'_>, name: &str, input: &Value) -> Result<Value, CommandError> {
     match name {
         "vendor.create" => vendors::create(cx, parse(input)?).await,
+        "vendor.update" => vendors::update(cx, parse(input)?).await,
+        "vendor.remove_account" => vendors::remove_account(cx, parse(input)?).await,
         "vendor.list" => vendors::list(cx).await,
         "vendor.get" => vendors::get(cx, parse(input)?).await,
         "vendor.add_account" => vendors::add_account(cx, parse(input)?).await,
