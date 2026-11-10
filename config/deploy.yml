@@ -57,9 +57,10 @@ env:
     PAYVY_EXTRACT_PROVIDER: anthropic
     # Sign-in links open the app here. The image serves the app itself.
     PAYVY_PUBLIC_URL: https://beta.payvy.com
-    # Sign-in links and notifications go out through Cloudflare Email Service.
-    PAYVY_MAIL_FROM: Payvy <no-reply@payvy.com>
-    PAYVY_CLOUDFLARE_ACCOUNT_ID: 65a93a8aa12255c42cb5bbaa1d1a2ea2
+    # Sign-in links and notifications go out through Amazon SES, where
+    # payvy.com is already verified (the legacy app sends from it too).
+    PAYVY_MAIL_FROM: Payvy <noreply@payvy.com>
+    PAYVY_SES_REGION: us-west-2
   secret:
     - DATABASE_URL
     - PAYVY_API_KEY
@@ -69,7 +70,8 @@ env:
     - PAYVY_EXTRACT_API_KEY
     # Seals bank API tokens (docs/payments.md). Losing it means reconnecting every bank.
     - PAYVY_SECRETS_KEY
-    - PAYVY_CLOUDFLARE_EMAIL_TOKEN
+    - PAYVY_SES_ACCESS_KEY_ID
+    - PAYVY_SES_SECRET_ACCESS_KEY
 
 accessories:
   db:

@@ -42,10 +42,12 @@ Kamal runs under the mise Ruby; if it reports `can't find gem kamal`:
    password, `PAYVY_API_KEY`, `PAYVY_INBOUND_SECRET`, `PAYVY_SECRETS_KEY` (seals bank tokens;
    losing it means reconnecting every bank). Add an R2 API token scoped to
    `payvy-documents` (Object Read & Write) as two items, and an Anthropic API key for reading
-   documents (`PAYVY_EXTRACT_API_KEY`). Put the references in `.kamal/secrets`.
+   documents (`PAYVY_EXTRACT_API_KEY`), and an IAM access key allowed only `ses:SendEmail` in
+   us-west-2, where payvy.com is verified (`PAYVY_SES_ACCESS_KEY_ID`, `PAYVY_SES_SECRET_ACCESS_KEY`).
+   Put the references in `.kamal/secrets`.
 2. Cloudflare: A records `dev.payvy.com` and `beta.payvy.com` → 5.78.94.150 (DNS only); Email
-   Routing → add the subdomain `in.payvy.com`; Email Service → onboard `payvy.com` for sending
-   and create an API token allowed to send email (`PAYVY_CLOUDFLARE_EMAIL_TOKEN`).
+   Routing → add the subdomain `in.payvy.com` (done 2026-11-10). Hosted Payvy sends through
+   SES, not Cloudflare Email Service, so no sending setup is needed in Cloudflare.
 3. On the host: copy the nginx file to `/etc/nginx/sites-available/payvy`, link it, get the
    certificate (`certbot certonly --webroot -w /var/www/payvy-acme -d dev.payvy.com -d beta.payvy.com`), then
    `nginx -t && systemctl reload nginx`.

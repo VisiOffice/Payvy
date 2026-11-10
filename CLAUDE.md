@@ -39,9 +39,10 @@ Conventions follow Visirent (`~/Code/visirent`).
   runs the `email.import` command as the agent `email`. Parsing is in `payvy-domain/src/email.rs`;
   the Cloudflare worker (`workers/email-inbound`) only signs and forwards raw bytes. Keep it that
   way so any mail front end works. The worker and server share a signature test vector
-  (`inbound::tests`); change both or neither. Outbound mail (notifications) goes through one
-  optional adapter, like storage, with two backends: Cloudflare Email Service's REST API for
-  self-hosters (same account as inbound) and SES for hosted Payvy. Not built yet.
+  (`inbound::tests`); change both or neither. Outbound mail (sign-in links, later notifications) goes
+  through one adapter (`mailer.rs`) with two backends: Cloudflare Email Service's REST API, the
+  default we document for self-hosters (same account as inbound), and Amazon SES (API v2, signed
+  by `sigv4.rs`, tested against AWS's vector), which hosted Payvy uses. No AWS SDK.
 - **Models read, Payvy decides.** Extraction (`document.extract`, `payvy-extract`) asks the model
   only for what is printed, with amounts as strings. Converting to cents, checking, vendor matching
   and duplicates live in `payvy-domain/src/extraction.rs`, which is pure and tested, so a weaker

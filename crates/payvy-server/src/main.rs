@@ -185,8 +185,9 @@ struct WebArgs {
     /// The built web app (web/dist) to serve beside the API.
     #[arg(long, env = "PAYVY_WEB_DIR")]
     web_dir: Option<std::path::PathBuf>,
-    /// The address mail comes from, e.g. Payvy <no-reply@payvy.com>.
-    #[arg(long, env = "PAYVY_MAIL_FROM", requires_all = ["cloudflare_account_id", "cloudflare_email_token"])]
+    /// The address mail comes from, e.g. Payvy <no-reply@payvy.com>. Needs
+    /// one sender below: Cloudflare Email Service or Amazon SES.
+    #[arg(long, env = "PAYVY_MAIL_FROM")]
     mail_from: Option<String>,
     /// Sends mail through Cloudflare Email Service from this account.
     #[arg(long, env = "PAYVY_CLOUDFLARE_ACCOUNT_ID")]
@@ -194,22 +195,53 @@ struct WebArgs {
     /// A Cloudflare API token allowed to send email.
     #[arg(long, env = "PAYVY_CLOUDFLARE_EMAIL_TOKEN", hide_env_values = true)]
     cloudflare_email_token: Option<String>,
+    /// Sends mail through Amazon SES in this region, e.g. us-west-2.
+    #[arg(long, env = "PAYVY_SES_REGION")]
+    ses_region: Option<String>,
+    /// An IAM access key allowed ses:SendEmail.
+    #[arg(long, env = "PAYVY_SES_ACCESS_KEY_ID")]
+    ses_access_key_id: Option<String>,
+    #[arg(long, env = "PAYVY_SES_SECRET_ACCESS_KEY", hide_env_values = true)]
+    ses_secret_access_key: Option<String>,
 }
 
 impl WebArgs {
     fn mailer(&self) -> anyhow::Result<payvy_server::mailer::Mailer> {
-        Ok(
-            match (
-                &self.mail_from,
-                &self.cloudflare_account_id,
-                &self.cloudflare_email_token,
-            ) {
-                (Some(from), Some(account), Some(token)) => {
-                    payvy_server::mailer::Mailer::cloudflare(account, token, from)?
-                }
-                _ => payvy_server::mailer::Mailer::Log,
-            },
-        )
+        use payvy_server::mailer::Mailer;
+        let cloudflare = match (&self.cloudflare_account_id, &self.cloudflare_email_token) {
+            (Some(a), Some(t)) => Some((a, t)),
+            (None, None) => None,
+            _ => anyhow::bail!(
+                "set both PAYVY_CLOUDFLARE_ACCOUNT_ID and PAYVY_CLOUDFLARE_EMAIL_TOKEN, or neither"
+            ),
+        };
+        let ses = match (
+            &self.ses_region,
+            &self.ses_access_key_id,
+            &self.ses_secret_access_key,
+        ) {
+            (Some(r), Some(k), Some(s)) => Some((r, k, s)),
+            (None, None, None) => None,
+            _ => anyhow::bail!(
+                "set PAYVY_SES_REGION, PAYVY_SES_ACCESS_KEY_ID and PAYVY_SES_SECRET_ACCESS_KEY together, or none"
+            ),
+        };
+        Ok(match (&self.mail_from, cloudflare, ses) {
+            (None, None, None) => Mailer::Log,
+            (Some(_), Some(_), Some(_)) => {
+                anyhow::bail!("mail is set up for both Cloudflare and SES; choose one")
+            }
+            (Some(from), Some((account, token)), None) => Mailer::cloudflare(account, token, from)?,
+            (Some(from), None, Some((region, key, secret))) => {
+                Mailer::ses(region, key, secret, from)?
+            }
+            (Some(_), None, None) => anyhow::bail!(
+                "PAYVY_MAIL_FROM is set but no sender: set the Cloudflare or the SES settings"
+            ),
+            (None, _, _) => {
+                anyhow::bail!("a mail sender is set up but PAYVY_MAIL_FROM isn't")
+            }
+        })
     }
 }
 
@@ -285,6 +317,8 @@ async fn main() -> anyhow::Result<()> {
                 api_key.len() >= 32,
                 "PAYVY_API_KEY must be at least 32 characters"
             );
+            // Settings mistakes fail now, before anything connects.
+            let mailer = web.mailer()?;
             let mut state = payvy_server::AppState::connect(&database_url()?, &api_key).await?;
             let create_bucket = storage.s3_create_bucket;
             match storage.config() {
@@ -329,7 +363,6 @@ async fn main() -> anyhow::Result<()> {
             }
             match &web.public_url {
                 Some(url) => {
-                    let mailer = web.mailer()?;
                     if mailer.is_log() {
                         tracing::warn!(
                             "no mail sender configured; sign-in links are written to this log, not sent"

@@ -28,9 +28,26 @@ pub enum Mailer {
         api_base: String,
         http: reqwest::Client,
     },
+    /// Amazon SES (API v2), from an address or domain verified in SES.
+    Ses {
+        region: String,
+        access_key_id: String,
+        secret_access_key: String,
+        from: String,
+        /// https://email.{region}.amazonaws.com unless a test points it elsewhere.
+        endpoint: String,
+        http: reqwest::Client,
+    },
 }
 
 pub const CLOUDFLARE_API: &str = "https://api.cloudflare.com/client/v4";
+const SES_PATH: &str = "/v2/email/outbound-emails";
+
+fn http() -> anyhow::Result<reqwest::Client> {
+    Ok(reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()?)
+}
 
 impl Mailer {
     pub fn cloudflare(account_id: &str, token: &str, from: &str) -> anyhow::Result<Self> {
@@ -39,9 +56,23 @@ impl Mailer {
             token: token.to_owned(),
             from: from.to_owned(),
             api_base: CLOUDFLARE_API.to_owned(),
-            http: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(20))
-                .build()?,
+            http: http()?,
+        })
+    }
+
+    pub fn ses(
+        region: &str,
+        access_key_id: &str,
+        secret_access_key: &str,
+        from: &str,
+    ) -> anyhow::Result<Self> {
+        Ok(Self::Ses {
+            region: region.to_owned(),
+            access_key_id: access_key_id.to_owned(),
+            secret_access_key: secret_access_key.to_owned(),
+            from: from.to_owned(),
+            endpoint: format!("https://email.{region}.amazonaws.com"),
+            http: http()?,
         })
     }
 
@@ -92,6 +123,62 @@ impl Mailer {
                 let bounced = &body["result"]["permanent_bounces"];
                 if bounced.as_array().is_some_and(|b| !b.is_empty()) {
                     anyhow::bail!("the message bounced: {bounced}");
+                }
+                Ok(())
+            }
+            Self::Ses {
+                region,
+                access_key_id,
+                secret_access_key,
+                from,
+                endpoint,
+                http,
+            } => {
+                let body = serde_json::to_vec(&json!({
+                    "FromEmailAddress": from,
+                    "Destination": { "ToAddresses": [mail.to] },
+                    "Content": { "Simple": {
+                        "Subject": { "Data": mail.subject, "Charset": "UTF-8" },
+                        "Body": { "Text": { "Data": mail.text, "Charset": "UTF-8" } },
+                    } },
+                }))?;
+                let url = reqwest::Url::parse(&format!("{endpoint}{SES_PATH}"))?;
+                let host = match (url.host_str(), url.port()) {
+                    (Some(h), Some(p)) => format!("{h}:{p}"),
+                    (Some(h), None) => h.to_owned(),
+                    _ => anyhow::bail!("SES endpoint has no host: {endpoint}"),
+                };
+                let signed = crate::sigv4::sign(
+                    &crate::sigv4::Credentials {
+                        access_key_id,
+                        secret_access_key,
+                        region,
+                        service: "ses",
+                    },
+                    &crate::sigv4::Request {
+                        method: "POST",
+                        host: &host,
+                        path: SES_PATH,
+                        headers: &[("content-type", "application/json")],
+                        body: &body,
+                    },
+                    chrono::Utc::now(),
+                );
+                let mut req = http
+                    .post(url)
+                    .header("content-type", "application/json")
+                    .body(body);
+                for (k, v) in signed {
+                    req = req.header(k, v);
+                }
+                let res = req.send().await?;
+                let status = res.status();
+                if !status.is_success() {
+                    let body: Value = res.json().await.unwrap_or(Value::Null);
+                    anyhow::bail!(
+                        "SES refused the message ({status}): {}",
+                        body["message"].as_str().unwrap_or("no reason given")
+                    );
                 }
                 Ok(())
             }

@@ -8,6 +8,7 @@ pub mod mailer;
 pub mod mcp;
 pub mod payment_worker;
 pub mod secrets;
+pub mod sigv4;
 
 use std::sync::Arc;
 
