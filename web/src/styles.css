@@ -9,6 +9,37 @@ body,
   height: 100%;
 }
 
+/* The one accent for Payvy's own chrome: the theme's near-black ink.
+   Blue is not a Payvy color; status keeps its semantic colors. */
+:root {
+  --payvy-ink: light-dark(rgb(27 27 27), rgb(241 241 241));
+  --payvy-bad: light-dark(rgb(185 28 28), rgb(248 113 113));
+  --payvy-soon: light-dark(rgb(180 83 9), rgb(251 191 36));
+}
+
+.payvy-due-bad { color: var(--payvy-bad); font-weight: 600; }
+.payvy-due-soon { color: var(--payvy-soon); font-weight: 600; }
+
+/* Sign-in brand block over the card. */
+.payvy-signin-brand { text-align: center; margin-bottom: 20px; }
+.payvy-signin-brand .payvy-wordmark { font-size: 34px; font-weight: 700; letter-spacing: -1.5px; }
+.payvy-signin-brand .payvy-wordmark span { color: rgb(220 62 70); }
+
+/* Bill workflow/history: a line, not a stack of badges. */
+.payvy-steps { list-style: none; margin: 0; padding: 0; }
+.payvy-steps li { position: relative; padding: 0 0 14px 22px; }
+.payvy-steps li::before {
+  content: ''; position: absolute; left: 5px; top: 8px; bottom: -2px;
+  border-left: 2px solid rgb(127 127 127 / 0.3);
+}
+.payvy-steps li:last-child::before { display: none; }
+.payvy-steps .payvy-dot {
+  position: absolute; left: 0; top: 4px; width: 12px; height: 12px;
+  border-radius: 50%; border: 2px solid rgb(127 127 127 / 0.55); background: Canvas;
+}
+.payvy-steps .payvy-dot-done { background: rgb(22 163 74); border-color: rgb(22 163 74); }
+.payvy-steps .payvy-dot-active { border-color: var(--payvy-ink); box-shadow: 0 0 0 3px rgb(127 127 127 / 0.25); }
+
 /* What was read from a document, over the page. */
 .payvy-hl {
   border-radius: 3px;
@@ -17,13 +48,13 @@ body,
   pointer-events: auto;
 }
 .payvy-hl-focus {
-  background: rgb(59 130 246 / 0.3);
-  outline: 2px solid rgb(37 99 235);
+  background: rgb(27 27 27 / 0.14);
+  outline: 2px solid var(--payvy-ink);
   animation: payvy-pulse 1.2s ease-out 2;
 }
 @keyframes payvy-pulse {
-  0% { box-shadow: 0 0 0 0 rgb(37 99 235 / 0.6); }
-  100% { box-shadow: 0 0 0 10px rgb(37 99 235 / 0); }
+  0% { box-shadow: 0 0 0 0 rgb(27 27 27 / 0.45); }
+  100% { box-shadow: 0 0 0 10px rgb(27 27 27 / 0); }
 }
 @media (prefers-reduced-motion: reduce) {
   .payvy-hl-focus { animation: none; }
@@ -45,8 +76,8 @@ body,
   color: inherit;
 }
 .payvy-field:hover { background: rgb(127 127 127 / 0.08); }
-.payvy-field:focus-visible { outline: 2px solid rgb(37 99 235); }
-.payvy-field-on { border-color: rgb(37 99 235); background: rgb(59 130 246 / 0.1); }
+.payvy-field:focus-visible { outline: 2px solid var(--payvy-ink); }
+.payvy-field-on { border-color: var(--payvy-ink); background: rgb(27 27 27 / 0.07); }
 
 /* Workflow chart: one line of steps from "Bill received" to the pay step. */
 .payvy-wf {
@@ -105,8 +136,8 @@ body,
   line-height: 1;
   cursor: pointer;
 }
-.payvy-wf-add:hover { border-color: rgb(37 99 235); color: rgb(37 99 235); }
-.payvy-wf-add:focus-visible { outline: 2px solid rgb(37 99 235); outline-offset: 1px; }
+.payvy-wf-add:hover { border-color: var(--payvy-ink); color: var(--payvy-ink); }
+.payvy-wf-add:focus-visible { outline: 2px solid var(--payvy-ink); outline-offset: 1px; }
 .payvy-wf-node {
   display: flex;
   flex-direction: column;
@@ -124,11 +155,11 @@ body,
 }
 button.payvy-wf-node { cursor: pointer; }
 button.payvy-wf-node:hover { background: rgb(127 127 127 / 0.06); }
-.payvy-wf-node:focus-visible { outline: 2px solid rgb(37 99 235); outline-offset: 2px; }
-.payvy-wf-approve { border-left-color: rgb(37 99 235); }
+.payvy-wf-node:focus-visible { outline: 2px solid var(--payvy-ink); outline-offset: 2px; }
+.payvy-wf-approve { border-left-color: var(--payvy-ink); }
 .payvy-wf-hold, .payvy-wf-wait_for { border-left-color: rgb(217 119 6); }
 .payvy-wf-pay { border-left-color: rgb(22 163 74); }
-.payvy-wf-on { border-color: rgb(37 99 235); box-shadow: 0 0 0 2px rgb(37 99 235 / 0.35); }
+.payvy-wf-on { border-color: var(--payvy-ink); box-shadow: 0 0 0 2px rgb(27 27 27 / 0.25); }
 .payvy-wf-bad { border-color: rgb(220 38 38); }
 .payvy-wf-kind {
   font-size: 11px;

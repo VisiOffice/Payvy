@@ -16,7 +16,8 @@ import { run } from '../api/client';
 import { ReasonDialog } from '../inbox/ReasonDialog';
 import { ReleaseDialog } from '../inbox/ReleaseDialog';
 import { METHOD, type Bill, type BillItem, type Inbox as InboxData, type PayeeChange, type WorkflowProposal } from '../inbox/types';
-import { date, money } from '../money';
+import { DueText } from '../Due';
+import { date, dueLabel, money } from '../money';
 import { describeStep, type Names } from '../workflow';
 import { loadPeople } from '../workflows/Builder';
 
@@ -81,7 +82,12 @@ export function Inbox() {
 
       {data && data.bills.length > 0 && (
         <VStack gap={3}>
-          <Heading level={2}>Bills</Heading>
+          <HStack gap={3} vAlign="center" wrap="wrap">
+            <Heading level={2}>Bills</Heading>
+            <Text type="supporting">
+              {data.bills.length} waiting · {money(data.bills.reduce((s, i) => s + i.bill.amount_cents, 0))} in total
+            </Text>
+          </HStack>
           {data.bills.map((item) => (
             <BillCard
               key={item.bill.id}
@@ -101,7 +107,10 @@ export function Inbox() {
 
       {data && data.payee_changes.length > 0 && (
         <VStack gap={3}>
-          <Heading level={2}>Where vendors are paid</Heading>
+          <HStack gap={3} vAlign="center" wrap="wrap">
+            <Heading level={2}>Where vendors are paid</Heading>
+            <Text type="supporting">{data.payee_changes.length} proposed change{data.payee_changes.length === 1 ? '' : 's'}</Text>
+          </HStack>
           <Banner
             status="warning"
             title="Check each change with the vendor before accepting it"
@@ -231,11 +240,17 @@ function BillCard({
           <Text type="supporting">
             Invoice {b.invoice_number} · {date(b.invoice_date)}
             {b.due_date ? ` · due ${date(b.due_date)}` : ''}
+            {dueLabel(b.due_date) && (
+              <>
+                {' · '}
+                <DueText iso={b.due_date} />
+              </>
+            )}
           </Text>
           {b.memo && <Text type="supporting">{b.memo}</Text>}
         </VStack>
         <HStack gap={3} vAlign="center">
-          <Text weight="semibold" hasTabularNumbers>
+          <Text size="lg" weight="semibold" hasTabularNumbers>
             {money(b.amount_cents)}
           </Text>
           <Button label="Reject" variant="ghost" onClick={onReject} />

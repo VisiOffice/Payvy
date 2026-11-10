@@ -12,6 +12,20 @@ export function date(iso: string | null | undefined): string {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
+/** How a due date reads against today: null when there's nothing to say. */
+export function dueLabel(iso: string | null | undefined): { text: string; tone: 'bad' | 'soon' | null } | null {
+  if (!iso) return null;
+  const due = new Date(`${iso.slice(0, 10)}T00:00:00`);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const days = Math.round((due.getTime() - today.getTime()) / 86_400_000);
+  if (days < 0) return { text: `Overdue by ${-days}d`, tone: 'bad' };
+  if (days === 0) return { text: 'Due today', tone: 'bad' };
+  if (days === 1) return { text: 'Due tomorrow', tone: 'soon' };
+  if (days <= 7) return { text: `Due in ${days}d`, tone: 'soon' };
+  return null;
+}
+
 /** "1,234.56" or "$1234.5" → cents; null if it isn't an amount. */
 export function cents(dollars: string): number | null {
   const m = /^\$?\s*(\d{1,3}(?:,\d{3})*|\d+)(?:\.(\d{1,2}))?$/.exec(dollars.trim());

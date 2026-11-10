@@ -18,6 +18,7 @@ import { billStatus, eventLabel } from '../status';
 import { ReasonDialog } from '../inbox/ReasonDialog';
 import { ReleaseDialog } from '../inbox/ReleaseDialog';
 import { METHOD, type Bill as BillT } from '../inbox/types';
+import { DueText } from '../Due';
 import { date, money } from '../money';
 import { DocumentViewer } from '../viewer/DocumentViewer';
 import { highlightsOf, type DocumentDetail, type Read } from '../documents/types';
@@ -140,7 +141,15 @@ export function BillPage() {
 
       <MetadataList>
         <MetadataListItem label="Invoice date">{date(b.invoice_date)}</MetadataListItem>
-        <MetadataListItem label="Due">{b.due_date ? date(b.due_date) : 'Not set'}</MetadataListItem>
+        <MetadataListItem label="Due">
+          {b.due_date ? (
+            <>
+              {date(b.due_date)} {isOpen && <DueText iso={b.due_date} />}
+            </>
+          ) : (
+            'Not set'
+          )}
+        </MetadataListItem>
         {b.memo && <MetadataListItem label="Memo">{b.memo}</MetadataListItem>}
         <MetadataListItem label="Entered by">{b.created_by}</MetadataListItem>
       </MetadataList>
@@ -150,14 +159,21 @@ export function BillPage() {
       {steps.length > 0 && (
         <VStack gap={2}>
           <Heading level={2}>Workflow</Heading>
-          {steps.map((s) => (
-            <HStack key={s.id} gap={2} vAlign="center">
-              <Badge label={STEP_STATE[s.state].label} variant={STEP_STATE[s.state].variant} />
-              <Text>{s.describe}</Text>
-              {s.at && <Text type="supporting">{date(s.at)}</Text>}
-              {s.reason && <Text type="supporting">{s.reason}</Text>}
-            </HStack>
-          ))}
+          <ol className="payvy-steps">
+            {steps.map((s) => (
+              <li key={s.id}>
+                <span className={`payvy-dot payvy-dot-${s.state}`} aria-hidden="true" />
+                <Text>
+                  {s.describe}{' '}
+                  <Text type="supporting">
+                    · {STEP_STATE[s.state].label}
+                    {s.at ? ` · ${date(s.at)}` : ''}
+                    {s.reason ? ` · ${s.reason}` : ''}
+                  </Text>
+                </Text>
+              </li>
+            ))}
+          </ol>
         </VStack>
       )}
 
@@ -196,13 +212,19 @@ export function BillPage() {
       {detail.history.length > 0 && (
         <VStack gap={2}>
           <Heading level={2}>History</Heading>
-          {detail.history.map((h) => (
-            <HStack key={h.id} gap={2}>
-              <Text type="supporting">{date(h.at)}</Text>
-              <Text>{eventLabel(h.kind)}</Text>
-              <Text type="supporting">by {h.actor}</Text>
-            </HStack>
-          ))}
+          <ol className="payvy-steps">
+            {detail.history.map((h) => (
+              <li key={h.id}>
+                <span className="payvy-dot" aria-hidden="true" />
+                <Text>
+                  {eventLabel(h.kind)}{' '}
+                  <Text type="supporting">
+                    {date(h.at)} · by {h.actor}
+                  </Text>
+                </Text>
+              </li>
+            ))}
+          </ol>
         </VStack>
       )}
       {!doc && <Text type="supporting">No invoice is attached: this bill was entered without one.</Text>}

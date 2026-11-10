@@ -115,8 +115,14 @@ export function ReleaseDialog({
           <VStack gap={4}>
             {state.plan ? (
               <MetadataList>
-                <MetadataListItem label="Amount">{money(state.plan.amount_cents)}</MetadataListItem>
-                <MetadataListItem label="To">{state.plan.to}</MetadataListItem>
+                <MetadataListItem label="Amount">
+                  <Text size="lg" weight="semibold" hasTabularNumbers>
+                    {money(state.plan.amount_cents)}
+                  </Text>
+                </MetadataListItem>
+                <MetadataListItem label="To">
+                  <Text weight="semibold">{state.plan.to}</Text>
+                </MetadataListItem>
                 <MetadataListItem label="Account">{state.plan.destination}</MetadataListItem>
                 <MetadataListItem label="Method">
                   {METHOD[state.plan.method] ?? state.plan.method}

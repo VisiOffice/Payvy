@@ -65,42 +65,50 @@ export function SignIn({ onSignedIn }: { onSignedIn: (me: Me) => void }) {
 
   return (
     <Center height="100%">
-      <Card width={400} maxWidth="calc(100vw - 32px)" padding={6}>
-        <VStack gap={4}>
-          <Heading level={1}>Sign in to Payvy</Heading>
-          {error && <Banner status="error" title={error} />}
-          {sent ? (
-            <VStack gap={3}>
-              <Text>{sent}</Text>
-              <Text type="supporting">Check {email}. You can close this tab.</Text>
-              <Button label="Use a different address" variant="ghost" onClick={() => setSent(null)} />
-            </VStack>
-          ) : (
-            <VStack gap={3}>
-              <Text type="supporting">We'll email you a link. No password needed.</Text>
-              <TextInput
-                label="Work email"
-                type="email"
-                value={email}
-                onChange={setEmail}
-                onEnter={ask}
-                autoComplete="email"
-                hasAutoFocus
-              />
-              <Button
-                label="Email me a link"
-                variant="primary"
-                clickAction={ask}
-                isDisabled={!email.includes('@')}
-                width="100%"
-              />
-            </VStack>
-          )}
-          {from !== '/' && !sent && (
-            <Text type="supporting">After signing in you'll go back to {from}.</Text>
-          )}
-        </VStack>
-      </Card>
+      <div>
+        <div className="payvy-signin-brand">
+          <div className="payvy-wordmark">
+            Payvy<span>.</span>
+          </div>
+          <Text type="supporting">Your bills. Your bank. Your rules.</Text>
+        </div>
+        <Card width={400} maxWidth="calc(100vw - 32px)" padding={6}>
+          <VStack gap={4}>
+            <Heading level={1}>Sign in to Payvy</Heading>
+            {error && <Banner status="error" title={error} />}
+            {sent ? (
+              <VStack gap={3}>
+                <Text>{sent}</Text>
+                <Text type="supporting">Check {email}. You can close this tab.</Text>
+                <Button label="Use a different address" variant="ghost" onClick={() => setSent(null)} />
+              </VStack>
+            ) : (
+              <VStack gap={3}>
+                <Text type="supporting">We'll email you a link. No password needed.</Text>
+                <TextInput
+                  label="Work email"
+                  type="email"
+                  value={email}
+                  onChange={setEmail}
+                  onEnter={ask}
+                  autoComplete="email"
+                  hasAutoFocus
+                />
+                <Button
+                  label="Email me a link"
+                  variant="primary"
+                  clickAction={ask}
+                  isDisabled={!email.includes('@')}
+                  width="100%"
+                />
+              </VStack>
+            )}
+            {from !== '/' && !sent && (
+              <Text type="supporting">After signing in you'll go back to {from}.</Text>
+            )}
+          </VStack>
+        </Card>
+      </div>
     </Center>
   );
 }

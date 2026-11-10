@@ -1,5 +1,6 @@
-import type { ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useLocation } from 'react-router';
+import { run } from './api/client';
 import { AppShell } from '@astryxdesign/core/AppShell';
 import { Button } from '@astryxdesign/core/Button';
 import { SideNav, SideNavHeading, SideNavItem, SideNavSection } from '@astryxdesign/core/SideNav';
@@ -18,6 +19,18 @@ const NAV = [
 export function Shell({ children }: { children: ReactNode }) {
   const { me, signOut } = useSession();
   const { pathname } = useLocation();
+  const [waiting, setWaiting] = useState<number | null>(null);
+
+  // The inbox count rides on the nav label; refreshed on every navigation.
+  useEffect(() => {
+    let live = true;
+    run<{ count: number }>('inbox.get', {})
+      .then((r) => live && setWaiting(r.result.count))
+      .catch(() => live && setWaiting(null));
+    return () => {
+      live = false;
+    };
+  }, [pathname]);
   return (
     <AppShell
       contentPadding={0}
@@ -37,7 +50,7 @@ export function Shell({ children }: { children: ReactNode }) {
             {NAV.map((n) => (
               <SideNavItem
                 key={n.href}
-                label={n.label}
+                label={n.href === '/' && waiting ? `${n.label} (${waiting})` : n.label}
                 href={n.href}
                 isSelected={n.href === '/' ? pathname === '/' : pathname.startsWith(n.href)}
               />

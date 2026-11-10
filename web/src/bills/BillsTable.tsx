@@ -3,6 +3,7 @@ import { Badge } from '@astryxdesign/core/Badge';
 import { Link } from '@astryxdesign/core/Link';
 import { Table, type TableColumn } from '@astryxdesign/core/Table';
 import { Text } from '@astryxdesign/core/Text';
+import { DueText } from '../Due';
 import { date, money } from '../money';
 import { billStatus } from '../status';
 
@@ -11,6 +12,7 @@ interface BillRow extends Record<string, unknown> {
   vendor: string;
   invoice: string;
   due: string;
+  dueIso: string | null;
   amount: string;
   /** awaiting_release, paid, … */
   status: string;
@@ -39,8 +41,28 @@ function statusOf(l: Listed): string {
 const COLUMNS: TableColumn<BillRow>[] = [
   { key: 'vendor', header: 'Vendor', renderCell: (row) => <Link href={`/bills/${row.id}`}>{row.vendor}</Link> },
   { key: 'invoice', header: 'Invoice', renderCell: (row) => <Link href={`/bills/${row.id}`}>{row.invoice}</Link> },
-  { key: 'due', header: 'Due', renderCell: (row) => row.due || <Text type="supporting">Not set</Text> },
-  { key: 'amount', header: 'Amount', align: 'end' },
+  {
+    key: 'due',
+    header: 'Due',
+    renderCell: (row) =>
+      row.due ? (
+        <>
+          {row.due} {isOpen(row.status) && <DueText iso={row.dueIso} />}
+        </>
+      ) : (
+        <Text type="supporting">Not set</Text>
+      ),
+  },
+  {
+    key: 'amount',
+    header: 'Amount',
+    align: 'end',
+    renderCell: (row) => (
+      <Text weight="semibold" hasTabularNumbers>
+        {row.amount}
+      </Text>
+    ),
+  },
   {
     key: 'status',
     header: 'Status',
@@ -52,12 +74,18 @@ const COLUMNS: TableColumn<BillRow>[] = [
 ];
 
 
+/** Paid, released, rejected and void bills are past caring when they were due. */
+function isOpen(status: string): boolean {
+  return !['paid', 'released', 'rejected', 'void'].includes(status);
+}
+
 export function rows(bills: Listed[]): BillRow[] {
   return bills.map((l) => ({
     id: l.bill.id,
     vendor: l.bill.vendor_name,
     invoice: l.bill.invoice_number,
     due: date(l.bill.due_date),
+    dueIso: l.bill.due_date,
     amount: money(l.bill.amount_cents),
     status: statusOf(l),
   }));
