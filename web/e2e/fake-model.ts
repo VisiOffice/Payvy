@@ -91,6 +91,18 @@ const READS: [string, Read][] = [
     },
   ],
   ['ACME', { ...blank, kind: 'statement', vendor_name: 'Acme Supply' }],
+  [
+    'SR-7781',
+    {
+      ...blank,
+      kind: 'invoice',
+      vendor_name: 'Sonoran Pest Control',
+      invoice_number: 'SR-7781',
+      invoice_date: '2026-11-03',
+      currency: 'USD',
+      total: '185.00',
+    },
+  ],
 ];
 
 /** The file's bytes, from the data URL the server sends. */
