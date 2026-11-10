@@ -6,6 +6,7 @@ mod bills;
 mod documents;
 mod email;
 mod events;
+mod extract;
 mod vendors;
 mod workflows;
 
@@ -141,6 +142,7 @@ pub async fn run(
         preview,
         storage: state.storage.as_deref(),
         inbound_domain: state.inbound.as_ref().map(|i| i.domain.as_str()),
+        extractor: state.extractor.as_deref(),
     };
     let result = execute(&mut cx, spec.name, &input).await?;
     let Cx { tx, events, .. } = cx;
@@ -185,6 +187,7 @@ async fn execute(cx: &mut Cx<'_>, name: &str, input: &Value) -> Result<Value, Co
         "document.list" => documents::list(cx, parse(input)?).await,
         "document.get" => documents::get(cx, parse(input)?).await,
         "document.trash" => documents::trash(cx, parse(input)?).await,
+        "document.extract" => extract::extract(cx, parse(input)?).await,
         "email.address" => email::address(cx, parse(input)?).await,
         "email.new_address" => email::new_address(cx, parse(input)?).await,
         "email.import" => email::import(cx, parse(input)?).await,
@@ -208,6 +211,7 @@ pub(crate) struct Cx<'a> {
     pub preview: bool,
     storage: Option<&'a payvy_storage::Storage>,
     inbound_domain: Option<&'a str>,
+    extractor: Option<&'a payvy_extract::Extractor>,
 }
 
 impl<'a> Cx<'a> {
@@ -220,6 +224,12 @@ impl<'a> Cx<'a> {
     pub fn inbound_domain(&self) -> Result<&'a str, CommandError> {
         self.inbound_domain.ok_or(CommandError::NotConfigured(
             "email intake isn't configured (set PAYVY_INBOUND_DOMAIN and PAYVY_INBOUND_SECRET)",
+        ))
+    }
+
+    pub fn extractor(&self) -> Result<&'a payvy_extract::Extractor, CommandError> {
+        self.extractor.ok_or(CommandError::NotConfigured(
+            "reading documents isn't configured (set PAYVY_EXTRACT_PROVIDER and its key)",
         ))
     }
 

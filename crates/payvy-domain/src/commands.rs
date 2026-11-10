@@ -106,7 +106,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         summary: "Enter a bill, optionally from an inbox document. It follows the vendor's current workflow from now on. Refused if this vendor already has a bill with the same invoice number (ignoring case, spaces, punctuation and leading zeros) unless allow_duplicate is true.",
         tier: RiskTier::Routine,
         person_only: false,
-        input_schema: r#"{"type":"object","required":["vendor_id","invoice_number","invoice_date","amount_cents"],"properties":{"vendor_id":{"type":"string","format":"uuid"},"invoice_number":{"type":"string"},"invoice_date":{"type":"string","format":"date"},"due_date":{"type":"string","format":"date","description":"Defaults to invoice_date plus the vendor's terms"},"amount_cents":{"type":"integer","minimum":1},"memo":{"type":"string"},"external_ref":{"type":"string","description":"Your own id for this bill (a PO or order number), so other systems can signal it"},"lines":{"type":"array","items":{"type":"object","required":["description","amount_cents"],"properties":{"description":{"type":"string"},"amount_cents":{"type":"integer","minimum":1},"account":{"type":"string"}}},"description":"If given, they must add up to amount_cents"},"allow_duplicate":{"type":"boolean"},"document_id":{"type":"string","format":"uuid","description":"The inbox document this bill was read from; it is filed with the bill"}}}"#,
+        input_schema: r#"{"type":"object","required":["vendor_id","invoice_number","invoice_date","amount_cents"],"properties":{"vendor_id":{"type":"string","format":"uuid"},"invoice_number":{"type":"string"},"invoice_date":{"type":"string","format":"date"},"due_date":{"type":"string","format":"date","description":"Defaults to invoice_date plus the vendor's terms"},"amount_cents":{"type":"integer","minimum":1},"memo":{"type":"string"},"external_ref":{"type":"string","description":"Your own id for this bill (a PO or order number), so other systems can signal it"},"lines":{"type":"array","items":{"type":"object","required":["description","amount_cents"],"properties":{"description":{"type":"string"},"amount_cents":{"type":"integer","minimum":1},"account":{"type":"string"}}},"description":"If given, they must add up to amount_cents"},"allow_duplicate":{"type":"boolean"},"document_id":{"type":"string","format":"uuid","description":"The inbox document this bill was read from; it is filed with the bill"},"extraction_id":{"type":"string","format":"uuid","description":"The document.extract result this bill was entered from (its bill_input carries it). The audit log records which fields were corrected."}}}"#,
     },
     CommandSpec {
         name: "bill.list",
@@ -181,10 +181,17 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "document.get",
-        summary: "A document's details and a download link valid for 15 minutes.",
+        summary: "A document's details, every time a model read it (newest first, with checks and the suggested bill_input), and a download link valid for 15 minutes.",
         tier: RiskTier::Read,
         person_only: false,
         input_schema: r#"{"type":"object","required":["document_id"],"properties":{"document_id":{"type":"string","format":"uuid"}}}"#,
+    },
+    CommandSpec {
+        name: "document.extract",
+        summary: "Read an inbox document with the configured model: vendor, invoice number, dates, lines and total, checked against each other and matched to a vendor on file. Returns the checks, whether it is ready, and bill_input: the bill.create input it suggests, to enter as is or corrected. Nothing becomes a bill until bill.create. New documents are read automatically when the server's reader is on. Refused if the document was already read, unless again is true.",
+        tier: RiskTier::Routine,
+        person_only: false,
+        input_schema: r#"{"type":"object","required":["document_id"],"properties":{"document_id":{"type":"string","format":"uuid"},"again":{"type":"boolean","description":"Read it again even though it was already read, e.g. after adding the vendor"}}}"#,
     },
     CommandSpec {
         name: "document.trash",

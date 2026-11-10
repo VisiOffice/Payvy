@@ -42,6 +42,13 @@ Conventions follow Visirent (`~/Code/visirent`).
   (`inbound::tests`); change both or neither. Outbound mail (notifications) goes through one
   optional adapter, like storage, with two backends: Cloudflare Email Service's REST API for
   self-hosters (same account as inbound) and SES for hosted Payvy. Not built yet.
+- **Models read, Payvy decides.** Extraction (`document.extract`, `payvy-extract`) asks the model
+  only for what is printed, with amounts as strings. Converting to cents, checking, vendor matching
+  and duplicates live in `payvy-domain/src/extraction.rs`, which is pure and tested, so a weaker
+  model produces drafts that fail checks, never wrong bills. The same schema goes to both backends
+  (Claude Messages API, OpenAI-compatible chat completions); don't add a provider-specific schema.
+  An extraction never creates a bill: `bill.create` with `extraction_id` does, and records what was
+  corrected. When the prompt or schema changes, run `payvy extract-eval fixtures/invoices`.
 - **The README compares Payvy with Bill.com.** Keep every Bill.com figure sourced and dated, and
   keep the "what Bill.com has that Payvy doesn't" list honest.
 - SQL is static strings (`concat!` with the column macros); sqlx 0.9 refuses runtime-built SQL.
@@ -50,6 +57,9 @@ Conventions follow Visirent (`~/Code/visirent`).
 
 ```bash
 docker compose up -d                      # Postgres on :5446, SeaweedFS (S3) on :8336
+echo 's3.bucket.create -name payvy-dev' | docker compose exec -T s3 weed shell  # once; then
+                                          # docker compose restart s3 (SeaweedFS takes uploads to a
+                                          # missing bucket and then 404s every download)
 cp .env.example .env                      # set PAYVY_API_KEY
 set -a; . ./.env; set +a
 cargo test                                # integration tests need PAYVY_TEST_* from .env

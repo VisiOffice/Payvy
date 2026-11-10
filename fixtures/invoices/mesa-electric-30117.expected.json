@@ -1,0 +1,9 @@
+{
+  "kind": "invoice",
+  "vendor_name": "Mesa Electric Supply",
+  "invoice_number": "30117",
+  "invoice_date": "2026-10-30",
+  "tax_cents": 2618,
+  "total_cents": 34163,
+  "line_count": 3
+}

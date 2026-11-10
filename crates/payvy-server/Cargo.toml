@@ -13,6 +13,7 @@ path = "src/main.rs"
 payvy-domain.workspace = true
 payvy-store.workspace = true
 payvy-storage.workspace = true
+payvy-extract.workspace = true
 base64.workspace = true
 serde.workspace = true
 serde_json.workspace = true

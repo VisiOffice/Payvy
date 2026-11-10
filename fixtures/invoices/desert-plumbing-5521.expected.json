@@ -1,0 +1,11 @@
+{
+  "kind": "invoice",
+  "vendor_name": "Desert Plumbing & Drain",
+  "invoice_number": "DP-5521",
+  "invoice_date": "2026-10-28",
+  "due_date": "2026-11-12",
+  "po_number": "QR-2231",
+  "tax_cents": null,
+  "total_cents": 142000,
+  "line_count": 3
+}

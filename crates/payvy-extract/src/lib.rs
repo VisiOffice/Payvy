@@ -1,0 +1,423 @@
+//! Reads a bill from its document with a model.
+//!
+//! Two backends cover nearly every model a self-hoster would pick:
+//!
+//! - **Claude**, through the Messages API, which reads PDFs and images
+//!   directly and constrains its answer to the schema.
+//! - **Any OpenAI-compatible chat completions API**: OpenAI, Gemini
+//!   (`generativelanguage.googleapis.com/v1beta/openai`), Grok (`api.x.ai/v1`),
+//!   OpenRouter, or a model on your own machine through Ollama or vLLM, so
+//!   invoices never leave it.
+//!
+//! Both ask for the same schema (`payvy_domain::extraction::schema`) and
+//! return the same [`payvy_domain::extraction::Read`]. Checking the answer is
+//! the domain's job, not the model's.
+
+use std::time::Duration;
+
+use base64::Engine;
+use payvy_domain::documents::Kind;
+use payvy_domain::extraction::{self, Read};
+use serde_json::{Value, json};
+
+/// The Claude API version these requests are written for.
+const ANTHROPIC_VERSION: &str = "2026-10-21";
+/// The default Claude model.
+pub const DEFAULT_CLAUDE_MODEL: &str = "claude-opus-5-5";
+/// Claude's limit is 32 MB per request; base64 adds a third.
+const MAX_ENCODED: usize = 30 * 1024 * 1024;
+const PROMPT: &str = "Read this document.";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Provider {
+    Anthropic,
+    OpenAiCompatible,
+}
+
+impl Provider {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "anthropic" | "claude" => Some(Provider::Anthropic),
+            "openai" | "openai-compatible" | "openai_compatible" => {
+                Some(Provider::OpenAiCompatible)
+            }
+            _ => None,
+        }
+    }
+
+    pub fn default_base_url(self) -> &'static str {
+        match self {
+            Provider::Anthropic => "https://api.anthropic.com",
+            Provider::OpenAiCompatible => "https://api.openai.com/v1",
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct Config {
+    pub provider: Provider,
+    /// Anthropic: https://api.anthropic.com. OpenAI-compatible: the URL that
+    /// `/chat/completions` hangs off, e.g. https://api.openai.com/v1 or
+    /// http://127.0.0.1:11434/v1.
+    pub base_url: String,
+    /// Optional for a local server that doesn't check one.
+    pub api_key: Option<String>,
+    pub model: String,
+}
+
+impl std::fmt::Debug for Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Config")
+            .field("provider", &self.provider)
+            .field("base_url", &self.base_url)
+            .field("model", &self.model)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum ExtractError {
+    /// This document can't be sent to this provider (a TIFF, or too large).
+    #[error("{0}")]
+    Unsupported(String),
+    /// The model declined to read it.
+    #[error("the model declined to read this document: {0}")]
+    Refused(String),
+    /// The provider failed or answered with something that isn't the schema.
+    #[error("{0}")]
+    Failed(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct Output {
+    pub read: Read,
+    /// The answer exactly as the model gave it, kept for the record.
+    pub raw: Value,
+    /// The model that answered, as the provider reports it (a fallback may
+    /// differ from the one asked for).
+    pub model: String,
+}
+
+pub struct Extractor {
+    config: Config,
+    http: reqwest::Client,
+}
+
+impl Extractor {
+    pub fn new(config: Config) -> anyhow::Result<Self> {
+        anyhow::ensure!(!config.model.trim().is_empty(), "no extraction model set");
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(300))
+            .build()?;
+        Ok(Self { config, http })
+    }
+
+    /// "anthropic" or "openai-compatible (api.x.ai)": what's recorded with
+    /// each extraction.
+    pub fn provider_label(&self) -> String {
+        match self.config.provider {
+            Provider::Anthropic => "anthropic".into(),
+            Provider::OpenAiCompatible => {
+                let host = reqwest::Url::parse(&self.config.base_url)
+                    .ok()
+                    .and_then(|u| u.host_str().map(str::to_owned))
+                    .unwrap_or_default();
+                format!("openai-compatible ({host})")
+            }
+        }
+    }
+
+    pub fn model(&self) -> &str {
+        &self.config.model
+    }
+
+    pub async fn read(&self, bytes: &[u8], kind: Kind) -> Result<Output, ExtractError> {
+        let body = request(&self.config, bytes, kind)?;
+        let base = self.config.base_url.trim_end_matches('/');
+        let req = match self.config.provider {
+            Provider::Anthropic => {
+                let mut r = self
+                    .http
+                    .post(format!("{base}/v1/messages"))
+                    .header("anthropic-version", ANTHROPIC_VERSION);
+                if let Some(k) = &self.config.api_key {
+                    r = r.header("x-api-key", k);
+                }
+                if claude_fallback(&self.config.model) {
+                    r = r.header("anthropic-beta", "server-side-fallback-2026-07-01");
+                }
+                r
+            }
+            Provider::OpenAiCompatible => {
+                let r = self.http.post(format!("{base}/chat/completions"));
+                match &self.config.api_key {
+                    Some(k) => r.bearer_auth(k),
+                    None => r,
+                }
+            }
+        };
+        let res = req
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| ExtractError::Failed(format!("couldn't reach the model: {e}")))?;
+        let status = res.status();
+        let text = res
+            .text()
+            .await
+            .map_err(|e| ExtractError::Failed(format!("the model's answer was cut off: {e}")))?;
+        let value: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+        if !status.is_success() {
+            let message = value["error"]["message"]
+                .as_str()
+                .or_else(|| value["message"].as_str())
+                .unwrap_or("no detail");
+            return Err(ExtractError::Failed(format!(
+                "the model's API answered {status}: {message}"
+            )));
+        }
+        match self.config.provider {
+            Provider::Anthropic => parse_anthropic(&value, &self.config.model),
+            Provider::OpenAiCompatible => parse_openai(&value, &self.config.model),
+        }
+    }
+}
+
+/// Claude models that take the server-side fallback for a declined
+/// request; the rest stop with a refusal.
+fn claude_fallback(model: &str) -> bool {
+    model.starts_with("claude-opus-5")
+        || model.starts_with("claude-fable-5")
+        || model == "claude-sonnet-5-5"
+}
+
+/// The request body for this provider.
+pub fn request(config: &Config, bytes: &[u8], kind: Kind) -> Result<Value, ExtractError> {
+    if kind == Kind::Tiff {
+        return Err(ExtractError::Unsupported(
+            "TIFF scans can't be read automatically yet; convert it to PDF".into(),
+        ));
+    }
+    let data = base64::engine::general_purpose::STANDARD.encode(bytes);
+    if data.len() > MAX_ENCODED {
+        return Err(ExtractError::Unsupported(
+            "this file is too large to read automatically".into(),
+        ));
+    }
+    let schema = extraction::schema();
+    Ok(match config.provider {
+        Provider::Anthropic => {
+            let block = if kind == Kind::Pdf {
+                json!({ "type": "document", "source": { "type": "base64", "media_type": "application/pdf", "data": data } })
+            } else {
+                json!({ "type": "image", "source": { "type": "base64", "media_type": kind.content_type(), "data": data } })
+            };
+            let mut body = json!({
+                "model": config.model,
+                "max_tokens": 16000,
+                "system": extraction::INSTRUCTIONS,
+                "messages": [{ "role": "user", "content": [block, { "type": "text", "text": PROMPT }] }],
+                "output_config": { "format": { "type": "json_schema", "schema": schema } },
+            });
+            if claude_fallback(&config.model) {
+                body["fallbacks"] = json!("default");
+            }
+            body
+        }
+        Provider::OpenAiCompatible => {
+            let url = format!("data:{};base64,{data}", kind.content_type());
+            let part = if kind == Kind::Pdf {
+                json!({ "type": "file", "file": { "filename": "document.pdf", "file_data": url } })
+            } else {
+                json!({ "type": "image_url", "image_url": { "url": url } })
+            };
+            json!({
+                "model": config.model,
+                "messages": [
+                    { "role": "system", "content": extraction::INSTRUCTIONS },
+                    { "role": "user", "content": [part, { "type": "text", "text": PROMPT }] },
+                ],
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": { "name": "document", "strict": true, "schema": schema },
+                },
+            })
+        }
+    })
+}
+
+fn parse_anthropic(v: &Value, asked: &str) -> Result<Output, ExtractError> {
+    match v["stop_reason"].as_str() {
+        Some("refusal") => {
+            let why = v["stop_details"]["explanation"]
+                .as_str()
+                .or_else(|| v["stop_details"]["category"].as_str())
+                .unwrap_or("no reason given");
+            return Err(ExtractError::Refused(why.into()));
+        }
+        Some("max_tokens") => {
+            return Err(ExtractError::Failed(
+                "the model ran out of room before finishing".into(),
+            ));
+        }
+        _ => {}
+    }
+    let text = v["content"]
+        .as_array()
+        .and_then(|blocks| {
+            blocks
+                .iter()
+                .find(|b| b["type"] == "text")
+                .and_then(|b| b["text"].as_str())
+        })
+        .ok_or_else(|| ExtractError::Failed("the model's answer had no text".into()))?;
+    output(text, v["model"].as_str().unwrap_or(asked))
+}
+
+fn parse_openai(v: &Value, asked: &str) -> Result<Output, ExtractError> {
+    let choice = &v["choices"][0];
+    if let Some(r) = choice["message"]["refusal"].as_str() {
+        return Err(ExtractError::Refused(r.into()));
+    }
+    if choice["finish_reason"] == "length" {
+        return Err(ExtractError::Failed(
+            "the model ran out of room before finishing".into(),
+        ));
+    }
+    let text = choice["message"]["content"]
+        .as_str()
+        .ok_or_else(|| ExtractError::Failed("the model's answer had no text".into()))?;
+    output(text, v["model"].as_str().unwrap_or(asked))
+}
+
+/// Parses the answer. Providers without strict schemas sometimes wrap the
+/// JSON in a code fence or a sentence, so this takes the outermost object.
+fn output(text: &str, model: &str) -> Result<Output, ExtractError> {
+    let json = match (text.find('{'), text.rfind('}')) {
+        (Some(a), Some(b)) if a < b => &text[a..=b],
+        _ => text,
+    };
+    let raw: Value = serde_json::from_str(json)
+        .map_err(|e| ExtractError::Failed(format!("the model's answer isn't JSON: {e}")))?;
+    let read: Read = serde_json::from_value(raw.clone()).map_err(|e| {
+        ExtractError::Failed(format!("the model's answer doesn't fit the schema: {e}"))
+    })?;
+    Ok(Output {
+        read,
+        raw,
+        model: model.into(),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config(provider: Provider, model: &str) -> Config {
+        Config {
+            provider,
+            base_url: provider.default_base_url().into(),
+            api_key: Some("k".into()),
+            model: model.into(),
+        }
+    }
+
+    const ANSWER: &str = r#"{"kind":"invoice","vendor_name":"King Environmental","vendor_email":null,"vendor_address":null,"account_number":null,"invoice_number":"189727","invoice_date":"2026-11-01","due_date":null,"terms":null,"currency":"USD","po_number":null,"subtotal":null,"tax":null,"total":"459.00","lines":[],"notes":null}"#;
+
+    #[test]
+    fn claude_gets_a_document_block_and_the_schema() {
+        let body = request(
+            &config(Provider::Anthropic, DEFAULT_CLAUDE_MODEL),
+            b"%PDF-1.7",
+            Kind::Pdf,
+        )
+        .unwrap();
+        let content = &body["messages"][0]["content"];
+        assert_eq!(content[0]["type"], "document");
+        assert_eq!(content[0]["source"]["data"], "JVBERi0xLjc=");
+        assert_eq!(body["output_config"]["format"]["type"], "json_schema");
+        assert_eq!(body["fallbacks"], "default");
+        assert!(body.get("temperature").is_none());
+
+        let body = request(
+            &config(Provider::Anthropic, "claude-haiku-5-5"),
+            b"\x89PNG",
+            Kind::Png,
+        )
+        .unwrap();
+        assert_eq!(body["messages"][0]["content"][0]["type"], "image");
+        assert!(body.get("fallbacks").is_none());
+    }
+
+    #[test]
+    fn openai_compatible_gets_a_data_url_and_a_strict_schema() {
+        let body = request(
+            &config(Provider::OpenAiCompatible, "gpt-5"),
+            b"%PDF-1.7",
+            Kind::Pdf,
+        )
+        .unwrap();
+        let part = &body["messages"][1]["content"][0];
+        assert_eq!(part["type"], "file");
+        assert_eq!(
+            part["file"]["file_data"],
+            "data:application/pdf;base64,JVBERi0xLjc="
+        );
+        assert_eq!(body["response_format"]["json_schema"]["strict"], true);
+        let body = request(
+            &config(Provider::OpenAiCompatible, "llama"),
+            b"\xFF\xD8\xFF",
+            Kind::Jpeg,
+        )
+        .unwrap();
+        assert_eq!(body["messages"][1]["content"][0]["type"], "image_url");
+    }
+
+    #[test]
+    fn tiffs_are_refused_before_sending() {
+        assert!(matches!(
+            request(&config(Provider::Anthropic, "m"), b"II*\0", Kind::Tiff),
+            Err(ExtractError::Unsupported(_))
+        ));
+    }
+
+    #[test]
+    fn answers_parse_from_either_provider() {
+        let claude = json!({ "model": "claude-opus-5-5", "stop_reason": "end_turn",
+            "content": [{ "type": "thinking", "thinking": "" }, { "type": "text", "text": ANSWER }] });
+        let out = parse_anthropic(&claude, "x").unwrap();
+        assert_eq!(out.model, "claude-opus-5-5");
+        assert_eq!(out.read.total.as_deref(), Some("459.00"));
+
+        let fenced = format!("Here you go:\n```json\n{ANSWER}\n```");
+        let openai = json!({ "model": "grok-4", "choices": [{ "finish_reason": "stop", "message": { "content": fenced } }] });
+        assert_eq!(
+            parse_openai(&openai, "x")
+                .unwrap()
+                .read
+                .invoice_number
+                .as_deref(),
+            Some("189727")
+        );
+    }
+
+    #[test]
+    fn refusals_and_cut_offs_are_errors() {
+        let refused = json!({ "stop_reason": "refusal", "stop_details": { "category": "cyber" }, "content": [] });
+        assert_eq!(
+            parse_anthropic(&refused, "x").unwrap_err(),
+            ExtractError::Refused("cyber".into())
+        );
+        let cut =
+            json!({ "choices": [{ "finish_reason": "length", "message": { "content": "{" } }] });
+        assert!(matches!(
+            parse_openai(&cut, "x"),
+            Err(ExtractError::Failed(_))
+        ));
+        let wrong = json!({ "choices": [{ "message": { "content": "{\"kind\":\"banana\"}" } }] });
+        assert!(matches!(
+            parse_openai(&wrong, "x"),
+            Err(ExtractError::Failed(_))
+        ));
+    }
+}

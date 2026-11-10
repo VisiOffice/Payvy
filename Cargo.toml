@@ -3,6 +3,7 @@ members = [
     "crates/payvy-domain",
     "crates/payvy-store",
     "crates/payvy-storage",
+    "crates/payvy-extract",
     "crates/payvy-server",
 ]
 resolver = "2"
@@ -17,6 +18,7 @@ publish = false
 payvy-domain = { path = "crates/payvy-domain" }
 payvy-store = { path = "crates/payvy-store" }
 payvy-storage = { path = "crates/payvy-storage" }
+payvy-extract = { path = "crates/payvy-extract" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

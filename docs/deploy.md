@@ -36,7 +36,8 @@ Kamal runs under the mise Ruby; if it reports `can't find gem kamal`:
 1. Create the secrets in 1Password without seeing them (each `openssl rand -hex 32 | vp create
    api-credential --stdin --title ... --vault ...`): Postgres superuser password, app role
    password, `PAYVY_API_KEY`, `PAYVY_INBOUND_SECRET`. Add an R2 API token scoped to
-   `payvy-documents` (Object Read & Write) as two items. Put the references in `.kamal/secrets`.
+   `payvy-documents` (Object Read & Write) as two items, and an Anthropic API key for reading
+   documents (`PAYVY_EXTRACT_API_KEY`). Put the references in `.kamal/secrets`.
 2. Cloudflare: A record `api.payvy.com` → 5.78.94.150 (DNS only); Email Routing → add the
    subdomain `in.payvy.com`.
 3. On the host: copy the nginx file to `/etc/nginx/sites-available/payvy`, link it, get the

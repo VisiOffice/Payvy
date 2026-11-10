@@ -1,0 +1,11 @@
+{
+  "kind": "invoice",
+  "vendor_name": "King Environmental",
+  "invoice_number": "189727",
+  "invoice_date": "2026-11-01",
+  "due_date": "2026-12-01",
+  "account_number": "004417",
+  "tax_cents": 3400,
+  "total_cents": 45900,
+  "line_count": 2
+}

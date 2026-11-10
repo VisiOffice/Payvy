@@ -1199,3 +1199,205 @@ pub async fn list_emails(tx: &mut Tx, limit: i64) -> anyhow::Result<Vec<Email>> 
     .await?;
     Ok(rows.iter().map(email).collect())
 }
+
+// ── Extractions ─────────────────────────────────────────────────────────────
+
+impl Store {
+    /// Every organization, for background work that runs across them (each
+    /// organization's own work still runs in its own transaction).
+    pub async fn org_ids(&self) -> anyhow::Result<Vec<Uuid>> {
+        let rows = sqlx::query("SELECT id FROM organizations ORDER BY id")
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows.iter().map(|r| r.get("id")).collect())
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Extraction {
+    pub id: Uuid,
+    pub document_id: Uuid,
+    /// read or failed
+    pub status: String,
+    pub provider: String,
+    pub model: String,
+    /// What the model returned, as printed on the document.
+    pub answer: Option<serde_json::Value>,
+    pub draft: Option<serde_json::Value>,
+    pub checks: Option<serde_json::Value>,
+    pub vendor_match: Option<serde_json::Value>,
+    pub error: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub created_by: String,
+}
+
+macro_rules! extraction_cols {
+    () => {
+        "id, document_id, status, provider, model, answer, draft, checks, vendor_match, error, created_at, created_by"
+    };
+}
+
+fn extraction(r: &PgRow) -> Extraction {
+    Extraction {
+        id: r.get("id"),
+        document_id: r.get("document_id"),
+        status: r.get("status"),
+        provider: r.get("provider"),
+        model: r.get("model"),
+        answer: r.get("answer"),
+        draft: r.get("draft"),
+        checks: r.get("checks"),
+        vendor_match: r.get("vendor_match"),
+        error: r.get("error"),
+        created_at: r.get("created_at"),
+        created_by: r.get("created_by"),
+    }
+}
+
+pub struct NewExtraction<'a> {
+    pub document_id: Uuid,
+    pub provider: &'a str,
+    pub model: &'a str,
+    /// Ok: the answer, draft, checks and vendor match. Err: what went wrong.
+    pub outcome: Result<ExtractionRead<'a>, &'a str>,
+    pub created_at: DateTime<Utc>,
+    pub created_by: &'a str,
+}
+
+pub struct ExtractionRead<'a> {
+    pub answer: &'a serde_json::Value,
+    pub draft: &'a serde_json::Value,
+    pub checks: &'a serde_json::Value,
+    pub vendor_match: &'a serde_json::Value,
+}
+
+pub async fn insert_extraction(
+    tx: &mut Tx,
+    org_id: Uuid,
+    new: &NewExtraction<'_>,
+) -> anyhow::Result<Extraction> {
+    let (status, read, error) = match &new.outcome {
+        Ok(r) => ("read", Some(r), None),
+        Err(e) => ("failed", None, Some(*e)),
+    };
+    let row = sqlx::query(concat!(
+        "INSERT INTO extractions (id, org_id, document_id, status, provider, model, answer, draft, checks,
+                                  vendor_match, error, created_at, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING ",
+        extraction_cols!()
+    ))
+    .bind(Uuid::new_v4())
+    .bind(org_id)
+    .bind(new.document_id)
+    .bind(status)
+    .bind(new.provider)
+    .bind(new.model)
+    .bind(read.map(|r| r.answer))
+    .bind(read.map(|r| r.draft))
+    .bind(read.map(|r| r.checks))
+    .bind(read.map(|r| r.vendor_match))
+    .bind(error)
+    .bind(new.created_at)
+    .bind(new.created_by)
+    .fetch_one(&mut **tx)
+    .await?;
+    Ok(extraction(&row))
+}
+
+pub async fn get_extraction(tx: &mut Tx, id: Uuid) -> anyhow::Result<Option<Extraction>> {
+    let row = sqlx::query(concat!(
+        "SELECT ",
+        extraction_cols!(),
+        " FROM extractions WHERE id = $1"
+    ))
+    .bind(id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(row.as_ref().map(extraction))
+}
+
+/// Newest first.
+pub async fn document_extractions(
+    tx: &mut Tx,
+    document_id: Uuid,
+) -> anyhow::Result<Vec<Extraction>> {
+    let rows = sqlx::query(concat!(
+        "SELECT ",
+        extraction_cols!(),
+        " FROM extractions WHERE document_id = $1 ORDER BY created_at DESC, id"
+    ))
+    .bind(document_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    Ok(rows.iter().map(extraction).collect())
+}
+
+/// Inbox documents no model has read yet, oldest first. A document that
+/// failed `max_failures` times is left for a person; after a failure it
+/// waits `retry_after` before the next try.
+pub async fn documents_to_extract(
+    tx: &mut Tx,
+    now: DateTime<Utc>,
+    retry_after: chrono::Duration,
+    max_failures: i64,
+    limit: i64,
+) -> anyhow::Result<Vec<Uuid>> {
+    let rows = sqlx::query(
+        "SELECT d.id FROM documents d
+         LEFT JOIN LATERAL (
+             SELECT count(*) FILTER (WHERE e.status = 'read') AS reads,
+                    count(*) FILTER (WHERE e.status = 'failed') AS failures,
+                    max(e.created_at) AS last
+             FROM extractions e WHERE e.document_id = d.id
+         ) x ON true
+         WHERE d.status = 'inbox' AND x.reads = 0 AND x.failures < $3
+           AND (x.last IS NULL OR x.last < $1 - $2)
+         ORDER BY d.received_at, d.id LIMIT $4",
+    )
+    .bind(now)
+    .bind(retry_after)
+    .bind(max_failures)
+    .bind(limit)
+    .fetch_all(&mut **tx)
+    .await?;
+    Ok(rows.iter().map(|r| r.get("id")).collect())
+}
+
+/// Every vendor with its email and account numbers, for matching.
+pub async fn vendor_candidates(
+    tx: &mut Tx,
+) -> anyhow::Result<Vec<payvy_domain::extraction::Candidate<Uuid>>> {
+    let rows = sqlx::query(
+        "SELECT v.id, v.name, v.email,
+                coalesce(array_agg(a.account_number) FILTER (WHERE a.id IS NOT NULL), '{}') AS accounts
+         FROM vendors v LEFT JOIN vendor_accounts a ON a.vendor_id = v.id
+         GROUP BY v.id ORDER BY v.id",
+    )
+    .fetch_all(&mut **tx)
+    .await?;
+    Ok(rows
+        .iter()
+        .map(|r| payvy_domain::extraction::Candidate {
+            id: r.get("id"),
+            name: r.get("name"),
+            email: r.get("email"),
+            account_numbers: r.get("accounts"),
+        })
+        .collect())
+}
+
+/// A live bill from this vendor with this invoice key.
+pub async fn bill_with_invoice_key(
+    tx: &mut Tx,
+    vendor_id: Uuid,
+    invoice_key: &str,
+) -> anyhow::Result<Option<Uuid>> {
+    let row = sqlx::query(
+        "SELECT id FROM bills WHERE vendor_id = $1 AND invoice_key = $2 AND state <> 'void'",
+    )
+    .bind(vendor_id)
+    .bind(invoice_key)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(row.map(|r| r.get("id")))
+}

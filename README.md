@@ -7,9 +7,9 @@ your money, so it doesn't charge you to move it.
 Self-host it for free, or let us run it for one flat price per company.
 
 > **Status: early.** Working today: vendor workflows, bills, the document inbox on any
-> S3-compatible storage, email intake, the audit log, the REST API and the MCP server. Coming
-> next: AI extraction, paying through Mercury, the web app, and sync to VisiBooks, QuickBooks
-> Online and Xero.
+> S3-compatible storage, email intake, reading bills with Claude or any OpenAI-compatible model,
+> the audit log, the REST API and the MCP server. Coming next: paying through Mercury, the web app,
+> and sync to VisiBooks, QuickBooks Online and Xero.
 
 ## Why not Bill.com
 
@@ -68,6 +68,13 @@ and the same file arriving twice is caught.
 forwarded emails work too. Mail comes in through Cloudflare Email Routing, free on your own
 domain, or anything else that can post a signed request. See
 [`docs/email-intake.md`](docs/email-intake.md).
+
+**Bills read for you, by the model you choose.** New documents are read automatically: vendor,
+invoice number, dates, lines, tax and total. Payvy checks the numbers against each other, matches
+the vendor, flags duplicates and keeps a draft that someone enters with one command. Use Claude or
+anything with an OpenAI-compatible API: OpenAI, Gemini, Grok, OpenRouter, or a model on your own
+server so invoices never leave it. Sample invoices in the repo score any model before you trust it.
+See [`docs/extraction.md`](docs/extraction.md).
 
 **Every change is on the record.** Each change writes an event in the same database
 transaction, and organizations are isolated by Postgres row-level security.

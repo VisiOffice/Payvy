@@ -131,7 +131,15 @@ pub async fn get(cx: &mut Cx<'_>, input: Get) -> Result<Value, CommandError> {
         .await?
         .ok_or(CommandError::NotFound("document"))?;
     let url = cx.storage()?.download_url(&doc.storage_key);
-    Ok(json!({ "document": doc, "download_url": url, "download_url_expires_in_seconds": 900 }))
+    let extractions: Vec<Value> = store::document_extractions(&mut cx.tx, doc.id)
+        .await?
+        .iter()
+        .map(super::extract::summary)
+        .collect();
+    Ok(
+        json!({ "document": doc, "download_url": url, "download_url_expires_in_seconds": 900,
+               "extractions": extractions }),
+    )
 }
 
 #[derive(Deserialize)]

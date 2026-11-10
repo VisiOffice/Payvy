@@ -10,6 +10,8 @@ struct Cli {
     command: Command,
 }
 
+// Parsed once at startup; boxing the big variant would buy nothing.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 enum Command {
     /// Run the server.
@@ -24,6 +26,20 @@ enum Command {
         storage: StorageArgs,
         #[command(flatten)]
         inbound: InboundArgs,
+        #[command(flatten)]
+        extract: ExtractArgs,
+        /// Read new inbox documents in the background as the agent
+        /// `extractor`. Off: they are read only when document.extract is
+        /// called.
+        #[arg(long, env = "PAYVY_EXTRACT_AUTO", default_value_t = true, action = clap::ArgAction::Set)]
+        extract_auto: bool,
+    },
+    /// Score the configured extraction model against sample documents with
+    /// known answers, e.g. fixtures/invoices. Sends each one to the model.
+    ExtractEval {
+        dir: std::path::PathBuf,
+        #[command(flatten)]
+        extract: ExtractArgs,
     },
     /// Manage API keys for people and agents.
     Key {
@@ -84,6 +100,60 @@ struct InboundArgs {
     inbound_secret: Option<String>,
 }
 
+/// Reading bills from documents: Claude, or any OpenAI-compatible API
+/// (OpenAI, Gemini, Grok, OpenRouter, or a local model through Ollama or
+/// vLLM). Without it, documents wait in the inbox to be entered by hand or
+/// by an agent that reads them itself.
+#[derive(clap::Args)]
+struct ExtractArgs {
+    /// anthropic or openai-compatible.
+    #[arg(long, env = "PAYVY_EXTRACT_PROVIDER")]
+    extract_provider: Option<String>,
+    /// Defaults to claude-opus-5-5 for anthropic; required otherwise.
+    #[arg(long, env = "PAYVY_EXTRACT_MODEL")]
+    extract_model: Option<String>,
+    /// Anthropic: https://api.anthropic.com. OpenAI-compatible: the URL
+    /// `/chat/completions` hangs off; defaults to https://api.openai.com/v1.
+    #[arg(long, env = "PAYVY_EXTRACT_BASE_URL")]
+    extract_base_url: Option<String>,
+    /// Optional for a local server that doesn't check one.
+    #[arg(long, env = "PAYVY_EXTRACT_API_KEY", hide_env_values = true)]
+    extract_api_key: Option<String>,
+}
+
+impl ExtractArgs {
+    fn extractor(self) -> anyhow::Result<Option<payvy_extract::Extractor>> {
+        use payvy_extract::Provider;
+        let Some(name) = self.extract_provider else {
+            return Ok(None);
+        };
+        let provider = Provider::parse(&name).ok_or_else(|| {
+            anyhow::anyhow!("PAYVY_EXTRACT_PROVIDER is anthropic or openai-compatible, not {name}")
+        })?;
+        let model = match (self.extract_model, provider) {
+            (Some(m), _) => m,
+            (None, Provider::Anthropic) => payvy_extract::DEFAULT_CLAUDE_MODEL.into(),
+            (None, Provider::OpenAiCompatible) => {
+                anyhow::bail!("set PAYVY_EXTRACT_MODEL for an openai-compatible provider")
+            }
+        };
+        anyhow::ensure!(
+            provider != Provider::Anthropic || self.extract_api_key.is_some(),
+            "set PAYVY_EXTRACT_API_KEY for anthropic"
+        );
+        Ok(Some(payvy_extract::Extractor::new(
+            payvy_extract::Config {
+                provider,
+                base_url: self
+                    .extract_base_url
+                    .unwrap_or_else(|| provider.default_base_url().into()),
+                api_key: self.extract_api_key,
+                model,
+            },
+        )?))
+    }
+}
+
 #[derive(Subcommand)]
 enum KeyCommand {
     /// Create a key. It is printed once and never stored.
@@ -112,22 +182,36 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
     let cli = Cli::parse();
-    let database_url = cli
-        .database_url
-        .ok_or_else(|| anyhow::anyhow!("set DATABASE_URL or --database-url"))?;
+    let database_url = || {
+        cli.database_url
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("set DATABASE_URL or --database-url"))
+    };
 
     match cli.command {
+        Command::ExtractEval { ref dir, extract } => {
+            let extractor = extract
+                .extractor()?
+                .ok_or_else(|| anyhow::anyhow!("set PAYVY_EXTRACT_PROVIDER and its key"))?;
+            let score = payvy_server::eval::run(&extractor, dir).await?;
+            if score.right < score.total {
+                std::process::exit(1);
+            }
+        }
         Command::Serve {
             bind,
-            api_key,
+            ref api_key,
             storage,
             inbound,
+            extract,
+            extract_auto,
         } => {
+            let api_key = api_key.clone();
             anyhow::ensure!(
                 api_key.len() >= 32,
                 "PAYVY_API_KEY must be at least 32 characters"
             );
-            let mut state = payvy_server::AppState::connect(&database_url, &api_key).await?;
+            let mut state = payvy_server::AppState::connect(&database_url()?, &api_key).await?;
             match storage.config() {
                 Some(config) => {
                     tracing::info!(endpoint = %config.endpoint, bucket = %config.bucket, "document storage");
@@ -143,6 +227,18 @@ async fn main() -> anyhow::Result<()> {
                 }
                 _ => tracing::warn!("no inbound email domain configured; email intake is off"),
             }
+            match extract.extractor()? {
+                Some(extractor) => {
+                    tracing::info!(model = extractor.model(), provider = %extractor.provider_label(), "document reading");
+                    state = state.with_extractor(extractor);
+                    if extract_auto && state.storage.is_some() {
+                        tokio::spawn(payvy_server::extract_worker::run(state.clone()));
+                    }
+                }
+                None => tracing::warn!(
+                    "no extraction model configured; documents aren't read automatically"
+                ),
+            }
             let listener = tokio::net::TcpListener::bind(bind).await?;
             tracing::info!("payvy listening on http://{bind}");
             axum::serve(listener, payvy_server::router(state))
@@ -156,7 +252,7 @@ async fn main() -> anyhow::Result<()> {
         } => {
             let actor = actor.trim();
             anyhow::ensure!(!actor.is_empty(), "--actor can't be empty");
-            let store = payvy_store::Store::connect(&database_url).await?;
+            let store = payvy_store::Store::connect(&database_url()?).await?;
             let (key, hash) = payvy_server::new_api_key()?;
             let kind = match kind {
                 Kind::Person => ActorKind::Person,

@@ -1,0 +1,59 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R /F2 5 0 R >> >> /Contents 6 0 R >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>
+endobj
+6 0 obj
+<< /Length 1030 >>
+stream
+BT /F2 18 Tf 50 740 Td (Mesa Electric Supply Co.) Tj ET
+BT /F1 10 Tf 50 718 Td (3301 E Main St, Mesa, AZ) Tj ET
+BT /F2 10 Tf 360 640 Td (INVOICE) Tj ET
+BT /F1 10 Tf 470 640 Td () Tj ET
+BT /F2 10 Tf 360 626 Td (Invoice) Tj ET
+BT /F1 10 Tf 470 626 Td (30117) Tj ET
+BT /F2 10 Tf 360 612 Td (Date) Tj ET
+BT /F1 10 Tf 470 612 Td (October 30, 2026) Tj ET
+BT /F2 10 Tf 360 598 Td (Terms) Tj ET
+BT /F1 10 Tf 470 598 Td (Due on receipt) Tj ET
+BT /F2 10 Tf 50 564 Td (Description) Tj ET
+BT /F2 10 Tf 470 564 Td (Amount) Tj ET
+BT /F1 10 Tf 50 546 Td (12/2 Romex, 250 ft \(2\)) Tj ET
+BT /F1 10 Tf 470 546 Td (238.00) Tj ET
+BT /F1 10 Tf 50 532 Td (20A breakers \(10\)) Tj ET
+BT /F1 10 Tf 470 532 Td (112.50) Tj ET
+BT /F1 10 Tf 50 518 Td (Contractor discount 10%) Tj ET
+BT /F1 10 Tf 470 518 Td (-35.05) Tj ET
+BT /F2 10 Tf 360 494 Td (Subtotal) Tj ET
+BT /F1 10 Tf 470 494 Td (315.45) Tj ET
+BT /F2 10 Tf 360 480 Td (Tax) Tj ET
+BT /F1 10 Tf 470 480 Td (26.18) Tj ET
+BT /F2 10 Tf 360 466 Td (Amount Due) Tj ET
+BT /F2 10 Tf 470 466 Td (341.63) Tj ET
+endstream
+endobj
+xref
+0 7
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000251 00000 n 
+0000000321 00000 n 
+0000000396 00000 n 
+trailer
+<< /Size 7 /Root 1 0 R >>
+startxref
+1478
+%%EOF

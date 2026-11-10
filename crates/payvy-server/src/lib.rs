@@ -1,5 +1,7 @@
 pub mod commands;
 pub mod confirm;
+pub mod eval;
+pub mod extract_worker;
 pub mod inbound;
 pub mod mcp;
 
@@ -69,6 +71,9 @@ pub struct AppState {
     /// None when email intake isn't configured: the webhook answers 404 and
     /// the email commands say so.
     pub inbound: Option<Arc<inbound::Inbound>>,
+    /// None when no model is configured to read documents: document.extract
+    /// says so, and the background reader doesn't run.
+    pub extractor: Option<Arc<payvy_extract::Extractor>>,
 }
 
 impl AppState {
@@ -84,6 +89,7 @@ impl AppState {
             clock: Arc::new(Utc::now),
             storage: None,
             inbound: None,
+            extractor: None,
         }
     }
 
@@ -94,6 +100,11 @@ impl AppState {
 
     pub fn with_inbound(mut self, inbound: inbound::Inbound) -> Self {
         self.inbound = Some(Arc::new(inbound));
+        self
+    }
+
+    pub fn with_extractor(mut self, extractor: payvy_extract::Extractor) -> Self {
+        self.extractor = Some(Arc::new(extractor));
         self
     }
 

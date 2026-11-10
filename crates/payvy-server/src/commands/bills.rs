@@ -12,7 +12,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use super::{CommandError, Cx, documents, text};
+use super::{CommandError, Cx, documents, extract, text};
 
 /// The workflow a bill follows: the version it arrived under.
 async fn workflow_of(cx: &mut Cx<'_>, bill: &Bill) -> Result<Workflow, CommandError> {
@@ -116,6 +116,7 @@ pub struct Create {
     #[serde(default)]
     allow_duplicate: bool,
     document_id: Option<Uuid>,
+    extraction_id: Option<Uuid>,
 }
 
 pub async fn create(cx: &mut Cx<'_>, input: Create) -> Result<Value, CommandError> {
@@ -136,6 +137,20 @@ pub async fn create(cx: &mut Cx<'_>, input: Create) -> Result<Value, CommandErro
         due_date,
     )
     .map_err(|e| CommandError::Invalid(e.to_string()))?;
+    let corrected = match input.extraction_id {
+        Some(id) => {
+            let entered = json!({
+                "vendor_id": vendor.id,
+                "invoice_number": invoice_number,
+                "invoice_date": input.invoice_date,
+                "due_date": input.due_date,
+                "amount_cents": input.amount_cents,
+                "lines": (!input.lines.is_empty()).then_some(&input.lines),
+            });
+            Some(extract::corrections(cx, id, input.document_id, &entered).await?)
+        }
+        None => None,
+    };
     let key = rules::invoice_key(&invoice_number);
     let external_ref = text(input.external_ref);
     let memo = text(input.memo);
@@ -175,7 +190,8 @@ pub async fn create(cx: &mut Cx<'_>, input: Create) -> Result<Value, CommandErro
         "bill.created",
         id,
         json!({ "bill_id": id, "vendor_id": vendor.id, "invoice_number": invoice_number,
-                "amount_cents": input.amount_cents, "workflow_id": workflow_id, "duplicate_allowed": input.allow_duplicate }),
+                "amount_cents": input.amount_cents, "workflow_id": workflow_id, "duplicate_allowed": input.allow_duplicate,
+                "extraction_id": input.extraction_id, "corrected": corrected }),
     )
     .await?;
     if let Some(doc) = input.document_id {

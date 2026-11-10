@@ -1,0 +1,21 @@
+[package]
+name = "payvy-extract"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Reads a bill from its document with a model: Claude through the Messages
+# API, or anything with an OpenAI-compatible chat completions API (OpenAI,
+# Gemini, Grok, OpenRouter, Ollama, vLLM). Plain HTTP by reqwest, no SDK.
+[dependencies]
+payvy-domain.workspace = true
+anyhow.workspace = true
+base64.workspace = true
+reqwest = { workspace = true, features = ["json"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true

@@ -1231,6 +1231,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "payvy-extract"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "payvy-domain",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "payvy-server"
 version = "0.1.0"
 dependencies = [
@@ -1244,6 +1258,7 @@ dependencies = [
  "hmac 0.12.1",
  "http-body-util",
  "payvy-domain",
+ "payvy-extract",
  "payvy-storage",
  "payvy-store",
  "reqwest",
