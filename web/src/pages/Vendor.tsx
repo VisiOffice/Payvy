@@ -1,0 +1,163 @@
+// One vendor: how its bills are approved and paid (edited here), its bills,
+// where it's paid, and the account numbers it bills under.
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { useLocation, useParams } from 'react-router';
+import { Badge } from '@astryxdesign/core/Badge';
+import { Banner } from '@astryxdesign/core/Banner';
+import { BreadcrumbItem, Breadcrumbs } from '@astryxdesign/core/Breadcrumbs';
+import { Card } from '@astryxdesign/core/Card';
+import { EmptyState } from '@astryxdesign/core/EmptyState';
+import { Heading } from '@astryxdesign/core/Heading';
+import { HStack } from '@astryxdesign/core/HStack';
+import { Link } from '@astryxdesign/core/Link';
+import { MetadataList, MetadataListItem } from '@astryxdesign/core/MetadataList';
+import { Spinner } from '@astryxdesign/core/Spinner';
+import { Text } from '@astryxdesign/core/Text';
+import { VStack } from '@astryxdesign/core/VStack';
+import { run } from '../api/client';
+import { BillsTable, type Listed } from '../bills/BillsTable';
+import { METHOD } from '../inbox/types';
+import { date } from '../money';
+import type { Current } from '../workflow';
+import { Builder, loadPeople } from '../workflows/Builder';
+import type { PersonOption } from '../workflows/StepEditor';
+
+interface VendorDetail {
+  vendor: { id: string; name: string; email: string | null; terms_days: number | null };
+  accounts: { id: string; account_number: string; location: string | null }[];
+  workflow: Current;
+  payees: {
+    id: string;
+    recipient_name: string;
+    method: string;
+    destination: string;
+    status: string;
+    proposed_by: string;
+    decided_by: string | null;
+    created_at: string;
+  }[];
+}
+
+export function VendorPage() {
+  const { id = '' } = useParams();
+  const { hash } = useLocation();
+  const [detail, setDetail] = useState<VendorDetail | null>(null);
+  const [people, setPeople] = useState<PersonOption[] | null>(null);
+  const [bills, setBills] = useState<Listed[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const workflowRef = useRef<HTMLDivElement>(null);
+
+  const loadVendor = useCallback(async () => {
+    const r = await run<VendorDetail>('vendor.get', { vendor_id: id });
+    setDetail(r.result);
+  }, [id]);
+
+  useEffect(() => {
+    setDetail(null);
+    setBills(null);
+    Promise.all([
+      loadVendor(),
+      loadPeople().then(setPeople),
+      run<{ bills: Listed[] }>('bill.list', { vendor_id: id, limit: 100 }).then((r) => setBills(r.result.bills)),
+    ]).catch((e) => setError(e instanceof Error ? e.message : String(e)));
+  }, [id, loadVendor]);
+
+  // Links to a vendor's workflow (from Waiting on you, or Workflows) land on it.
+  const ready = !!detail && !!people;
+  useEffect(() => {
+    if (ready && hash === '#workflow') workflowRef.current?.scrollIntoView({ block: 'start' });
+  }, [ready, hash]);
+
+  if (error) return <Banner status="error" title="Couldn't load this vendor" description={error} />;
+  if (!detail || !people) return <Spinner label="Loading" />;
+  const { vendor } = detail;
+  const active = detail.payees.find((p) => p.status === 'active');
+  const proposed = detail.payees.filter((p) => p.status === 'proposed');
+
+  return (
+    <VStack gap={6} padding={6}>
+      <VStack gap={2}>
+        <Breadcrumbs>
+          <BreadcrumbItem href="/vendors">Vendors</BreadcrumbItem>
+          <BreadcrumbItem isCurrent>{vendor.name}</BreadcrumbItem>
+        </Breadcrumbs>
+        <Heading level={1}>{vendor.name}</Heading>
+        <MetadataList>
+          {vendor.email && <MetadataListItem label="Email">{vendor.email}</MetadataListItem>}
+          <MetadataListItem label="Terms">
+            {vendor.terms_days == null ? 'Not set: a bill is due when its invoice says' : `Net ${vendor.terms_days}`}
+          </MetadataListItem>
+        </MetadataList>
+      </VStack>
+
+      <div ref={workflowRef} id="workflow" style={{ scrollMarginTop: 16 }}>
+        <VStack gap={3}>
+          <Heading level={2}>Workflow</Heading>
+          <Builder
+            vendor={{ id: vendor.id, name: vendor.name }}
+            current={detail.workflow}
+            people={people}
+            onSaved={loadVendor}
+          />
+        </VStack>
+      </div>
+
+      <VStack gap={3}>
+        <Heading level={2}>Bills</Heading>
+        {!bills && <Spinner label="Loading bills" />}
+        {bills && bills.length === 0 && <EmptyState title="No bills from this vendor yet" />}
+        {bills && bills.length > 0 && <BillsTable bills={bills} showVendor={false} />}
+      </VStack>
+
+      <HStack gap={6} wrap="wrap" vAlign="start">
+        <VStack gap={3} width={420}>
+          <Heading level={2}>Paid to</Heading>
+          <Card>
+            <VStack gap={3}>
+              {active ? (
+                <MetadataList>
+                  <MetadataListItem label="Recipient">{active.recipient_name}</MetadataListItem>
+                  <MetadataListItem label="How">
+                    {METHOD[active.method] ?? active.method} · {active.destination}
+                  </MetadataListItem>
+                  <MetadataListItem label="Accepted by">{active.decided_by ?? '—'}</MetadataListItem>
+                </MetadataList>
+              ) : (
+                <Text type="supporting">
+                  Not set. Anyone can propose where this vendor is paid; a person accepts it in Waiting on you.
+                </Text>
+              )}
+              {proposed.map((p) => (
+                <HStack key={p.id} gap={2} vAlign="center" wrap="wrap">
+                  <Badge variant="warning" label="Change proposed" />
+                  <Text>
+                    {p.recipient_name} · {METHOD[p.method] ?? p.method} · {p.destination}, by {p.proposed_by} on{' '}
+                    {date(p.created_at)}.
+                  </Text>
+                  <Link href="/">Review in Waiting on you</Link>
+                </HStack>
+              ))}
+            </VStack>
+          </Card>
+        </VStack>
+
+        <VStack gap={3} width={420}>
+          <Heading level={2}>Account numbers</Heading>
+          <Card>
+            {detail.accounts.length === 0 ? (
+              <Text type="supporting">None yet. Invoices that print one help match bills to this vendor.</Text>
+            ) : (
+              <MetadataList>
+                {detail.accounts.map((a) => (
+                  <MetadataListItem key={a.id} label={a.account_number}>
+                    {a.location ?? '—'}
+                  </MetadataListItem>
+                ))}
+              </MetadataList>
+            )}
+          </Card>
+        </VStack>
+      </HStack>
+    </VStack>
+  );
+}

@@ -66,7 +66,9 @@ Conventions follow Visirent (`~/Code/visirent`).
   `web/src/api/commands.{json,gen.ts}`. Nothing in the app may write around a command, and
   anything an agent can't do in the API, the app can't do for an agent either. Use Astryx
   components before writing CSS; `pnpm --dir web astryx component <Name> --dense` shows one.
-  The workflow builder (`/workflows`, `web/src/workflows`) edits the same steps the server
+  The workflow builder (`web/src/workflows`) lives on each vendor's page (`/vendors/:id`) for its
+  own workflow and on `/workflows` for the default, which also lists the vendors that differ. It
+  edits the same steps the server
   evaluates and saves through `workflow.propose` then `workflow.accept`, so a person's edit is
   on the record like an agent's. Its checks (`problems` in `web/src/workflow.ts`) mirror
   `Workflow::validate` for quick feedback; change both together, and the server still decides.

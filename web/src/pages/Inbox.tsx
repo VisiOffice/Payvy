@@ -308,7 +308,11 @@ function WorkflowCard({
           {p.reason ? `: ${p.reason}` : ''}
         </Text>
         <HStack gap={2} hAlign="end">
-          <Button label="Open in builder" variant="ghost" href={`/workflows/${p.vendor_id ?? 'default'}`} />
+          <Button
+            label="Open in builder"
+            variant="ghost"
+            href={p.vendor_id ? `/vendors/${p.vendor_id}#workflow` : '/workflows'}
+          />
           <Button label="Decline" variant="ghost" onClick={onDecline} />
           <Button label="Accept" variant="primary" clickAction={onAccept} />
         </HStack>

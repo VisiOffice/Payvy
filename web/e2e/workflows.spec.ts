@@ -1,5 +1,5 @@
-// Building a workflow in the browser, and the bills that follow it. Only
-// vendor workflows are changed here: the default is shared with other tests.
+// Building a vendor's workflow on its page, and the bills that follow it.
+// Only vendor workflows are changed here: the default is shared with other tests.
 import { expect, test, type Page } from '@playwright/test';
 import { agent, bill, vendor } from './api';
 
@@ -13,9 +13,9 @@ const node = (page: Page, text: string | RegExp) =>
 test('a person builds a workflow and new bills follow it', async ({ page }) => {
   const vendorId = await vendor('Canyon Roofing');
 
-  await page.goto('/workflows');
+  await page.goto('/vendors');
   await page.getByRole('link', { name: 'Canyon Roofing' }).click();
-  await expect(page).toHaveURL(`/workflows/${vendorId}`);
+  await expect(page).toHaveURL(`/vendors/${vendorId}`);
   await expect(page.getByText(/Canyon Roofing follows Payvy's starting workflow/)).toBeVisible();
 
   // Add an approval for bills of $2,500 or more, by Robert.
@@ -58,8 +58,14 @@ test('a person builds a workflow and new bills follow it', async ({ page }) => {
   const bigBill = await agent<{ progress: { status: string } }>('bill.get', { bill_id: big });
   expect(bigBill.progress.status).toBe('awaiting_approval');
 
+  // Both show on its page, and it's listed as having its own workflow.
+  await page.reload();
+  await expect(page.getByRole('link', { name: 'R-2' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'R-1' })).toBeVisible();
   await page.goto('/workflows');
   await expect(page.getByRole('row', { name: /Canyon Roofing/ }).getByText('Its own')).toBeVisible();
+  await page.getByRole('link', { name: 'Canyon Roofing' }).click();
+  await expect(page).toHaveURL(`/vendors/${vendorId}#workflow`);
 });
 
 test('an agent’s proposal is reviewed in the builder', async ({ page }) => {
@@ -75,9 +81,11 @@ test('an agent’s proposal is reviewed in the builder', async ({ page }) => {
     },
   });
 
-  await page.goto('/workflows');
+  await page.goto('/vendors');
   await expect(page.getByRole('row', { name: /Saguaro Landscaping/ }).getByText('1 proposed change')).toBeVisible();
-  await page.getByRole('link', { name: 'Saguaro Landscaping' }).click();
+  // The old builder address still finds it.
+  await page.goto(`/workflows/${vendorId}`);
+  await expect(page).toHaveURL(`/vendors/${vendorId}#workflow`);
   await expect(page.getByText(/Proposed by claude-ap on .*: Hold landscaping bills a week/)).toBeVisible();
 
   // Start from it, change the hold, and save that instead.

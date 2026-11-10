@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from 'react';
-import { Navigate, Route, Routes, useLocation } from 'react-router';
+import { Navigate, Route, Routes, useLocation, useParams } from 'react-router';
 import { Center } from '@astryxdesign/core/Center';
 import { Spinner } from '@astryxdesign/core/Spinner';
 import { ApiError, auth, type Me } from './api/client';
@@ -9,11 +9,12 @@ import { SignIn } from './pages/SignIn';
 import { Bills } from './pages/Bills';
 import { Inbox } from './pages/Inbox';
 import { Documents } from './pages/Documents';
+import { Vendors } from './pages/Vendors';
 
 // The bill page brings pdf.js; load it only when a bill is opened.
 const BillPage = lazy(() => import('./pages/Bill').then((m) => ({ default: m.BillPage })));
 const Workflows = lazy(() => import('./pages/Workflows').then((m) => ({ default: m.Workflows })));
-const WorkflowEdit = lazy(() => import('./pages/WorkflowEdit').then((m) => ({ default: m.WorkflowEdit })));
+const VendorPage = lazy(() => import('./pages/Vendor').then((m) => ({ default: m.VendorPage })));
 const DocumentReview = lazy(() =>
   import('./pages/DocumentReview').then((m) => ({ default: m.DocumentReview })),
 );
@@ -99,11 +100,13 @@ export function App() {
               </Suspense>
             }
           />
+          <Route path="/workflows/:key" element={<OldWorkflowLink />} />
+          <Route path="/vendors" element={<Vendors />} />
           <Route
-            path="/workflows/:key"
+            path="/vendors/:id"
             element={
               <Suspense fallback={<Spinner label="Loading" />}>
-                <WorkflowEdit />
+                <VendorPage />
               </Suspense>
             }
           />
@@ -112,4 +115,10 @@ export function App() {
       </Shell>
     </SessionContext>
   );
+}
+
+/** A vendor's workflow used to have its own page; it lives on the vendor's page now. */
+function OldWorkflowLink() {
+  const { key } = useParams();
+  return <Navigate to={key === 'default' ? '/workflows' : `/vendors/${key}#workflow`} replace />;
 }

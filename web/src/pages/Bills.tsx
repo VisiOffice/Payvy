@@ -1,84 +1,21 @@
 import { useEffect, useState } from 'react';
-import { Badge } from '@astryxdesign/core/Badge';
 import { Banner } from '@astryxdesign/core/Banner';
 import { EmptyState } from '@astryxdesign/core/EmptyState';
 import { Heading } from '@astryxdesign/core/Heading';
-import { Link } from '@astryxdesign/core/Link';
 import { Spinner } from '@astryxdesign/core/Spinner';
-import { Table, type TableColumn } from '@astryxdesign/core/Table';
 import { Text } from '@astryxdesign/core/Text';
 import { VStack } from '@astryxdesign/core/VStack';
 import { run } from '../api/client';
-import { date, money } from '../money';
-
-interface BillRow extends Record<string, unknown> {
-  id: string;
-  vendor: string;
-  invoice: string;
-  due: string;
-  amount: string;
-  status: string;
-}
-
-interface Listed {
-  bill: {
-    id: string;
-    vendor_name: string;
-    invoice_number: string;
-    due_date: string | null;
-    amount_cents: number;
-    state: string;
-  };
-  progress: unknown;
-}
-
-/** Open bills' progress is a status object, closed ones have none. */
-function statusOf(l: Listed): string {
-  const p = l.progress as { status?: string } | string | null;
-  const s = typeof p === 'string' ? p : (p?.status ?? l.bill.state);
-  return s.replaceAll('_', ' ');
-}
-
-const STATUS_VARIANT: Record<string, 'neutral' | 'info' | 'success' | 'warning' | 'error'> = {
-  paid: 'success',
-  released: 'info',
-  'awaiting approval': 'warning',
-  'awaiting release': 'warning',
-  rejected: 'error',
-  void: 'neutral',
-};
-
-const columns: TableColumn<BillRow>[] = [
-  { key: 'vendor', header: 'Vendor', renderCell: (row) => <Link href={`/bills/${row.id}`}>{row.vendor}</Link> },
-  { key: 'invoice', header: 'Invoice' },
-  { key: 'due', header: 'Due' },
-  { key: 'amount', header: 'Amount', align: 'end' },
-  {
-    key: 'status',
-    header: 'Status',
-    renderCell: (row) => <Badge label={row.status} variant={STATUS_VARIANT[row.status] ?? 'neutral'} />,
-  },
-];
+import { BillsTable, type Listed } from '../bills/BillsTable';
 
 export function Bills({ mine = false }: { mine?: boolean }) {
-  const [rows, setRows] = useState<BillRow[] | null>(null);
+  const [rows, setRows] = useState<Listed[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     setRows(null);
     run<{ bills: Listed[] }>('bill.list', mine ? { mine: true } : { limit: 200 })
-      .then((r) =>
-        setRows(
-          r.result.bills.map((l) => ({
-            id: l.bill.id,
-            vendor: l.bill.vendor_name,
-            invoice: l.bill.invoice_number,
-            due: date(l.bill.due_date),
-            amount: money(l.bill.amount_cents),
-            status: statusOf(l),
-          })),
-        ),
-      )
+      .then((r) => setRows(r.result.bills))
       .catch((e) => setError(e.message));
   }, [mine]);
 
@@ -104,7 +41,7 @@ export function Bills({ mine = false }: { mine?: boolean }) {
           }
         />
       )}
-      {rows && rows.length > 0 && <Table data={rows} columns={columns} idKey="id" hasHover />}
+      {rows && rows.length > 0 && <BillsTable bills={rows} />}
     </VStack>
   );
 }

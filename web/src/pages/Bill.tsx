@@ -6,6 +6,7 @@ import { Button } from '@astryxdesign/core/Button';
 import { Card } from '@astryxdesign/core/Card';
 import { EmptyState } from '@astryxdesign/core/EmptyState';
 import { Heading } from '@astryxdesign/core/Heading';
+import { Link } from '@astryxdesign/core/Link';
 import { HStack } from '@astryxdesign/core/HStack';
 import { MetadataList, MetadataListItem } from '@astryxdesign/core/MetadataList';
 import { Spinner } from '@astryxdesign/core/Spinner';
@@ -111,7 +112,9 @@ export function BillPage() {
               <Heading level={1}>{b.vendor_name}</Heading>
               <Badge label={status.replaceAll('_', ' ')} variant={status === 'paid' ? 'success' : 'warning'} />
             </HStack>
-            <Text type="supporting">Invoice {b.invoice_number}</Text>
+            <Text type="supporting">
+              Invoice {b.invoice_number} · <Link href={`/vendors/${b.vendor_id}`}>{b.vendor_name}</Link>
+            </Text>
             <Text size="xl" weight="semibold" hasTabularNumbers>
               {money(b.amount_cents)}
             </Text>

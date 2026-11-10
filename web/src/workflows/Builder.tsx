@@ -1,18 +1,14 @@
-// Builds a workflow for one vendor, or the organization default. Saving
-// proposes it and, since the person saving can accept it, accepts it at once;
-// "Propose" leaves it for someone else to accept. Either way it goes through
-// workflow.propose and workflow.accept like any agent's proposal, so the
-// record shows who changed what.
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useParams } from 'react-router';
-import { Banner } from '@astryxdesign/core/Banner';
-import { BreadcrumbItem, Breadcrumbs } from '@astryxdesign/core/Breadcrumbs';
+// Builds the workflow for one vendor (on its page) or the organization
+// default (on the Workflows page). Saving proposes it and, since the person
+// saving can accept it, accepts it at once; "Propose" leaves it for someone
+// else. Either way it goes through workflow.propose and workflow.accept like
+// any agent's proposal, so the record shows who changed what.
+import { useEffect, useMemo, useState } from 'react';
 import { Button } from '@astryxdesign/core/Button';
 import { Card } from '@astryxdesign/core/Card';
 import { Divider } from '@astryxdesign/core/Divider';
 import { Heading } from '@astryxdesign/core/Heading';
 import { HStack } from '@astryxdesign/core/HStack';
-import { Spinner } from '@astryxdesign/core/Spinner';
 import { Text } from '@astryxdesign/core/Text';
 import { TextInput } from '@astryxdesign/core/TextInput';
 import { useToast } from '@astryxdesign/core/Toast';
@@ -22,63 +18,52 @@ import type { WorkflowProposeInput } from '../api/commands.gen';
 import { ReasonDialog } from '../inbox/ReasonDialog';
 import { date } from '../money';
 import { clean, newStep, problems, same, type Current, type Proposal, type Step, type StepType } from '../workflow';
-import { Chart } from '../workflows/Chart';
-import { StepEditor, type PersonOption } from '../workflows/StepEditor';
+import { Chart } from './Chart';
+import { StepEditor, type PersonOption } from './StepEditor';
 
-interface Loaded {
-  current: Current;
-  vendorName: string | null;
-  people: PersonOption[];
+/** Everyone who can be named in a step, from person.list. */
+export async function loadPeople(): Promise<PersonOption[]> {
+  const r = await run<{ people: { actor: string; name: string }[] }>('person.list', {});
+  return r.result.people.map((x) => ({ value: x.actor, label: x.name }));
 }
 
-export function WorkflowEdit() {
-  const { key = 'default' } = useParams();
-  const vendorId = key === 'default' ? undefined : key;
-  const [loaded, setLoaded] = useState<Loaded | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [steps, setSteps] = useState<Step[]>([]);
+export function Builder({
+  vendor,
+  current,
+  people,
+  onSaved,
+}: {
+  /** Without it, the organization default. */
+  vendor?: { id: string; name: string };
+  current: Current;
+  people: PersonOption[];
+  /** Reload `current` after a change. */
+  onSaved: () => Promise<void>;
+}) {
+  const [steps, setSteps] = useState<Step[]>(current.workflow.steps);
   const [selected, setSelected] = useState<string | undefined>();
   const [reason, setReason] = useState('');
   const [busy, setBusy] = useState(false);
   const [declining, setDeclining] = useState<Proposal | null>(null);
   const toast = useToast();
 
-  const load = useCallback(async () => {
-    try {
-      const [w, p, v] = await Promise.all([
-        run<Current>('workflow.get', vendorId ? { vendor_id: vendorId } : {}),
-        run<{ people: { actor: string; name: string }[] }>('person.list', {}),
-        vendorId
-          ? run<{ vendor: { name: string } }>('vendor.get', { vendor_id: vendorId })
-          : Promise.resolve(null),
-      ]);
-      setLoaded({
-        current: w.result,
-        vendorName: v?.result.vendor.name ?? null,
-        people: p.result.people.map((x) => ({ value: x.actor, label: x.name })),
-      });
-      setSteps(w.result.workflow.steps);
-      setSelected(undefined);
-      setReason('');
-      setError(null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  }, [vendorId]);
+  // A reload starts over from what the server has.
   useEffect(() => {
-    void load();
-  }, [load]);
+    setSteps(current.workflow.steps);
+    setSelected(undefined);
+    setReason('');
+  }, [current]);
 
   const issues = useMemo(() => problems(steps), [steps]);
-  const changed = loaded ? !same(steps, loaded.current.workflow.steps) : false;
+  const changed = !same(steps, current.workflow.steps);
   const ok = Object.keys(issues).length === 0;
   const index = steps.findIndex((s) => s.id === selected);
   const step = index >= 0 ? steps[index] : undefined;
-  const whose = loaded?.vendorName ?? 'vendors without their own workflow';
+  const whose = vendor?.name ?? 'vendors without their own workflow';
   const names = useMemo(() => {
-    const byActor = new Map(loaded?.people.map((p) => [p.value, p.label]));
+    const byActor = new Map(people.map((p) => [p.value, p.label]));
     return (actor: string) => byActor.get(actor) ?? actor;
-  }, [loaded]);
+  }, [people]);
 
   function insert(at: number, type: StepType) {
     const s = newStep(type, steps);
@@ -106,7 +91,7 @@ export function WorkflowEdit() {
     setBusy(true);
     try {
       const input: WorkflowProposeInput = {
-        ...(vendorId ? { vendor_id: vendorId } : {}),
+        ...(vendor ? { vendor_id: vendor.id } : {}),
         // The generated type spells steps as a tuple; they are checked on the server.
         workflow: { steps: clean(steps) as WorkflowProposeInput['workflow']['steps'] },
         ...(reason.trim() ? { reason: reason.trim() } : {}),
@@ -118,7 +103,7 @@ export function WorkflowEdit() {
       } else {
         toast({ body: 'Proposed. Someone accepts it from Waiting on you.' });
       }
-      await load();
+      await onSaved();
     } catch (e) {
       toast({ body: e instanceof Error ? e.message : String(e), type: 'error' });
     } finally {
@@ -130,31 +115,18 @@ export function WorkflowEdit() {
     try {
       await run('workflow.accept', { proposal_id: p.proposal_id });
       toast({ body: `New bills from ${whose} follow the accepted workflow.` });
-      await load();
+      await onSaved();
     } catch (e) {
       toast({ body: e instanceof Error ? e.message : String(e), type: 'error' });
     }
   }
 
-  if (error) return <Banner status="error" title="Couldn't load this workflow" description={error} />;
-  if (!loaded) return <Spinner label="Loading" />;
-  const { current } = loaded;
-
   return (
-    <VStack gap={6} padding={6}>
-      <VStack gap={2}>
-        <Breadcrumbs>
-          <BreadcrumbItem href="/workflows">Workflows</BreadcrumbItem>
-          <BreadcrumbItem isCurrent>{loaded.vendorName ?? 'Default'}</BreadcrumbItem>
-        </Breadcrumbs>
-        <Heading level={1}>{loaded.vendorName ? `${loaded.vendorName} workflow` : 'Default workflow'}</Heading>
-        <Text type="supporting">{sourceNote(current, loaded.vendorName)}</Text>
-      </VStack>
-
+    <VStack gap={4}>
       <Card>
         <VStack gap={5}>
           <VStack gap={1}>
-            <Heading level={2}>Steps</Heading>
+            <Text type="supporting">{sourceNote(current, vendor?.name)}</Text>
             <Text type="supporting">
               Choose a step to change it, or + to add one there. Steps run in order; the last one pays.
             </Text>
@@ -175,7 +147,7 @@ export function WorkflowEdit() {
                 <StepEditor
                   key={step.id}
                   step={step}
-                  people={loaded.people}
+                  people={people}
                   problem={issues[step.id]}
                   canMoveEarlier={index > 0}
                   canMoveLater={index < steps.length - 2}
@@ -215,9 +187,7 @@ export function WorkflowEdit() {
                   />
                   <Button label="Save" variant="primary" isDisabled={!ok || busy} clickAction={() => save(true)} />
                 </HStack>
-                {!ok && (
-                  <Text type="supporting">Fix the steps marked in red to save.</Text>
-                )}
+                {!ok && <Text type="supporting">Fix the steps marked in red to save.</Text>}
               </VStack>
             </>
           )}
@@ -226,7 +196,7 @@ export function WorkflowEdit() {
 
       {current.proposals.length > 0 && (
         <VStack gap={3}>
-          <Heading level={2}>Proposed changes</Heading>
+          <Heading level={3}>Proposed changes</Heading>
           {current.proposals.map((p) => (
             <Card key={p.proposal_id}>
               <VStack gap={3}>
@@ -267,7 +237,7 @@ export function WorkflowEdit() {
             });
             setDeclining(null);
             toast({ body: 'Declined' });
-            await load();
+            await onSaved();
           }}
         />
       )}
@@ -275,7 +245,7 @@ export function WorkflowEdit() {
   );
 }
 
-function sourceNote(c: Current, vendor: string | null): string {
+function sourceNote(c: Current, vendor: string | undefined): string {
   const by = c.accepted_by ? `, accepted by ${c.accepted_by}` : '';
   switch (c.source) {
     case 'vendor':
