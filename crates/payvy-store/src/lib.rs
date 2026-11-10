@@ -2170,6 +2170,67 @@ pub async fn remove_person(
     Ok(id)
 }
 
+/// Actors of everyone who can sign in, locked until the transaction ends so
+/// two removals at once can't leave nobody.
+pub async fn lock_people(tx: &mut Tx, org_id: Uuid) -> anyhow::Result<Vec<String>> {
+    Ok(sqlx::query_scalar(
+        "SELECT actor FROM people WHERE org_id = $1 AND removed_at IS NULL ORDER BY actor FOR UPDATE",
+    )
+    .bind(org_id)
+    .fetch_all(&mut **tx)
+    .await?)
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Organization {
+    pub id: Uuid,
+    pub name: String,
+    pub created_at: DateTime<Utc>,
+}
+
+fn organization_from(r: &PgRow) -> Organization {
+    Organization {
+        id: r.get("id"),
+        name: r.get("name"),
+        created_at: r.get("created_at"),
+    }
+}
+
+/// The organization itself. Like people, it has no row-level security (it is
+/// what the policy names), so the query names it.
+pub async fn organization(tx: &mut Tx, org_id: Uuid) -> anyhow::Result<Option<Organization>> {
+    let row = sqlx::query("SELECT id, name, created_at FROM organizations WHERE id = $1")
+        .bind(org_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+    Ok(row.as_ref().map(organization_from))
+}
+
+/// The organization, its row locked until the transaction ends.
+pub async fn lock_organization(tx: &mut Tx, org_id: Uuid) -> anyhow::Result<Option<Organization>> {
+    let row =
+        sqlx::query("SELECT id, name, created_at FROM organizations WHERE id = $1 FOR UPDATE")
+            .bind(org_id)
+            .fetch_optional(&mut **tx)
+            .await?;
+    Ok(row.as_ref().map(organization_from))
+}
+
+pub async fn rename_organization(
+    tx: &mut Tx,
+    org_id: Uuid,
+    name: &str,
+) -> anyhow::Result<Organization> {
+    let row = sqlx::query(
+        "UPDATE organizations SET name = $2 WHERE id = $1 RETURNING id, name, created_at",
+    )
+    .bind(org_id)
+    .bind(name)
+    .fetch_one(&mut **tx)
+    .await?;
+    Ok(organization_from(&row))
+}
+
 impl Store {
     /// Every organization this email can sign in to.
     pub async fn people_by_email(&self, email: &str) -> anyhow::Result<Vec<SignedIn>> {

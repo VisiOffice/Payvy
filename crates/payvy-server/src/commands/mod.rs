@@ -9,6 +9,7 @@ mod email;
 mod events;
 mod extract;
 mod inbox;
+mod org;
 mod payee_invites;
 mod payments;
 mod people;
@@ -195,6 +196,8 @@ async fn execute(cx: &mut Cx<'_>, name: &str, input: &Value) -> Result<Value, Co
         "person.list" => people::list(cx).await,
         "person.add" => people::add(cx, parse(input)?).await,
         "person.remove" => people::remove(cx, parse(input)?).await,
+        "org.get" => org::get(cx).await,
+        "org.update" => org::update(cx, parse(input)?).await,
         "bank.authorize" => {
             let _: bank::Accounts = parse(input)?;
             ramp::authorize(cx).await

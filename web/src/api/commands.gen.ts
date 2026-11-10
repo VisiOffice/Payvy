@@ -345,6 +345,12 @@ export interface PersonRemoveInput {
   actor: string;
 }
 
+export interface OrgGetInput {}
+
+export interface OrgUpdateInput {
+  name: string;
+}
+
 export interface BankAuthorizeInput {}
 
 export interface BankCompleteAuthorizationInput {
@@ -515,6 +521,8 @@ export interface CommandInputs {
   "person.list": PersonListInput;
   "person.add": PersonAddInput;
   "person.remove": PersonRemoveInput;
+  "org.get": OrgGetInput;
+  "org.update": OrgUpdateInput;
   "bank.authorize": BankAuthorizeInput;
   "bank.complete_authorization": BankCompleteAuthorizationInput;
   "bank.authorization": BankAuthorizationInput;
@@ -575,7 +583,9 @@ export const COMMANDS: Record<CommandName, { tier: Tier; personOnly: boolean; su
   "inbox.get": { tier: "read", personOnly: false, summary: "What is waiting on the caller: bills a step needs them to approve or release (action approve or release), and payee changes and workflow proposals a person must accept or decline. Agents see it too, to remind people." },
   "person.list": { tier: "read", personOnly: false, summary: "Everyone who can sign in to the web app, with the actor name their actions are recorded under." },
   "person.add": { tier: "routine", personOnly: true, summary: "Let someone sign in to the web app with a link sent to their email. They act as the person named by actor, with every right a person has: approving, releasing payments, accepting payees and workflows." },
-  "person.remove": { tier: "routine", personOnly: true, summary: "Stop someone signing in, and sign them out everywhere. Their past actions stay on the record." },
+  "person.remove": { tier: "routine", personOnly: true, summary: "Stop someone signing in, and sign them out everywhere. Their past actions stay on the record. Refused for yourself (someone else removes you) and for the last person who can sign in." },
+  "org.get": { tier: "read", personOnly: false, summary: "This organization: its id, its name as people see it in the app and sign-in emails, and when it was created." },
+  "org.update": { tier: "routine", personOnly: true, summary: "Rename the organization. The name is trimmed, 1 to 100 characters, and must differ from the current one. Bills, vendors and events are unchanged." },
   "bank.authorize": { tier: "routine", personOnly: true, summary: "Begin Ramp OAuth with read scopes. Returns a consent URL; the current bank remains active. Authorization expires after ten minutes." },
   "bank.complete_authorization": { tier: "routine", personOnly: true, summary: "Complete Ramp OAuth for the same person and company. Seals credentials but does not activate a connection. Never retry an unclear code exchange; start authorization again." },
   "bank.authorization": { tier: "read", personOnly: true, summary: "Read fresh Ramp entity and funding choices for your staged authorization. Choose an exact account and fingerprint before activation." },
