@@ -180,6 +180,7 @@ pub fn router(state: AppState) -> Router {
     let authed = Router::new()
         .route("/api/commands", get(list_commands))
         .route("/api/commands/{name}", post(run_command))
+        .route("/api/documents/{id}/file", get(document_file))
         .route("/mcp", post(mcp::handle))
         // A 25 MB document arrives as about 34 MB of base64 in JSON.
         .layer(axum::extract::DefaultBodyLimit::max(36 * 1024 * 1024))
@@ -317,6 +318,38 @@ async fn run_command(
     commands::run(&state, &actor, &name, body.input, mode)
         .await
         .map(Json)
+}
+
+/// A document's file, from storage, for the web app's viewer: same-origin,
+/// so the storage bucket needs no CORS. Only PDFs and images are stored
+/// (`documents::check`); they're served inline with no sniffing, and a
+/// sandbox in case a browser renders one as a page.
+async fn document_file(
+    State(state): State<AppState>,
+    Extension(actor): Extension<Actor>,
+    Path(id): Path<Uuid>,
+) -> Result<Response, CommandError> {
+    let storage = state
+        .storage
+        .as_deref()
+        .ok_or(CommandError::NotConfigured("document storage"))?;
+    let mut tx = state.store.begin(actor.org_id).await?;
+    let doc = payvy_store::get_document(&mut tx, id)
+        .await?
+        .ok_or(CommandError::NotFound("document"))?;
+    tx.rollback().await.map_err(anyhow::Error::from)?;
+    let bytes = storage.get(&doc.storage_key).await?;
+    Ok((
+        [
+            (header::CONTENT_TYPE, doc.content_type),
+            (header::CONTENT_DISPOSITION, "inline".to_owned()),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_owned()),
+            (header::CONTENT_SECURITY_POLICY, "sandbox".to_owned()),
+            (header::CACHE_CONTROL, "private, max-age=3600".to_owned()),
+        ],
+        bytes,
+    )
+        .into_response())
 }
 
 impl IntoResponse for CommandError {

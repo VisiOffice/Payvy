@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useState } from 'react';
 import { Navigate, Route, Routes, useLocation } from 'react-router';
 import { Center } from '@astryxdesign/core/Center';
 import { Spinner } from '@astryxdesign/core/Spinner';
@@ -8,6 +8,9 @@ import { Shell } from './Shell';
 import { SignIn } from './pages/SignIn';
 import { Bills } from './pages/Bills';
 import { Inbox } from './pages/Inbox';
+
+// The bill page brings pdf.js; load it only when a bill is opened.
+const BillPage = lazy(() => import('./pages/Bill').then((m) => ({ default: m.BillPage })));
 
 type State = { kind: 'loading' } | { kind: 'signed_out' } | { kind: 'signed_in'; me: Me };
 
@@ -65,6 +68,14 @@ export function App() {
         <Routes>
           <Route path="/" element={<Inbox />} />
           <Route path="/bills" element={<Bills />} />
+          <Route
+            path="/bills/:id"
+            element={
+              <Suspense fallback={<Spinner label="Loading" />}>
+                <BillPage />
+              </Suspense>
+            }
+          />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </Shell>

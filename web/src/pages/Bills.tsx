@@ -3,6 +3,7 @@ import { Badge } from '@astryxdesign/core/Badge';
 import { Banner } from '@astryxdesign/core/Banner';
 import { EmptyState } from '@astryxdesign/core/EmptyState';
 import { Heading } from '@astryxdesign/core/Heading';
+import { Link } from '@astryxdesign/core/Link';
 import { Spinner } from '@astryxdesign/core/Spinner';
 import { Table, type TableColumn } from '@astryxdesign/core/Table';
 import { Text } from '@astryxdesign/core/Text';
@@ -48,7 +49,7 @@ const STATUS_VARIANT: Record<string, 'neutral' | 'info' | 'success' | 'warning' 
 };
 
 const columns: TableColumn<BillRow>[] = [
-  { key: 'vendor', header: 'Vendor' },
+  { key: 'vendor', header: 'Vendor', renderCell: (row) => <Link href={`/bills/${row.id}`}>{row.vendor}</Link> },
   { key: 'invoice', header: 'Invoice' },
   { key: 'due', header: 'Due' },
   { key: 'amount', header: 'Amount', align: 'end' },

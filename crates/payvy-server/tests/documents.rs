@@ -213,3 +213,52 @@ async fn without_storage_documents_say_so() {
     assert!(matches!(e, CommandError::NotConfigured(_)), "{e}");
     db.drop().await;
 }
+
+#[tokio::test]
+async fn the_web_app_reads_a_file_through_the_server() {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode, header};
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    let Some(db) = TestDb::with_storage().await else {
+        return;
+    };
+    let bytes = pdf("viewer");
+    let up = upload(&db, &agent("claude-ap"), "inv.pdf", &bytes)
+        .await
+        .unwrap();
+    let id = up["result"]["id"].as_str().unwrap().to_owned();
+
+    let get = |key: &'static str, id: String| {
+        Request::get(format!("/api/documents/{id}/file"))
+            .header(header::AUTHORIZATION, format!("Bearer {key}"))
+            .body(Body::empty())
+            .unwrap()
+    };
+    let res = payvy_server::router(db.state.clone())
+        .oneshot(get(common::ADMIN_KEY, id.clone()))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(res.headers()[header::CONTENT_TYPE], "application/pdf");
+    assert_eq!(res.headers()[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+    let body = res.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(&body[..], &bytes[..]);
+
+    // Another organization can't read it.
+    let other = db.add_org().await;
+    let (key, hash) = payvy_server::new_api_key().unwrap();
+    db.state
+        .store
+        .insert_api_key(other, "eve", payvy_store::ActorKind::Person, &hash)
+        .await
+        .unwrap();
+    let key: &'static str = Box::leak(key.into_boxed_str());
+    let res = payvy_server::router(db.state.clone())
+        .oneshot(get(key, id))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    db.drop().await;
+}

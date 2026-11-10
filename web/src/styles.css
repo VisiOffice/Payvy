@@ -8,3 +8,42 @@ body,
 #root {
   height: 100%;
 }
+
+/* What was read from a document, over the page. */
+.payvy-hl {
+  border-radius: 3px;
+  background: rgb(250 204 21 / 0.28);
+  outline: 1px solid rgb(234 179 8 / 0.7);
+  pointer-events: auto;
+}
+.payvy-hl-focus {
+  background: rgb(59 130 246 / 0.3);
+  outline: 2px solid rgb(37 99 235);
+  animation: payvy-pulse 1.2s ease-out 2;
+}
+@keyframes payvy-pulse {
+  0% { box-shadow: 0 0 0 0 rgb(37 99 235 / 0.6); }
+  100% { box-shadow: 0 0 0 10px rgb(37 99 235 / 0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .payvy-hl-focus { animation: none; }
+}
+
+/* A field read from a document; choosing one finds it on the page. */
+.payvy-field {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+.payvy-field:hover { background: rgb(127 127 127 / 0.08); }
+.payvy-field:focus-visible { outline: 2px solid rgb(37 99 235); }
+.payvy-field-on { border-color: rgb(37 99 235); background: rgb(59 130 246 / 0.1); }

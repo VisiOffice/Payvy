@@ -6,6 +6,7 @@ import { Card } from '@astryxdesign/core/Card';
 import { EmptyState } from '@astryxdesign/core/EmptyState';
 import { Heading } from '@astryxdesign/core/Heading';
 import { HStack } from '@astryxdesign/core/HStack';
+import { Link } from '@astryxdesign/core/Link';
 import { MetadataList, MetadataListItem } from '@astryxdesign/core/MetadataList';
 import { Spinner } from '@astryxdesign/core/Spinner';
 import { Text } from '@astryxdesign/core/Text';
@@ -218,7 +219,7 @@ function BillCard({
       <HStack gap={4} vAlign="center" hAlign="between" wrap="wrap">
         <VStack gap={1}>
           <HStack gap={2} vAlign="center">
-            <Text weight="semibold">{b.vendor_name}</Text>
+            <Link href={`/bills/${b.id}`} isStandalone>{b.vendor_name}</Link>
             <Badge
               label={item.action === 'approve' ? 'Approve' : item.action === 'release' ? 'Pay' : 'Look'}
               variant={item.action === 'release' ? 'info' : 'warning'}
