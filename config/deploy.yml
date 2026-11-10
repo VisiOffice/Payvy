@@ -1,0 +1,84 @@
+# Hosted Payvy at api.payvy.com, on thatch-api-prod (5.78.94.150) beside
+# VisiStaff and Unicorn Phonics. See docs/deploy.md.
+service: payvy
+image: regatlas-llc/payvy
+
+servers:
+  web:
+    hosts:
+      - 5.78.94.150
+    options:
+      read-only: true
+      tmpfs: /tmp:size=16m,mode=1777
+      cap-drop: ALL
+      security-opt: no-new-privileges:true
+      memory: 512m
+      cpus: 1
+      pids-limit: 128
+
+ssh:
+  proxy: root@100.95.75.126
+
+# kamal-proxy is shared with unicorn-phonics and visistaff: keep `run`
+# identical in all three repos. nginx on the host terminates TLS.
+proxy:
+  host: api.payvy.com
+  ssl: false
+  forward_headers: true
+  app_port: 7430
+  healthcheck:
+    path: /health
+  run:
+    http_port: 8090
+    https_port: 8453
+    bind_ips:
+      - 127.0.0.1
+
+registry:
+  server: ghcr.io
+  username: robertdoneill
+  password:
+    - KAMAL_REGISTRY_PASSWORD
+
+builder:
+  arch: amd64
+  target: app
+
+env:
+  clear:
+    RUST_LOG: payvy_server=info,info
+    PAYVY_S3_ENDPOINT: https://65a93a8aa12255c42cb5bbaa1d1a2ea2.r2.cloudflarestorage.com
+    PAYVY_S3_BUCKET: payvy-documents
+    PAYVY_S3_REGION: auto
+    PAYVY_INBOUND_DOMAIN: in.payvy.com
+  secret:
+    - DATABASE_URL
+    - PAYVY_API_KEY
+    - PAYVY_S3_ACCESS_KEY
+    - PAYVY_S3_SECRET_KEY
+    - PAYVY_INBOUND_SECRET
+
+accessories:
+  db:
+    image: postgres:18.6-trixie
+    host: 5.78.94.150
+    env:
+      clear:
+        POSTGRES_USER: postgres
+        POSTGRES_DB: payvy
+      secret:
+        - POSTGRES_PASSWORD
+        - PAYVY_DB_PASSWORD
+    files:
+      # Runs once, on an empty data directory: the app's own role.
+      - deploy/postgres-init/01-app-role.sh:/docker-entrypoint-initdb.d/01-app-role.sh
+    directories:
+      - data:/var/lib/postgresql
+    options:
+      shm-size: 128m
+      memory: 512m
+
+logging:
+  options:
+    max-size: 10m
+    max-file: 3
