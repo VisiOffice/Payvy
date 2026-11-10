@@ -310,6 +310,12 @@ pub async fn activate(cx: &mut Cx<'_>, input: Activate) -> Result<Value, Command
     .await?;
     db::insert_details(&mut cx.tx, cx.org, id, &a.client_id, &selected).await?;
     db::finish(&mut cx.tx, a.id, "used", None).await?;
+    // Match Mercury replacement: remove its old webhook, while polling keeps
+    // tracking outstanding payments through their retained connection. The
+    // helper skips previews and treats provider cleanup failures as nonfatal.
+    if let Some(old) = &previous {
+        super::bank::remove_webhook(cx, old).await;
+    }
     cx.emit("bank.connected",id,json!({"provider":"ramp","connection_id":id,"details":selected,"replaced":input.replacing_connection_id,"payments_enabled":false})).await?;
     Ok(
         json!({"connection":c,"details":selected,"replacing":previous,"payments_enabled":false,"note":"Ramp is selected for setup and payee mapping. Sending and auto-pay are disabled. Existing payees must be mapped again for this connection."}),

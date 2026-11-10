@@ -77,9 +77,10 @@ async fn register_webhook(cx: &mut Cx<'_>, c: &BankConnection, client: &Mercury)
     }
 }
 
-/// Removes the webhook of a connection being retired. Best effort: a
-/// leftover endpoint's deliveries are refused once its connection is gone.
-async fn remove_webhook(cx: &Cx<'_>, c: &BankConnection) {
+/// Removes the webhook of a connection being retired. Best effort: payment
+/// polling retains the original connection and credentials. Signed deliveries
+/// already in flight can still refresh payments tied to that connection.
+pub(super) async fn remove_webhook(cx: &Cx<'_>, c: &BankConnection) {
     let Some(id) = &c.webhook_id else { return };
     if cx.preview {
         return;

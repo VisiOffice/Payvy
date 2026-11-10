@@ -89,9 +89,10 @@ visible URL after return; provider errors/bodies and tokens never enter events.
 Activation verifies the current business, USD entity, ACH account and entity
 account membership, and compares their fingerprint with the confirmed input.
 The preview names the previous connection and exact masked account. A changed
-account or previous connection requires another review. The old connection's
-sealed credentials remain for monitoring existing Mercury attempts; existing
-payees do not carry over to Ramp. Rho is not retired. The database represents
+account or previous connection requires another review. The old Mercury webhook
+is removed on a best-effort basis, matching Mercury replacement; previews do not remove it and cleanup failure does not block
+activation. The old connection's sealed credentials remain so polling continues
+to monitor existing Mercury attempts; existing payees do not carry over to Ramp. Rho is not retired. The database represents
 Ramp as `setup`, reserves the selected-paying-bank slot, and rejects unsupported
 Ramp modes. `bill.release` refuses a Ramp send; `pay_elsewhere` remains available.
 

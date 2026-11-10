@@ -29,6 +29,9 @@ struct Data {
     inactive: bool,
     fail_token: bool,
     writes: usize,
+    webhook_deletes: usize,
+    fail_webhook_delete: bool,
+    mercury_checks: usize,
 }
 struct Fake {
     url: String,
@@ -51,6 +54,7 @@ impl Fake {
     }
     fn bank(&self) -> Bank {
         let mut bank = Bank::new(Sealer::from_hex(&"11".repeat(32)).unwrap());
+        bank.mercury_sandbox = format!("{}/mercury", self.url);
         bank.ramp = Some(Config {
             client_id: "test-client".into(),
             client_secret: "secret-client".into(),
@@ -66,6 +70,34 @@ async fn respond(State(data): State<Arc<Mutex<Data>>>, req: Request<Body>) -> im
     let raw = axum::body::to_bytes(body, 10000).await.unwrap();
     let mut d = data.lock().unwrap();
     let path = parts.uri.path();
+    if path.starts_with("/mercury/") {
+        assert_eq!(
+            parts.headers["authorization"],
+            "Bearer legacy-mercury-token"
+        );
+        if path == "/mercury/webhooks/legacy-hook" {
+            assert_eq!(parts.method, "DELETE");
+            d.webhook_deletes += 1;
+            return (
+                if d.fail_webhook_delete {
+                    StatusCode::SERVICE_UNAVAILABLE
+                } else {
+                    StatusCode::OK
+                },
+                Json(json!({})),
+            );
+        }
+        assert_eq!(
+            path,
+            "/mercury/account/legacy-account/transaction/legacy-transaction"
+        );
+        assert_eq!(parts.method, "GET");
+        d.mercury_checks += 1;
+        return (
+            StatusCode::OK,
+            Json(json!({"id":"legacy-transaction","status":"sent"})),
+        );
+    }
     let page = |data: Value| json!({"data":data,"page":{"next":null}});
     let value = if path == "/developer/v1/token" {
         assert_eq!(parts.method, "POST");
@@ -619,4 +651,162 @@ async fn renewal_preserves_refresh_deadline_and_preview_never_exchanges() {
     );
     assert_eq!(fake.data.lock().unwrap().refreshes, 1);
     db.drop().await;
+}
+
+#[tokio::test]
+async fn activation_cleans_up_mercury_webhook_and_polling_retains_old_payments() {
+    // Cleanup failure must not undo a valid activation or lose monitoring.
+    for fail_cleanup in [false, true] {
+        let Some(mut db) = TestDb::new().await else {
+            return;
+        };
+        let fake = Fake::start().await;
+        fake.data.lock().unwrap().fail_webhook_delete = fail_cleanup;
+        db.state = db.state.clone().with_bank(fake.bank());
+        let org = payvy_store::DEFAULT_ORG;
+        let old = Uuid::new_v4();
+        let now = (db.state.clock)();
+        let bank = db.state.bank.as_ref().unwrap();
+        let sealed = bank
+            .sealer
+            .seal(org, &format!("bank:{old}"), "legacy-mercury-token")
+            .unwrap();
+        let webhook_secret = bank
+            .sealer
+            .seal(org, &format!("webhook:{old}"), "legacy-webhook-secret")
+            .unwrap();
+        // Seed a payment already submitted to Mercury, before switching banks.
+        let v = vendor(&db.state, &agent("bot"), "Legacy Mercury supplier").await;
+        let b = Uuid::parse_str(&bill(&db.state, &agent("bot"), &v, "BEFORE-RAMP", 1000).await)
+            .unwrap();
+        let mut tx = db.state.store.begin(org).await.unwrap();
+        payvy_store::insert_connection(
+            &mut tx,
+            org,
+            &payvy_store::NewConnection {
+                id: old,
+                provider: "mercury",
+                environment: "sandbox",
+                mode: "direct",
+                account_id: "legacy-account",
+                account_name: "Legacy Mercury",
+                token_sealed: &sealed,
+                created_at: now,
+                created_by: "robert",
+            },
+        )
+        .await
+        .unwrap();
+        payvy_store::set_connection_webhook(&mut tx, old, "legacy-hook", &webhook_secret)
+            .await
+            .unwrap();
+        let payee = payvy_store::insert_payee_proposal(
+            &mut tx,
+            org,
+            &payvy_store::NewPayee {
+                vendor_id: Uuid::parse_str(&v).unwrap(),
+                connection_id: old,
+                recipient_id: "legacy-recipient",
+                recipient_name: "Legacy supplier",
+                method: "ach",
+                destination: "…6789",
+                reason: None,
+                proposed_by: "robert",
+                created_at: now,
+            },
+        )
+        .await
+        .unwrap();
+        payvy_store::decide_payee(&mut tx, payee.id, payee.vendor_id, true, "robert", now)
+            .await
+            .unwrap();
+        payvy_store::release_bill(&mut tx, b, "robert", now)
+            .await
+            .unwrap();
+        let payment = payvy_store::insert_payment(
+            &mut tx,
+            org,
+            &payvy_store::NewPayment {
+                id: Uuid::new_v4(),
+                bill_id: b,
+                connection_id: old,
+                payee_id: payee.id,
+                amount_cents: 1000,
+                method: "ach",
+                idempotency_key: "legacy-payment",
+                created_at: now,
+                created_by: "robert",
+            },
+        )
+        .await
+        .unwrap();
+        payvy_store::update_payment(
+            &mut tx,
+            payment.id,
+            &payvy_store::PaymentUpdate {
+                status: "pending",
+                transaction_id: Some("legacy-transaction"),
+                request_id: None,
+                failure: None,
+                link: None,
+            },
+            now,
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        let stage = ready(&db).await;
+        let input = activation(&stage);
+        let preview = commands::run(
+            &db.state,
+            &person("robert"),
+            "bank.activate",
+            input.clone(),
+            Mode::Preview,
+        )
+        .await
+        .unwrap();
+        assert_eq!(fake.data.lock().unwrap().webhook_deletes, 0);
+        commands::run(
+            &db.state,
+            &person("robert"),
+            "bank.activate",
+            input,
+            Mode::Commit {
+                confirm_token: Some(preview["confirm_token"].as_str().unwrap().into()),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(fake.data.lock().unwrap().webhook_deletes, 1);
+        let mut tx = db.state.store.begin(org).await.unwrap();
+        let retired = payvy_store::get_connection(&mut tx, old)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(retired.retired_at.is_some());
+        assert_eq!(retired.token_sealed, sealed);
+        tx.rollback().await.unwrap();
+        *db.clock.lock().unwrap() += chrono::Duration::minutes(3);
+        assert_eq!(
+            payvy_server::payment_worker::tick(&db.state).await.unwrap(),
+            1
+        );
+        assert_eq!(fake.data.lock().unwrap().mercury_checks, 1);
+        let result = commit(
+            &db.state,
+            &person("robert"),
+            "bill.get",
+            json!({"bill_id":b}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result["result"]["bill"]["state"], "paid");
+        assert_eq!(
+            result["result"]["bill"]["paid_reference"],
+            "legacy-transaction"
+        );
+        assert_eq!(fake.data.lock().unwrap().writes, 0);
+        db.drop().await;
+    }
 }
