@@ -208,7 +208,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "bill.auto_pay",
-        summary: "Pay a bill whose workflow pays automatically (status ready_to_pay) through the connected Mercury account, to the vendor's accepted payee. Payvy does this on its own within a minute of the bill getting there; run it to pay one now. If the payment doesn't go, the bill waits for a person to release it and is never retried automatically.",
+        summary: "Pay a bill whose workflow pays automatically (status ready_to_pay) through the connected Mercury account, to the vendor's accepted payee. Payvy does this on its own within a minute of the bill getting there; run it to pay one now. A bill over the auto-pay limit (auto_pay.limits) is never paid this way; it waits for a person to release it. If the payment doesn't go, the bill waits for a person to release it and is never retried automatically.",
         tier: RiskTier::Routine,
         person_only: false,
         input_schema: r#"{"type":"object","required":["bill_id"],"properties":{"bill_id":{"type":"string","format":"uuid"}}}"#,
@@ -226,6 +226,28 @@ pub const COMMANDS: &[CommandSpec] = &[
         tier: RiskTier::Confirmed,
         person_only: true,
         input_schema: r#"{"type":"object","required":["bill_id","reason"],"properties":{"bill_id":{"type":"string","format":"uuid"},"reason":{"type":"string"}}}"#,
+    },
+    // ── Auto-pay limits ─────────────────────────────────────────────────────
+    CommandSpec {
+        name: "auto_pay.limits",
+        summary: "The ceiling on automatic payments: the company's limit (the $5,000.00 default until a person sets one) and each vendor's own, lower limit. A bill over its limit never pays automatically: it waits for a person to release it, whatever its workflow says.",
+        tier: RiskTier::Read,
+        person_only: false,
+        input_schema: r#"{"type":"object","properties":{}}"#,
+    },
+    CommandSpec {
+        name: "auto_pay.lower_limit",
+        summary: "Lower the company's auto-pay limit, or with vendor_id set or lower one vendor's own limit (below the company's). Bills over the new limit wait for a person to release them. Only a person may change a limit. To raise one, use auto_pay.raise_limit.",
+        tier: RiskTier::Routine,
+        person_only: true,
+        input_schema: r#"{"type":"object","required":["limit_cents"],"properties":{"vendor_id":{"type":"string","format":"uuid","description":"Leave out for the company's limit"},"limit_cents":{"type":"integer","minimum":0,"maximum":100000000000},"reason":{"type":"string"}}}"#,
+    },
+    CommandSpec {
+        name: "auto_pay.raise_limit",
+        summary: "Raise the company's auto-pay limit, or with vendor_id raise a vendor's own limit (it stays below the company's) or remove it with limit_cents null so the vendor follows the company's. Only a person may change a limit. The preview lists the bills that would start paying automatically; commit with the returned token.",
+        tier: RiskTier::Confirmed,
+        person_only: true,
+        input_schema: r#"{"type":"object","required":["limit_cents"],"properties":{"vendor_id":{"type":"string","format":"uuid","description":"Leave out for the company's limit"},"limit_cents":{"type":["integer","null"],"minimum":0,"maximum":100000000000,"description":"null (with vendor_id only) removes the vendor's own limit"},"reason":{"type":"string"}}}"#,
     },
     // ── Inbox ───────────────────────────────────────────────────────────────
     CommandSpec {

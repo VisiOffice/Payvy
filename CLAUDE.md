@@ -68,6 +68,10 @@ Conventions follow Visirent (`~/Code/visirent`).
   agent `workflow`) pays only `ready_to_pay` bills, only through Mercury, only to an accepted payee,
   via the same `payments::submit`. A payment that doesn't go sets `bills.release_by_person`, which
   turns the auto pay step into `awaiting_release` (`workflow::Facts`); auto-pay never retries.
+  Above the auto-pay limit (`auto_pay_limits`, default $5,000, never unlimited; a vendor's may
+  only be lower) the step is `awaiting_release` with a reason, and `payments::submit` checks the
+  limit again under its advisory lock before sending. Lowering is routine, raising is confirmed;
+  both are person-only. Don't add a way around it for automatic payments.
 - **Typed bank details pass through.** `vendor.create_recipient` (person-only, confirmed) sends
   account and routing numbers to Mercury and keeps only the recipient id and last four; never put
   them in a result, event, error or log (`payvy_pay::redact_numbers`). It never retries a POST.

@@ -6,7 +6,9 @@ use std::collections::HashMap;
 
 use chrono::{Duration, NaiveDate};
 use payvy_domain::bills::{self as rules, Line, State};
-use payvy_domain::workflow::{self, Approval, Facts, Progress, Signal, Status, Workflow};
+use payvy_domain::workflow::{
+    self, Approval, AutoPayLimit, Facts, Progress, Signal, Status, Workflow,
+};
 use payvy_store::{self as store, Bill, InsertBill, NewBill};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -32,6 +34,7 @@ fn evaluate(
     workflow: &Workflow,
     approvals: &[Approval],
     signals: &[Signal],
+    auto_pay_limit: AutoPayLimit,
 ) -> Progress {
     workflow::evaluate(
         workflow,
@@ -42,6 +45,7 @@ fn evaluate(
             signals,
             released_at: bill.released_at,
             release_by_person: bill.release_by_person,
+            auto_pay_limit,
             now: cx.now,
         },
     )
@@ -65,7 +69,10 @@ async fn open_bill(
     let (a, s) = store::facts(&mut cx.tx, &[bill.id]).await?;
     let a: Vec<Approval> = a.into_iter().map(|(_, a)| a).collect();
     let s: Vec<Signal> = s.into_iter().map(|(_, s)| s).collect();
-    let p = evaluate(cx, &bill, &wf, &a, &s);
+    let limit = store::auto_pay_limits(&mut cx.tx)
+        .await?
+        .for_vendor(bill.vendor_id);
+    let p = evaluate(cx, &bill, &wf, &a, &s, limit);
     Ok((bill, wf, p))
 }
 
@@ -79,8 +86,11 @@ async fn detail(cx: &mut Cx<'_>, bill_id: Uuid) -> Result<Value, CommandError> {
     let (a, s) = store::facts(&mut cx.tx, &[bill.id]).await?;
     let approvals: Vec<Approval> = a.into_iter().map(|(_, a)| a).collect();
     let signals: Vec<Signal> = s.into_iter().map(|(_, s)| s).collect();
+    let limit = store::auto_pay_limits(&mut cx.tx)
+        .await?
+        .for_vendor(bill.vendor_id);
     let progress =
-        (bill.state == State::Open).then(|| evaluate(cx, &bill, &wf, &approvals, &signals));
+        (bill.state == State::Open).then(|| evaluate(cx, &bill, &wf, &approvals, &signals, limit));
     let lines = store::bill_lines(&mut cx.tx, bill.id).await?;
     let history = store::list_events(&mut cx.tx, Some(bill.id), 200).await?;
     let documents = store::bill_documents(&mut cx.tx, bill.id).await?;
@@ -91,6 +101,7 @@ async fn detail(cx: &mut Cx<'_>, bill_id: Uuid) -> Result<Value, CommandError> {
         "lines": lines,
         "progress": progress,
         "workflow": { "id": bill.workflow_id, "mermaid": wf.mermaid() },
+        "auto_pay_limit": limit,
         "approvals": approvals,
         "signals": signals,
         "documents": documents,
@@ -222,7 +233,7 @@ fn waits_on(status: &Status, who: &str) -> bool {
         Status::AwaitingApproval { waiting_on, .. } => {
             waiting_on.is_empty() || waiting_on.iter().any(|w| w == who)
         }
-        Status::AwaitingRelease { by } => by.is_empty() || by.iter().any(|w| w == who),
+        Status::AwaitingRelease { by, .. } => by.is_empty() || by.iter().any(|w| w == who),
         _ => false,
     }
 }
@@ -257,6 +268,7 @@ pub async fn list(cx: &mut Cx<'_>, input: List) -> Result<Value, CommandError> {
         .map(|b| b.id)
         .collect();
     let (approvals, signals) = store::facts(&mut cx.tx, &open_ids).await?;
+    let limits = store::auto_pay_limits(&mut cx.tx).await?;
     let builtin = Workflow::builtin_default();
 
     let mut out = Vec::new();
@@ -276,7 +288,7 @@ pub async fn list(cx: &mut Cx<'_>, input: List) -> Result<Value, CommandError> {
                 .filter(|(b, _)| *b == bill.id)
                 .map(|(_, s)| s.clone())
                 .collect();
-            evaluate(cx, bill, wf, &a, &s)
+            evaluate(cx, bill, wf, &a, &s, limits.for_vendor(bill.vendor_id))
         });
         if let Some(want) = &input.status
             && progress.as_ref().map(status_name) != Some(want.as_str())
@@ -437,7 +449,7 @@ pub struct Release {
 pub async fn release(cx: &mut Cx<'_>, input: Release) -> Result<Value, CommandError> {
     let (bill, _, progress) = open_bill(cx, input.bill_id).await?;
     match &progress.status {
-        Status::AwaitingRelease { by } if !by.is_empty() && !by.contains(&cx.actor.name) => {
+        Status::AwaitingRelease { by, .. } if !by.is_empty() && !by.contains(&cx.actor.name) => {
             return Err(CommandError::Forbidden(format!(
                 "this bill is released by {}",
                 by.join(" or ")
@@ -495,7 +507,7 @@ pub async fn release(cx: &mut Cx<'_>, input: Release) -> Result<Value, CommandEr
         && !cx.preview
     {
         // The bank is asked only on commit; the preview shows the plan.
-        payments::submit(cx, &bill, c, payee).await?;
+        payments::submit(cx, &bill, c, payee, payments::Authority::Person).await?;
     }
     let mut out = detail(cx, bill.id).await?;
     out["payment_plan"] = json!(plan);
@@ -517,14 +529,25 @@ pub struct AutoPay {
 /// it pays only through Mercury, only to the vendor's accepted payee, under
 /// the same idempotency rule as a release. A payment that doesn't go sends
 /// the bill to a person (`release_by_person`); it is never retried here.
+/// A bill over the auto-pay limit is never ready to pay (it waits for a
+/// release), and the limit is checked again, under its lock, as the payment
+/// is sent.
 pub async fn auto_pay(cx: &mut Cx<'_>, input: AutoPay) -> Result<Value, CommandError> {
     let (bill, _, progress) = open_bill(cx, input.bill_id).await?;
     if progress.status != Status::ReadyToPay {
+        let why = match &progress.status {
+            Status::AwaitingRelease {
+                reason: Some(r), ..
+            } => format!(" ({r}; a person releases it)"),
+            _ => String::new(),
+        };
         return Err(CommandError::Conflict(format!(
-            "this bill doesn't pay automatically now; it is {}",
+            "this bill doesn't pay automatically now; it is {}{why}",
             status_name(&progress)
         )));
     }
+    // Checked here as well as at sending, so a preview says it too.
+    payments::within_auto_pay_limit(cx, &bill).await?;
     let c = store::live_paying_connection(&mut cx.tx)
         .await?
         .filter(|c| c.provider == "mercury")
@@ -553,7 +576,7 @@ pub async fn auto_pay(cx: &mut Cx<'_>, input: AutoPay) -> Result<Value, CommandE
     )
     .await?;
     if !cx.preview {
-        payments::submit(cx, &bill, &c, &payee).await?;
+        payments::submit(cx, &bill, &c, &payee, payments::Authority::Workflow).await?;
     }
     let mut out = detail(cx, bill.id).await?;
     out["payment_plan"] = plan;

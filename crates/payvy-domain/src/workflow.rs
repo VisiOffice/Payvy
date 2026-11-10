@@ -295,7 +295,89 @@ pub struct Facts<'a> {
     /// A payment for this bill didn't go or came back, so even an automatic
     /// pay step waits for a person to release it.
     pub release_by_person: bool,
+    /// The most an automatic pay step may pay without a person. A bill over
+    /// it waits for a release, whatever its workflow says.
+    pub auto_pay_limit: AutoPayLimit,
     pub now: DateTime<Utc>,
+}
+
+// ── Auto-pay ceiling ────────────────────────────────────────────────────────
+
+/// What a company may pay automatically until a person sets its own limit:
+/// $5,000.00. Bills above it wait for a person to release them.
+pub const DEFAULT_AUTO_PAY_LIMIT_CENTS: Cents = 500_000;
+
+/// The highest limit anyone can set: $1,000,000,000.00. There is no "no
+/// limit"; a ceiling is always in force.
+pub const MAX_AUTO_PAY_LIMIT_CENTS: Cents = 100_000_000_000;
+
+/// Where the limit in force for a bill comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LimitSource {
+    /// The company has not set one; the default applies.
+    Default,
+    Company,
+    Vendor,
+}
+
+/// The ceiling on what one bill may pay automatically: the lower of the
+/// company's limit (or the default) and the vendor's own, if it has one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct AutoPayLimit {
+    pub cents: Cents,
+    pub source: LimitSource,
+}
+
+impl AutoPayLimit {
+    pub fn effective(company: Option<Cents>, vendor: Option<Cents>) -> Self {
+        let company = match company {
+            Some(cents) => AutoPayLimit {
+                cents,
+                source: LimitSource::Company,
+            },
+            None => AutoPayLimit {
+                cents: DEFAULT_AUTO_PAY_LIMIT_CENTS,
+                source: LimitSource::Default,
+            },
+        };
+        match vendor {
+            Some(cents) if cents < company.cents => AutoPayLimit {
+                cents,
+                source: LimitSource::Vendor,
+            },
+            _ => company,
+        }
+    }
+
+    /// Whether a bill of this amount may be paid without a person. A bill
+    /// exactly at the limit may.
+    pub fn allows(&self, amount_cents: Cents) -> bool {
+        amount_cents <= self.cents
+    }
+
+    /// Why a bill over the limit waits, in words for the inbox.
+    pub fn reason(&self) -> String {
+        match self.source {
+            LimitSource::Vendor => {
+                format!("Over this vendor's {} auto-pay limit", dollars(self.cents))
+            }
+            LimitSource::Default | LimitSource::Company => {
+                format!("Over the {} auto-pay limit", dollars(self.cents))
+            }
+        }
+    }
+}
+
+/// Checks a limit someone wants to set.
+pub fn check_auto_pay_limit(cents: Cents) -> Result<(), String> {
+    if !(0..=MAX_AUTO_PAY_LIMIT_CENTS).contains(&cents) {
+        return Err(format!(
+            "an auto-pay limit is $0.00 to {}",
+            dollars(MAX_AUTO_PAY_LIMIT_CENTS)
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -330,6 +412,10 @@ pub enum Status {
     },
     AwaitingRelease {
         by: Vec<String>,
+        /// Why an automatic pay step waits for a person instead, e.g.
+        /// "Over the $5,000.00 auto-pay limit".
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
     },
     ReadyToPay,
     Released {
@@ -491,10 +577,21 @@ pub fn evaluate(workflow: &Workflow, facts: &Facts) -> Progress {
                 }
                 None => {
                     status = Some(match release {
-                        Release::Auto if !facts.release_by_person => Status::ReadyToPay,
-                        Release::Auto | Release::Manual => {
-                            Status::AwaitingRelease { by: by.clone() }
+                        Release::Auto if facts.release_by_person => Status::AwaitingRelease {
+                            by: by.clone(),
+                            reason: None,
+                        },
+                        Release::Auto if !facts.auto_pay_limit.allows(facts.amount_cents) => {
+                            Status::AwaitingRelease {
+                                by: by.clone(),
+                                reason: Some(facts.auto_pay_limit.reason()),
+                            }
                         }
+                        Release::Auto => Status::ReadyToPay,
+                        Release::Manual => Status::AwaitingRelease {
+                            by: by.clone(),
+                            reason: None,
+                        },
                     });
                     steps.push(progress(StepState::Active));
                 }
@@ -543,6 +640,7 @@ mod tests {
             signals,
             released_at: None,
             release_by_person: false,
+            auto_pay_limit: AutoPayLimit::effective(None, None),
             now: t(now),
         }
     }
@@ -595,7 +693,10 @@ mod tests {
         };
         assert_eq!(
             evaluate(&quarry(), &failed).status,
-            Status::AwaitingRelease { by: vec![] }
+            Status::AwaitingRelease {
+                by: vec![],
+                reason: None
+            }
         );
     }
 
@@ -641,7 +742,10 @@ mod tests {
         );
         assert_eq!(
             evaluate(&w, &facts(100, &both, &[], 6)).status,
-            Status::AwaitingRelease { by: vec![] }
+            Status::AwaitingRelease {
+                by: vec![],
+                reason: None
+            }
         );
     }
 
@@ -704,5 +808,65 @@ mod tests {
         assert!(m.contains("s3[[\"Pay automatically\"]]"), "{m}");
         assert_eq!(dollars(123_456_789), "$1,234,567.89");
         assert_eq!(dollars(5), "$0.05");
+    }
+
+    #[test]
+    fn an_automatic_bill_over_the_limit_waits_for_a_person() {
+        let w = wf(json!({"steps": [{"id": "pay", "type": "pay", "release": "auto"}]}));
+        // At the default limit exactly: pays automatically.
+        let at = facts(DEFAULT_AUTO_PAY_LIMIT_CENTS, &[], &[], 0);
+        assert_eq!(evaluate(&w, &at).status, Status::ReadyToPay);
+        // A cent over: a person releases it, and says why.
+        let over = facts(DEFAULT_AUTO_PAY_LIMIT_CENTS + 1, &[], &[], 0);
+        assert_eq!(
+            evaluate(&w, &over).status,
+            Status::AwaitingRelease {
+                by: vec![],
+                reason: Some("Over the $5,000.00 auto-pay limit".into())
+            }
+        );
+        // A vendor's own, lower limit wins; a higher one never does.
+        let vendor = Facts {
+            auto_pay_limit: AutoPayLimit::effective(Some(1_000_000), Some(10_000)),
+            ..facts(10_001, &[], &[], 0)
+        };
+        assert_eq!(
+            evaluate(&w, &vendor).status,
+            Status::AwaitingRelease {
+                by: vec![],
+                reason: Some("Over this vendor's $100.00 auto-pay limit".into())
+            }
+        );
+        assert_eq!(
+            AutoPayLimit::effective(Some(10_000), Some(50_000)),
+            AutoPayLimit {
+                cents: 10_000,
+                source: LimitSource::Company
+            }
+        );
+        // A zero limit pays nothing automatically.
+        let zero = Facts {
+            auto_pay_limit: AutoPayLimit::effective(Some(0), None),
+            ..facts(1, &[], &[], 0)
+        };
+        assert!(matches!(
+            evaluate(&w, &zero).status,
+            Status::AwaitingRelease {
+                reason: Some(_),
+                ..
+            }
+        ));
+        // Manual steps don't mention the limit.
+        let manual = Workflow::builtin_default();
+        assert_eq!(
+            evaluate(&manual, &over).status,
+            Status::AwaitingRelease {
+                by: vec![],
+                reason: None
+            }
+        );
+        assert!(check_auto_pay_limit(-1).is_err());
+        assert!(check_auto_pay_limit(MAX_AUTO_PAY_LIMIT_CENTS + 1).is_err());
+        assert!(check_auto_pay_limit(0).is_ok());
     }
 }
