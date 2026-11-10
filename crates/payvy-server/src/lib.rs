@@ -388,3 +388,5 @@ impl IntoResponse for CommandError {
 }
 
 pub mod ramp;
+
+pub mod ramp_worker;

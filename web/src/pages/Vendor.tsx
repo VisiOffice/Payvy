@@ -36,6 +36,7 @@ interface VendorDetail {
   payees: {
     id: string;
     recipient_name: string;
+    is_current_connection: boolean;
     method: string;
     destination: string;
     status: string;
@@ -74,6 +75,13 @@ export function VendorPage() {
       run<{ bills: Listed[] }>('bill.list', { vendor_id: id, limit: 100 }).then((r) => setBills(r.result.bills)),
     ]).catch((e) => setError(e instanceof Error ? e.message : String(e)));
   }, [id, loadVendor]);
+
+  // A bank may have been replaced in another tab while this vendor stayed open.
+  useEffect(() => {
+    const refresh = () => { loadVendor().catch(e => setError(e instanceof Error ? e.message : String(e))); };
+    window.addEventListener('focus', refresh);
+    return () => window.removeEventListener('focus', refresh);
+  }, [loadVendor]);
 
   // Links to a vendor's workflow (from Waiting on you, or Workflows) land on it.
   const ready = !!detail && !!people;
@@ -143,6 +151,8 @@ export function VendorPage() {
           <Card>
             <VStack gap={3}>
               {active ? (
+                <VStack gap={2}>
+                {!active.is_current_connection && <Banner status="warning" title="This payee belongs to a previous bank connection" description="Choose and propose a payee for the current bank. A person must accept the new mapping before it can be used." />}
                 <MetadataList>
                   <MetadataListItem label="Recipient">{active.recipient_name}</MetadataListItem>
                   <MetadataListItem label="How">
@@ -150,16 +160,17 @@ export function VendorPage() {
                   </MetadataListItem>
                   <MetadataListItem label="Accepted by">{active.decided_by ?? '—'}</MetadataListItem>
                 </MetadataList>
+                </VStack>
               ) : (
                 <Text type="supporting">
                   Not set. Anyone can propose where this vendor is paid; a person accepts it in Waiting on you.
                 </Text>
               )}
-              <RampPayee key={`ramp:${vendor.id}`} vendorId={vendor.id} onChanged={loadVendor} />
+              <RampPayee key={`ramp:${vendor.id}`} vendorId={vendor.id} vendorName={vendor.name} onChanged={loadVendor} />
               <PayeeInvites key={vendor.id} vendor={vendor} invites={detail.payee_invites} payees={detail.payees} onChanged={loadVendor} />
               {proposed.map((p) => (
                 <HStack key={p.id} gap={2} vAlign="center" wrap="wrap">
-                  <Badge variant="warning" label="Change proposed" />
+                  <Badge variant="warning" label={p.is_current_connection ? "Change proposed" : "Previous connection"} />
                   <Text>
                     {p.recipient_name} · {METHOD[p.method] ?? p.method} · {p.destination}, by {p.proposed_by} on{' '}
                     {date(p.created_at)}.

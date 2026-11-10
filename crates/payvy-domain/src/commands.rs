@@ -287,8 +287,15 @@ pub const COMMANDS: &[CommandSpec] = &[
         input_schema: r#"{"type":"object","required":["authorization_id","entity_id","account_id","fingerprint","replacing_connection_id"],"properties":{"authorization_id":{"type":"string","format":"uuid"},"entity_id":{"type":"string","format":"uuid"},"account_id":{"type":"string","format":"uuid"},"fingerprint":{"type":"string"},"replacing_connection_id":{"type":["string","null"],"format":"uuid"}}}"#,
     },
     CommandSpec {
+        name: "bank.maintain",
+        summary: "Check or renew an existing Ramp grant when due. The background worker uses this command. It cannot authorize or activate connections, accept payees or send payments. Failures persist a bounded retry schedule or require reconnection. Preview sends nothing.",
+        tier: RiskTier::Routine,
+        person_only: false,
+        input_schema: r#"{"type":"object","required":["connection_id"],"properties":{"connection_id":{"type":"string","format":"uuid"}}}"#,
+    },
+    CommandSpec {
         name: "bank.renew",
-        summary: "Renew access for a live Ramp connection using its sealed refresh grant. Renewal is serialized and preserves the original refresh expiry. Preview sends nothing.",
+        summary: "Check a live Ramp connection and renew access when needed. A person can resume checks paused after repeated temporary failures, once cooldown permits. Rejected grants require reconnecting. Preview sends nothing.",
         tier: RiskTier::Routine,
         person_only: true,
         input_schema: r#"{"type":"object","required":["connection_id"],"properties":{"connection_id":{"type":"string","format":"uuid"}}}"#,
@@ -302,7 +309,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "bank.get",
-        summary: "The connected banks: connection is the paying bank (Mercury) or null, connections lists every live connection with its capability (pay or read_only).",
+        summary: "The selected bank and all live connections, with capabilities (pay, read_only, setup). Ramp includes connection health, retry time and recovery actions; setup never enables payments.",
         tier: RiskTier::Read,
         person_only: false,
         input_schema: r#"{"type":"object","properties":{}}"#,

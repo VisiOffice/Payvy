@@ -47,23 +47,39 @@ export function startFakeBank(port: number): Promise<http.Server> {
   const invites = new Map<string, Record<string, unknown>>();
   let posts = 0;
   let recipientPosts = 0;
+  let rampTokenStatus = 200;
+  let rampTokenTtl = 3600;
+  let rampTokenRequests = 0;
+  let rampWrites = 0;
 
   const server = http.createServer(async (req, res) => {
     const path = new URL(req.url ?? '/', 'http://bank').pathname;
 
+    if (path === '/ramp/test/config') {
+      const config = await json(req);
+      if (config.reset) { rampTokenStatus = 200; rampTokenTtl = 3600; rampTokenRequests = 0; rampWrites = 0; }
+      if (typeof config.tokenStatus === 'number') rampTokenStatus = config.tokenStatus;
+      if (typeof config.tokenTtl === 'number') rampTokenTtl = config.tokenTtl;
+      return send(res, 200, { tokenRequests: rampTokenRequests, writes: rampWrites });
+    }
     if (path.startsWith('/developer/v1/')) {
       const id = '00000000-0000-4000-8000-000000000001';
       const second = '00000000-0000-4000-8000-000000000002';
       const page = (data: unknown) => ({ data, page: { next: null } });
-      if (path === '/developer/v1/token' && req.method === 'POST') return send(res, 200, {
-        access_token: 'fake-ramp-access', refresh_token: 'fake-ramp-refresh', expires_in: 3600,
-        token_type: 'Bearer', scope: 'business:read entities:read bank_accounts:read vendors:read payments:read',
-      });
-      if (req.method !== 'GET') return send(res, 405, { error: 'Ramp writes are forbidden' });
+      if (path === '/developer/v1/token' && req.method === 'POST') {
+        rampTokenRequests++;
+        if (rampTokenStatus !== 200) return send(res, rampTokenStatus, { private: 'fake-secret-error-must-stay-server-side' });
+        return send(res, 200, {
+          access_token: 'fake-ramp-access', refresh_token: 'fake-ramp-refresh', expires_in: rampTokenTtl,
+          token_type: 'Bearer', scope: 'business:read entities:read bank_accounts:read vendors:read payments:read',
+        });
+      }
+      if (req.method !== 'GET') { rampWrites++; return send(res, 405, { error: 'Ramp writes are forbidden' }); }
       if (req.headers.authorization !== 'Bearer fake-ramp-access') return send(res, 401, {});
       if (path.endsWith('/business')) return send(res, 200, { id, business_name_legal: 'Ramp Test Company', active: true });
       if (path.endsWith('/entities')) return send(res, 200, page([{ id, entity_name: 'US Operations', currency: 'USD', payment_accounts: [{ id, account_name: 'Operating', account_number_last_four: '0042', currency: 'USD' }] }]));
       if (path.endsWith('/bank-accounts')) return send(res, 200, page([{ id, account_name: 'Operating', account_number_last_four: '0042', has_ach_details: true }]));
+      if (path === `/developer/v1/vendors/${id}`) return send(res, 200, { id, name: 'Ramp Supplier', is_active: true });
       if (path.endsWith('/vendors')) return send(res, 200, page([{ id, name: 'Ramp Supplier', is_active: true }]));
       if (path.endsWith('/payment-methods')) return send(res, 200, page([
         { id, type: 'ACH', account_number_last_four: '1234', fee: { amount: 0, currency_code: 'USD', minor_unit_conversion_rate: 100 } },

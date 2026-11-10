@@ -284,16 +284,17 @@ function PayeeCard({
             {p.recipient_name} · {METHOD[p.method] ?? p.method} · {p.destination}
           </MetadataListItem>
           <MetadataListItem label="Now">
-            {cur ? `${cur.recipient_name} · ${METHOD[cur.method] ?? cur.method} · ${cur.destination}` : 'Not set'}
+            {cur ? `${cur.recipient_name} · ${METHOD[cur.method] ?? cur.method} · ${cur.destination}${change.current_is_current_connection ? '' : ' (previous connection)'}` : 'Not set'}
           </MetadataListItem>
           <MetadataListItem label="Proposed by">
             {p.proposed_by} on {date(p.created_at)}
           </MetadataListItem>
           {p.reason && <MetadataListItem label="Why">{p.reason}</MetadataListItem>}
         </MetadataList>
+        {!change.is_current_connection && <Banner status="warning" title="This proposal is for a previous bank connection" description="Decline it and propose a payee on the vendor page for the current connection." />}
         <HStack gap={2} hAlign="end">
           <Button label="Decline" variant="ghost" onClick={onDecline} />
-          <Button label="Accept" variant="primary" clickAction={onAccept} />
+          <Button label="Accept" variant="primary" isDisabled={!change.is_current_connection} clickAction={onAccept} />
         </HStack>
       </VStack>
     </Card>

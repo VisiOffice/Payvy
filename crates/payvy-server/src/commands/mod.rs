@@ -13,6 +13,7 @@ mod payee_invites;
 mod payments;
 mod people;
 mod ramp;
+mod ramp_health;
 mod vendors;
 mod workflows;
 
@@ -150,6 +151,7 @@ pub async fn run(
         org: actor.org_id,
         actor,
         now: (state.clock)(),
+        clock: &state.clock,
         events: Vec::new(),
         preview,
         storage: state.storage.as_deref(),
@@ -203,6 +205,7 @@ async fn execute(cx: &mut Cx<'_>, name: &str, input: &Value) -> Result<Value, Co
         "bank.authorization" => ramp::authorization(cx, parse(input)?).await,
         "bank.activate" => ramp::activate(cx, parse(input)?).await,
         "bank.renew" => ramp::renew(cx, parse(input)?).await,
+        "bank.maintain" => ramp_health::maintain(cx, parse(input)?, false).await,
         "bank.connect" => bank::connect(cx, parse(input)?).await,
         "bank.get" => bank::get(cx).await,
         "bank.disconnect" => bank::disconnect(cx, parse(input)?).await,
@@ -248,6 +251,8 @@ pub(crate) struct Cx<'a> {
     pub org: Uuid,
     pub actor: &'a Actor,
     pub now: DateTime<Utc>,
+    /// Long provider calls can re-read the injected clock before scheduling retries.
+    pub clock: &'a crate::Clock,
     pub events: Vec<String>,
     /// Rolled back at the end. Commands with effects outside the database
     /// (writing to storage) skip them in preview.

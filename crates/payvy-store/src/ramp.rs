@@ -95,3 +95,30 @@ pub async fn set_instrument(
         .bind(id).bind(instrument).bind(fingerprint).fetch_one(&mut **tx).await?;
     Ok(payee(&r))
 }
+
+#[derive(sqlx::FromRow, Serialize)]
+pub struct Health {
+    pub health_status: String,
+    pub health_reason: Option<String>,
+    pub access_expires_at: Option<DateTime<Utc>>,
+    pub checked_at: Option<DateTime<Utc>>,
+    pub next_check_at: Option<DateTime<Utc>>,
+    pub next_attempt_at: Option<DateTime<Utc>>,
+    pub failures: i32,
+}
+
+pub async fn health(tx: &mut Tx, id: Uuid) -> anyhow::Result<Option<Health>> {
+    Ok(sqlx::query_as("SELECT health_status, health_reason, access_expires_at, checked_at, next_check_at, next_attempt_at, failures FROM ramp_connections WHERE connection_id=$1")
+        .bind(id).fetch_optional(&mut **tx).await?)
+}
+pub async fn set_health(tx: &mut Tx, id: Uuid, health: &Health) -> anyhow::Result<()> {
+    sqlx::query("UPDATE ramp_connections SET health_status=$2, health_reason=$3, access_expires_at=$4, checked_at=$5, next_check_at=$6, next_attempt_at=$7, failures=$8 WHERE connection_id=$1")
+        .bind(id).bind(&health.health_status).bind(&health.health_reason).bind(health.access_expires_at).bind(health.checked_at).bind(health.next_check_at).bind(health.next_attempt_at).bind(health.failures)
+        .execute(&mut **tx).await?;
+    Ok(())
+}
+/// Only live connections; a provider switch must stop renewal of retired grants.
+pub async fn due(tx: &mut Tx, now: DateTime<Utc>, limit: i64) -> anyhow::Result<Vec<Uuid>> {
+    Ok(sqlx::query_scalar("SELECT r.connection_id FROM ramp_connections r JOIN bank_connections b ON b.id=r.connection_id AND b.org_id=r.org_id WHERE b.retired_at IS NULL AND r.health_status IN ('unknown','connected','retrying') AND (r.next_check_at IS NULL OR r.next_check_at <= $1) ORDER BY r.next_check_at NULLS FIRST, r.connection_id LIMIT $2")
+        .bind(now).bind(limit).fetch_all(&mut **tx).await?)
+}

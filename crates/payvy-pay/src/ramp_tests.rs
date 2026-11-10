@@ -545,3 +545,48 @@ fn authorization_refuses_unsafe_redirects_and_fake_origin_overrides() {
         assert!(OAuth::sandbox_at(origin, "client", "secret").is_err());
     }
 }
+
+#[tokio::test]
+async fn single_vendor_lookup_checks_identity_and_does_not_list_the_directory() {
+    let fake = Fake::start(vec![Reply::ok(vendor(ID)), Reply::ok(vendor(SECOND_ID))]).await;
+    let client = fake.client();
+    assert_eq!(
+        client
+            .vendor(Uuid::parse_str(ID).unwrap())
+            .await
+            .unwrap()
+            .name,
+        "Supply Co"
+    );
+    assert!(matches!(
+        client.vendor(Uuid::parse_str(ID).unwrap()).await,
+        Err(Error::InvalidResponse)
+    ));
+    let requests = fake.state.requests.lock().unwrap();
+    assert!(
+        requests
+            .iter()
+            .all(|r| r.uri == format!("/developer/v1/vendors/{ID}"))
+    );
+}
+
+#[tokio::test]
+async fn vendor_search_encodes_filters_and_refuses_pagination_that_drops_them() {
+    let fake = Fake::start(vec![page(
+        json!([vendor(ID)]),
+        json!("/developer/v1/vendors?start=next"),
+    )])
+    .await;
+    let error = fake
+        .client()
+        .search_vendors("A&B / Supply")
+        .await
+        .unwrap_err();
+    assert_eq!(error, Error::InvalidResponse);
+    assert_eq!(fake.count(), 1);
+    let request = &fake.state.requests.lock().unwrap()[0];
+    let url = Url::parse(&format!("http://unused{}", request.uri)).unwrap();
+    let pairs: std::collections::HashMap<_, _> = url.query_pairs().collect();
+    assert_eq!(pairs["name"], "A&B / Supply");
+    assert_eq!(pairs["is_active"], "true");
+}

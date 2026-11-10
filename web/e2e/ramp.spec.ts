@@ -47,6 +47,8 @@ test('Ramp OAuth stages funding selection, confirms replacement, and maps a spec
   expect(replay.status()).toBe(409);
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto(`/vendors/${vendorId}`);
+  await page.getByLabel('Search Ramp vendors').fill('Ramp');
+  await page.getByRole('button', { name: 'Search Ramp', exact: true }).click();
   await page.getByRole('combobox', { name: 'Vendor in Ramp' }).click();
   await page.getByRole('option', { name: 'Ramp Supplier', exact: true }).click();
   await page.getByRole('combobox', { name: 'Ramp ACH account' }).click();
@@ -76,6 +78,17 @@ test('Ramp OAuth stages funding selection, confirms replacement, and maps a spec
   await expect(release.getByText(/Payvy won't send this payment/)).toBeVisible();
   await release.getByRole('button', { name: 'Release', exact: true }).click();
   await expect(page.getByText('Released', { exact: true })).toBeVisible();
+  const mapping = await agent<{ connection_id: string; destinations: { recipient_id: string; instrument_id: string; fingerprint: string }[] }>('bank.recipients', { recipient_id: '00000000-0000-4000-8000-000000000001' });
+  await agent('vendor.propose_payee', { vendor_id: vendorId, connection_id: mapping.connection_id, recipient_id: mapping.destinations[0]!.recipient_id,
+    method: 'ach', instrument_id: mapping.destinations[0]!.instrument_id, instrument_fingerprint: mapping.destinations[0]!.fingerprint });
   const res = await page.request.post('/api/commands/bank.disconnect', { headers: { 'x-payvy-client': 'web' }, data: { mode: 'commit', input: { provider: 'ramp' } } });
   expect(res.ok()).toBeTruthy();
+  await page.goto(`/vendors/${vendorId}`);
+  await expect(page.getByText('This payee belongs to a previous bank connection')).toBeVisible();
+  await page.goto('/');
+  const stale = page.locator('div').filter({ has: page.getByText('Ramp mapping vendor', { exact: true }) })
+    .filter({ has: page.getByRole('button', { name: 'Accept', exact: true }) }).last();
+  await expect(stale.getByRole('button', { name: 'Accept', exact: true })).toBeDisabled();
+  await expect(stale.getByText('This proposal is for a previous bank connection')).toBeVisible();
+
 });

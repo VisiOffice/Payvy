@@ -366,14 +366,22 @@ fn capability(c: &BankConnection) -> &'static str {
 pub async fn get(cx: &mut Cx<'_>) -> Result<Value, CommandError> {
     let paying = store::live_paying_connection(&mut cx.tx).await?;
     let all = store::live_connections(&mut cx.tx).await?;
-    let connections: Vec<Value> = all
-        .iter()
-        .map(|c| {
-            let mut v = serde_json::to_value(c).unwrap_or(Value::Null);
-            v["capability"] = json!(capability(c));
-            v
-        })
-        .collect();
+    let mut connections = Vec::new();
+    for c in &all {
+        let mut v = serde_json::to_value(c).map_err(anyhow::Error::from)?;
+        v["capability"] = json!(capability(c));
+        if c.provider == "ramp" {
+            v["health"] = super::ramp_health::get(cx, c).await?;
+        }
+        connections.push(v);
+    }
+    let paying = paying.and_then(|c| {
+        connections
+            .iter()
+            .find(|v| v["id"] == c.id.to_string())
+            .cloned()
+    });
+
     Ok(
         json!({ "connection": paying, "connections": connections, "ramp_available": cx.bank().ok().is_some_and(|b| b.ramp.is_some()) }),
     )
@@ -470,10 +478,18 @@ pub async fn recipients(cx: &mut Cx<'_>, input: Recipients) -> Result<Value, Com
             let destinations = super::ramp::destinations(cx, &c, id).await?;
             return Ok(json!({"provider":"ramp","connection_id":c.id,"destinations":destinations}));
         }
-        let needle = text(input.search).map(|s| s.to_lowercase());
-        let vendors: Vec<_> = client
-            .vendors()
-            .await?
+        let search = text(input.search);
+        if search.as_ref().is_some_and(|s| s.len() > 120) {
+            return Err(CommandError::Invalid(
+                "Search is limited to 120 characters".into(),
+            ));
+        }
+        let all = match &search {
+            Some(name) => client.search_vendors(name).await?,
+            None => client.vendors().await?,
+        };
+        let needle = search.map(|s| s.to_lowercase());
+        let vendors: Vec<_> = all
             .into_iter()
             .filter(|v| {
                 v.is_active

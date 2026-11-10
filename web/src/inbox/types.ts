@@ -30,6 +30,8 @@ export interface Payee {
 }
 
 export interface PayeeChange {
+  is_current_connection: boolean;
+  current_is_current_connection: boolean;
   proposal: Payee;
   vendor_name: string;
   current: Payee | null;
