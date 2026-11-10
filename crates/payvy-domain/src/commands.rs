@@ -252,10 +252,25 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "person.remove",
-        summary: "Stop someone signing in, and sign them out everywhere. Their past actions stay on the record.",
+        summary: "Stop someone signing in, and sign them out everywhere. Their past actions stay on the record. Refused for yourself (someone else removes you) and for the last person who can sign in.",
         tier: RiskTier::Routine,
         person_only: true,
         input_schema: r#"{"type":"object","required":["actor"],"properties":{"actor":{"type":"string"}}}"#,
+    },
+    // ── Organization ────────────────────────────────────────────────────────
+    CommandSpec {
+        name: "org.get",
+        summary: "This organization: its id, its name as people see it in the app and sign-in emails, and when it was created.",
+        tier: RiskTier::Read,
+        person_only: false,
+        input_schema: r#"{"type":"object","properties":{}}"#,
+    },
+    CommandSpec {
+        name: "org.update",
+        summary: "Rename the organization. The name is trimmed, 1 to 100 characters, and must differ from the current one. Bills, vendors and events are unchanged.",
+        tier: RiskTier::Routine,
+        person_only: true,
+        input_schema: r#"{"type":"object","required":["name"],"properties":{"name":{"type":"string","minLength":1,"maxLength":100}}}"#,
     },
     // ── Bank and payments ───────────────────────────────────────────────────
     CommandSpec {

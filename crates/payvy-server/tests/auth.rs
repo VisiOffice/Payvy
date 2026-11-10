@@ -217,6 +217,15 @@ async fn links_expire_and_are_limited() {
 async fn removing_a_person_signs_them_out() {
     let Some((db, sent)) = db().await else { return };
     let cookie = sign_in(&db, &sent).await;
+    // Someone else still signs in: the last person can't be removed.
+    commit(
+        &db.state,
+        &person("admin"),
+        "person.add",
+        json!({ "email": "dana@example.com", "name": "Dana" }),
+    )
+    .await
+    .unwrap();
     commit(
         &db.state,
         &person("admin"),
