@@ -1,3 +1,4 @@
+import { useCan } from '../permissions';
 import { useEffect, useRef, useState, type SVGProps } from 'react';
 import { Button } from '@astryxdesign/core/Button';
 import { CheckboxInput } from '@astryxdesign/core/CheckboxInput';
@@ -74,6 +75,7 @@ export function PageStrip({
   selected?: ReadonlySet<number>;
   onSelect?: (next: Set<number>) => void;
 }) {
+  const can = useCan();
   const loaded = useDocumentPages(documentId, contentType);
   const toast = useToast();
   const [saving, setSaving] = useState(false);
@@ -125,7 +127,7 @@ export function PageStrip({
     }
   }
 
-  const disabled = locked || saving;
+  const disabled = locked || saving || !can('document.arrange');
   const picking = !!selected && !!onSelect;
   const visiblePages = arrangement.filter((p) => !p.hidden).map((p) => p.page);
   const ticked = visiblePages.filter((p) => selected?.has(p)).length;

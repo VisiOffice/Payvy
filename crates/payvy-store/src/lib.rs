@@ -2,6 +2,10 @@
 //! transaction and appends an event in that same transaction, so a change
 //! and its event either both land or neither does.
 
+pub use payvy_domain::permissions::Role;
+mod roles;
+pub use roles::*;
+
 use chrono::{DateTime, NaiveDate, Utc};
 use payvy_domain::Cents;
 use payvy_domain::bills::{Line, State};
@@ -2398,6 +2402,7 @@ pub async fn insert_person(tx: &mut Tx, p: &NewPerson<'_>) -> anyhow::Result<Opt
     if r.rows_affected() == 0 {
         return Ok(None);
     }
+    set_actor_roles(tx, p.org_id, p.actor, &[Role::ApClerk]).await?;
     Ok(Some(Person {
         id,
         org_id: p.org_id,
@@ -2441,6 +2446,12 @@ pub async fn remove_person(
     .fetch_optional(&mut **tx)
     .await?;
     if let Some(id) = id {
+        sqlx::query("DELETE FROM actor_roles WHERE org_id = $1 AND actor = $2")
+            .bind(org_id)
+            .bind(actor)
+            .execute(&mut **tx)
+            .await?;
+        sqlx::query("UPDATE api_keys SET revoked_at = $3 WHERE org_id = $1 AND actor = $2 AND kind = 'person' AND revoked_at IS NULL").bind(org_id).bind(actor).bind(at).execute(&mut **tx).await?;
         sqlx::query("UPDATE sessions SET ended_at = $2 WHERE person_id = $1 AND ended_at IS NULL")
             .bind(id)
             .bind(at)

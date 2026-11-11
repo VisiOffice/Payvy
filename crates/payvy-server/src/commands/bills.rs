@@ -62,11 +62,14 @@ struct Duties {
 
 async fn duties(cx: &mut Cx<'_>, bill_ids: &[Uuid]) -> Result<Duties, CommandError> {
     let rules = store::approval_rules(&mut cx.tx).await?;
-    let people = store::people(&mut cx.tx, cx.org)
-        .await?
-        .into_iter()
-        .map(|p| p.actor)
-        .collect();
+    let mut people = Vec::new();
+    for p in store::people(&mut cx.tx, cx.org).await? {
+        if payvy_domain::permissions::Permission::Approve
+            .allows(&store::actor_roles(&mut cx.tx, cx.org, &p.actor).await?)
+        {
+            people.push(p.actor);
+        }
+    }
     let uploaders = store::bill_uploaders(&mut cx.tx, bill_ids).await?;
     Ok(Duties {
         rules: Rules {
@@ -93,7 +96,7 @@ fn turn(
         .filter(|(b, _)| *b == bill.id)
         .map(|(_, a)| a.clone())
         .collect();
-    duties::turn(
+    let mut turn = duties::turn(
         &duties::Context {
             workflow,
             status: &progress.status,
@@ -106,7 +109,19 @@ fn turn(
         },
         &cx.actor.name,
         cx.actor.kind == ActorKind::Person,
-    )
+    );
+    if let Some(t) = &mut turn {
+        t.others.retain(|actor| d.people.contains(actor));
+        if !cx.can("bill.approve") {
+            t.can_approve = false;
+            t.refusal = Some(Refusal::MissingRole);
+            t.message = Some(
+                "You need the Approver role to approve bills. Ask an admin to review your access."
+                    .into(),
+            );
+        }
+    }
+    turn
 }
 
 /// A locked open bill and where it stands.
@@ -170,6 +185,7 @@ async fn detail(cx: &mut Cx<'_>, bill_id: Uuid) -> Result<Value, CommandError> {
         "lines": lines,
         "progress": progress,
         "approval": approval,
+        "can_release": progress.as_ref().is_some_and(|p| can_release(cx, &p.status)),
         "workflow": { "id": bill.workflow_id, "mermaid": wf.mermaid() },
         "auto_pay_limit": limit,
         "approvals": approvals,
@@ -339,6 +355,12 @@ fn waits_on(status: &Status, who: &str) -> bool {
     }
 }
 
+fn can_release(cx: &Cx<'_>, status: &Status) -> bool {
+    cx.can("bill.release")
+        && matches!(status, Status::AwaitingRelease { .. })
+        && waits_on(status, &cx.actor.name)
+}
+
 pub async fn list(cx: &mut Cx<'_>, input: List) -> Result<Value, CommandError> {
     let limit = input.limit.unwrap_or(100).clamp(1, 500);
     let derived_filter = input.status.is_some() || input.mine;
@@ -404,6 +426,21 @@ pub async fn list(cx: &mut Cx<'_>, input: List) -> Result<Value, CommandError> {
             && !progress
                 .as_ref()
                 .is_some_and(|p| waits_on(&p.status, &cx.actor.name))
+        {
+            continue;
+        }
+        if input.mine
+            && progress.as_ref().is_some_and(|p| {
+                matches!(p.status, Status::AwaitingRelease { .. }) && !can_release(cx, &p.status)
+            })
+        {
+            continue;
+        }
+        if input.mine
+            && !cx.can("bill.approve")
+            && progress
+                .as_ref()
+                .is_some_and(|p| matches!(p.status, Status::AwaitingApproval { .. }))
         {
             continue;
         }

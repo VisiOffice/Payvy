@@ -310,7 +310,7 @@ async fn authorization_is_person_org_bound_single_use_expiring_and_secret_free()
         .is_err()
     );
     let other_org = db.add_org().await;
-    let other = payvy_server::Actor::person(other_org, "robert");
+    let other = payvy_server::Actor::administrator(other_org, "robert");
     assert!(
         commit(
             &db.state,

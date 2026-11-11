@@ -373,6 +373,26 @@ export interface ApprovalRulesSetInput {
 export interface PersonListInput {}
 
 export interface PersonAddInput {
+  /**
+   * Defaults to AP clerk. Admin includes all permissions.
+   *
+   * @minItems 1
+   * @maxItems 4
+   */
+  roles?:
+    | ["admin" | "ap_clerk" | "approver" | "payment_releaser"]
+    | ["admin" | "ap_clerk" | "approver" | "payment_releaser", "admin" | "ap_clerk" | "approver" | "payment_releaser"]
+    | [
+        "admin" | "ap_clerk" | "approver" | "payment_releaser",
+        "admin" | "ap_clerk" | "approver" | "payment_releaser",
+        "admin" | "ap_clerk" | "approver" | "payment_releaser"
+      ]
+    | [
+        "admin" | "ap_clerk" | "approver" | "payment_releaser",
+        "admin" | "ap_clerk" | "approver" | "payment_releaser",
+        "admin" | "ap_clerk" | "approver" | "payment_releaser",
+        "admin" | "ap_clerk" | "approver" | "payment_releaser"
+      ];
   email: string;
   /**
    * Their name, for people
@@ -382,6 +402,28 @@ export interface PersonAddInput {
    * The name their actions are recorded under, a-z 0-9 . _ -; defaults to the part of the email before @
    */
   actor?: string;
+}
+
+export interface PersonSetRolesInput {
+  actor: string;
+  /**
+   * @minItems 1
+   * @maxItems 4
+   */
+  roles:
+    | ["admin" | "ap_clerk" | "approver" | "payment_releaser"]
+    | ["admin" | "ap_clerk" | "approver" | "payment_releaser", "admin" | "ap_clerk" | "approver" | "payment_releaser"]
+    | [
+        "admin" | "ap_clerk" | "approver" | "payment_releaser",
+        "admin" | "ap_clerk" | "approver" | "payment_releaser",
+        "admin" | "ap_clerk" | "approver" | "payment_releaser"
+      ]
+    | [
+        "admin" | "ap_clerk" | "approver" | "payment_releaser",
+        "admin" | "ap_clerk" | "approver" | "payment_releaser",
+        "admin" | "ap_clerk" | "approver" | "payment_releaser",
+        "admin" | "ap_clerk" | "approver" | "payment_releaser"
+      ];
 }
 
 export interface PersonRemoveInput {
@@ -636,6 +678,7 @@ export interface CommandInputs {
   "approval_rules.set": ApprovalRulesSetInput;
   "person.list": PersonListInput;
   "person.add": PersonAddInput;
+  "person.set_roles": PersonSetRolesInput;
   "person.remove": PersonRemoveInput;
   "org.get": OrgGetInput;
   "org.update": OrgUpdateInput;
@@ -708,6 +751,7 @@ export const COMMANDS: Record<CommandName, { tier: Tier; personOnly: boolean; su
   "approval_rules.set": { tier: "routine", personOnly: true, summary: "Turn submitter_cannot_approve on or off for the whole company. It applies to approvals from now on, including bills already waiting." },
   "person.list": { tier: "read", personOnly: false, summary: "Everyone who can sign in to the web app, with the actor name their actions are recorded under." },
   "person.add": { tier: "routine", personOnly: true, summary: "Let someone sign in to the web app with a link sent to their email. They act as the person named by actor, with every right a person has: approving, releasing payments, accepting payees and workflows." },
+  "person.set_roles": { tier: "routine", personOnly: true, summary: "Set a person's company roles. Admin only; roles combine. Cannot remove the last sign-in admin. Changes take effect on their next command, including an existing session or person API key. Audit records old and new roles." },
   "person.remove": { tier: "routine", personOnly: true, summary: "Stop someone signing in, and sign them out everywhere. Their past actions stay on the record. Refused for yourself (someone else removes you) and for the last person who can sign in." },
   "org.get": { tier: "read", personOnly: false, summary: "This organization: its id, its name as people see it in the app and sign-in emails, and when it was created." },
   "org.update": { tier: "routine", personOnly: true, summary: "Rename the organization. The name is trimmed, 1 to 100 characters, and must differ from the current one. Bills, vendors and events are unchanged." },

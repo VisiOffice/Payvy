@@ -51,7 +51,11 @@ pub async fn get(cx: &mut Cx<'_>) -> Result<Value, CommandError> {
 
     let paying = store::live_paying_connection(&mut cx.tx).await?;
     let mut payees = Vec::new();
-    for p in store::open_payee_proposals(&mut cx.tx).await? {
+    for p in if cx.can("vendor.accept_payee") {
+        store::open_payee_proposals(&mut cx.tx).await?
+    } else {
+        vec![]
+    } {
         let vendor_name = name_of(&mut cx.tx, p.vendor_id).await?;
         let current = store::active_payee(&mut cx.tx, p.vendor_id).await?;
         payees.push(json!({ "proposal": p, "vendor_name": vendor_name, "current": current,
@@ -61,7 +65,11 @@ pub async fn get(cx: &mut Cx<'_>) -> Result<Value, CommandError> {
     }
 
     let mut workflows = Vec::new();
-    for w in store::open_workflow_proposals(&mut cx.tx).await? {
+    for w in if cx.can("workflow.accept") {
+        store::open_workflow_proposals(&mut cx.tx).await?
+    } else {
+        vec![]
+    } {
         let vendor_name = match w.vendor_id {
             Some(id) => Some(name_of(&mut cx.tx, id).await?),
             None => None,

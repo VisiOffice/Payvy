@@ -1,14 +1,21 @@
 //! Who can sign in to the web app. A person signs in with a link sent to
 //! their email and acts as the actor of the same name.
 
-use payvy_store::{self as store, ActorKind, NewPerson};
+use payvy_store::{self as store, ActorKind, NewPerson, Role};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::{CommandError, Cx, text};
 
 pub async fn list(cx: &mut Cx<'_>) -> Result<Value, CommandError> {
-    Ok(json!({ "people": store::people(&mut cx.tx, cx.org).await? }))
+    let mut people = Vec::new();
+    for p in store::people(&mut cx.tx, cx.org).await? {
+        let roles = store::actor_roles(&mut cx.tx, cx.org, &p.actor).await?;
+        let mut row = json!(p);
+        row["roles"] = json!(roles);
+        people.push(row);
+    }
+    Ok(json!({ "people": people }))
 }
 
 #[derive(Deserialize)]
@@ -17,6 +24,7 @@ pub struct Add {
     email: String,
     name: String,
     actor: Option<String>,
+    roles: Option<Vec<Role>>,
 }
 
 fn valid_actor(a: &str) -> bool {
@@ -29,6 +37,7 @@ fn valid_actor(a: &str) -> bool {
 }
 
 pub async fn add(cx: &mut Cx<'_>, input: Add) -> Result<Value, CommandError> {
+    let roles = validate_roles(input.roles.unwrap_or_else(|| vec![Role::ApClerk]))?;
     let email = input.email.trim().to_lowercase();
     let Some((local, domain)) = email.split_once('@') else {
         return Err(CommandError::Invalid("email needs an @".into()));
@@ -66,12 +75,15 @@ pub async fn add(cx: &mut Cx<'_>, input: Add) -> Result<Value, CommandError> {
             "someone here already signs in as {actor} or with {email}; pass a different actor, or person.remove them first"
         ))
     })?;
+    store::set_actor_roles(&mut cx.tx, cx.org, &actor, &roles).await?;
     cx.emit(
         "person.added",
         person.id,
-        json!({ "actor": person.actor, "email": person.email, "name": person.name }),
+        json!({ "actor": person.actor, "email": person.email, "name": person.name, "roles": roles }),
     )
     .await?;
+    let mut person = json!(person);
+    person["roles"] = json!(roles);
     Ok(json!({
         "person": person,
         "next": "they open the web app and ask for a sign-in link with this email",
@@ -100,6 +112,7 @@ pub async fn remove(cx: &mut Cx<'_>, input: Remove) -> Result<Value, CommandErro
             "{actor} is the last person who can sign in; add someone else first"
         )));
     }
+    protect_last_admin(cx, &actor).await?;
     let id = store::remove_person(&mut cx.tx, cx.org, &actor, cx.now, &cx.actor.name)
         .await?
         .ok_or(CommandError::NotFound("person"))?;
@@ -108,6 +121,66 @@ pub async fn remove(cx: &mut Cx<'_>, input: Remove) -> Result<Value, CommandErro
     Ok(
         json!({ "removed": actor, "note": "signed out everywhere; their past actions stay on the record" }),
     )
+}
+
+fn validate_roles(mut roles: Vec<Role>) -> Result<Vec<Role>, CommandError> {
+    if roles.is_empty() || roles.len() > 4 {
+        return Err(CommandError::Invalid(
+            "choose at least one role (at most four)".into(),
+        ));
+    }
+    roles.sort();
+    let original = roles.len();
+    roles.dedup();
+    if roles.len() != original {
+        return Err(CommandError::Invalid("a role is listed twice".into()));
+    }
+    Ok(roles)
+}
+async fn protect_last_admin(cx: &mut Cx<'_>, actor: &str) -> Result<(), CommandError> {
+    let admins = store::sign_in_admins(&mut cx.tx, cx.org).await?;
+    if admins.len() == 1 && admins[0] == actor {
+        return Err(CommandError::Conflict(
+            "this is the last admin who can sign in; give another person the Admin role first"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetRoles {
+    actor: String,
+    roles: Vec<Role>,
+}
+pub async fn set_roles(cx: &mut Cx<'_>, input: SetRoles) -> Result<Value, CommandError> {
+    let actor = input.actor.trim().to_lowercase();
+    let roles = validate_roles(input.roles)?;
+    let person = store::people(&mut cx.tx, cx.org)
+        .await?
+        .into_iter()
+        .find(|p| p.actor == actor)
+        .ok_or(CommandError::NotFound("person"))?;
+    let mut before = store::actor_roles(&mut cx.tx, cx.org, &actor).await?;
+    before.sort();
+    if before == roles {
+        return Err(CommandError::Conflict(
+            "these roles are already assigned".into(),
+        ));
+    }
+    if !roles.contains(&Role::Admin) {
+        protect_last_admin(cx, &actor).await?;
+    }
+    store::set_actor_roles(&mut cx.tx, cx.org, &actor, &roles).await?;
+    cx.emit(
+        "person.roles_changed",
+        person.id,
+        json!({ "actor": actor, "from": before, "to": roles }),
+    )
+    .await?;
+    let mut person = json!(person);
+    person["roles"] = json!(roles);
+    Ok(json!({ "person": person }))
 }
 
 #[cfg(test)]

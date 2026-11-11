@@ -8,8 +8,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
-use payvy_domain::commands::{COMMANDS, CommandSpec, RiskTier};
-use payvy_store::ActorKind;
+use payvy_domain::commands::{CommandSpec, RiskTier};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -50,12 +49,6 @@ fn tool(spec: &CommandSpec) -> Value {
     })
 }
 
-fn visible(actor: &Actor) -> impl Iterator<Item = &'static CommandSpec> + '_ {
-    COMMANDS
-        .iter()
-        .filter(move |c| actor.kind == ActorKind::Person || !c.person_only)
-}
-
 pub async fn handle(
     State(state): State<AppState>,
     Extension(actor): Extension<Actor>,
@@ -72,7 +65,10 @@ pub async fn handle(
             "serverInfo": { "name": "payvy", "version": env!("CARGO_PKG_VERSION") },
         })),
         "ping" => Ok(json!({})),
-        "tools/list" => Ok(json!({ "tools": visible(&actor).map(tool).collect::<Vec<_>>() })),
+        "tools/list" => match crate::permissions::visible(&state, &actor).await {
+            Ok(specs) => Ok(json!({ "tools": specs.into_iter().map(tool).collect::<Vec<_>>() })),
+            Err(_) => Err(json!({ "code": -32603, "message": "Could not load permissions" })),
+        },
         "tools/call" => Ok(call(&state, &actor, &req.params).await),
         other => Err(json!({ "code": -32601, "message": format!("method not found: {other}") })),
     };
@@ -85,7 +81,10 @@ pub async fn handle(
 
 async fn call(state: &AppState, actor: &Actor, params: &Value) -> Value {
     let name = params["name"].as_str().unwrap_or_default();
-    let Some(spec) = visible(actor).find(|c| tool_name(c) == name) else {
+    let Ok(specs) = crate::permissions::visible(state, actor).await else {
+        return tool_error("Could not load permissions");
+    };
+    let Some(spec) = specs.into_iter().find(|c| tool_name(c) == name) else {
         return tool_error(&format!("unknown tool {name}"));
     };
     let mut input = match params.get("arguments") {

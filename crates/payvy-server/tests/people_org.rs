@@ -137,7 +137,7 @@ async fn renaming_touches_only_your_own_organization() {
     let other = db.add_org().await;
     commit(
         &db.state,
-        &Actor::person(other, "olga"),
+        &Actor::administrator(other, "olga"),
         "org.update",
         json!({ "name": "Other Renamed" }),
     )

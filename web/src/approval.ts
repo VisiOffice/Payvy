@@ -14,6 +14,7 @@ export interface ApprovalTurn {
 }
 
 const REASON: Record<string, string> = {
+  missing_role: 'You need the Approver role',
   not_a_person: 'Only a person can approve',
   not_an_approver: "You aren't an approver on this step",
   already_approved_step: 'You already approved this step',
@@ -29,14 +30,15 @@ function list(names: string[]): string {
 
 /** "You entered this bill. Waiting on Maria." */
 export function waitingOnOthers(t: ApprovalTurn, name: Names = (a) => a): string {
+  if (t.refusal?.code === 'missing_role' && t.message) return t.message;
   const why = REASON[t.refusal?.code ?? ''] ?? "You can't approve this step";
   const others = t.others.map(name);
   const who = t.anyone
     ? others.length
-      ? `Any other person can approve it, such as ${list(others)}.`
-      : 'Any other person can approve it.'
+      ? `Another eligible approver can approve it, such as ${list(others)}.`
+      : 'No other eligible approver is currently available. Ask an admin to check access.'
     : others.length
       ? `Waiting on ${list(others)}.`
-      : "Nobody else can approve it: reject it, or change the workflow and enter it again.";
+      : "No eligible approver is available. Ask an admin to check roles and workflow assignments.";
   return `${why}. ${who}`;
 }

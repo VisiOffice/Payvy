@@ -281,7 +281,7 @@ async fn one_email_in_two_companies_gets_a_link_for_each() {
     let other = db.add_org().await;
     commit(
         &db.state,
-        &payvy_server::Actor::person(other, "admin"),
+        &payvy_server::Actor::administrator(other, "admin"),
         "person.add",
         json!({ "email": "robert@example.com", "name": "Robert" }),
     )

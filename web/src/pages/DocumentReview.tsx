@@ -1,3 +1,4 @@
+import { Allowed, useCan } from '../permissions';
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps, type ReactNode } from 'react';
 import { useNavigate, useParams } from 'react-router';
 import { Banner } from '@astryxdesign/core/Banner';
@@ -127,6 +128,7 @@ const invoiceName = (g: SuggestedInvoice, i: number) => (g.invoice_number ? `Inv
  * wrong, then make it a bill. Corrections are recorded against the reading.
  */
 export function DocumentReview() {
+  const can = useCan();
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const toast = useToast();
@@ -213,6 +215,7 @@ export function DocumentReview() {
   const lines: BillLine[] | undefined =
     latest?.bill_input?.lines && amountCents === latest.bill_input.amount_cents ? latest.bill_input.lines : undefined;
   const canCreate =
+    can('bill.create') &&
     doc.status === 'inbox' &&
     !!form.vendor_id &&
     !!form.invoice_number.trim() &&
@@ -376,7 +379,7 @@ export function DocumentReview() {
                 </>
               }
               endContent={
-                doc.status === 'inbox' ? (
+                doc.status === 'inbox' && can('document.unsplit') ? (
                   <Button label="Undo" size="sm" variant="secondary" clickAction={undoSplit} />
                 ) : undefined
               }
@@ -432,7 +435,7 @@ export function DocumentReview() {
               status="info"
               title="Not read yet"
               description="Read it with the model, or fill in the bill yourself."
-              endContent={<Button label="Read it" size="sm" clickAction={readAgain} />}
+              endContent={<Allowed command="document.extract"><Button label="Read it" size="sm" clickAction={readAgain} /></Allowed>}
             />
           )}
           {x?.status === 'failed' && !reading && (
@@ -440,7 +443,7 @@ export function DocumentReview() {
               status="error"
               title="Reading it failed"
               description={x.error ?? undefined}
-              endContent={<Button label="Try again" size="sm" clickAction={readAgain} />}
+              endContent={<Allowed command="document.extract"><Button label="Try again" size="sm" clickAction={readAgain} /></Allowed>}
             />
           )}
           {latest?.out_of_date && x?.status === 'read' && !reading && doc.status === 'inbox' && (
@@ -448,7 +451,7 @@ export function DocumentReview() {
               status="warning"
               title="Read before the pages were rearranged"
               description="These details were read from the pages as they were. Read it again to bring them up to date."
-              endContent={<Button label="Read again" size="sm" clickAction={readAgain} />}
+              endContent={<Allowed command="document.extract"><Button label="Read again" size="sm" clickAction={readAgain} /></Allowed>}
             />
           )}
           {doc.status === 'inbox' && open.length > 0 && (
@@ -468,7 +471,7 @@ export function DocumentReview() {
           )}
 
           {doc.status === 'inbox' && (
-            <VStack gap={4}>
+            <fieldset disabled={!can('bill.create')} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}><VStack gap={4}>
               <Field focusKey="vendor_name" onFocus={setFocus}>
                 <Selector
                   label="Vendor"
@@ -570,7 +573,7 @@ export function DocumentReview() {
               )}
 
 
-            </VStack>
+            </VStack></fieldset>
           )}
 
           {passed.length > 0 && (
@@ -607,7 +610,7 @@ export function DocumentReview() {
           )}
           <details className="payvy-document-provenance"><summary>Document information</summary><p>{doc.source === 'email' ? 'Emailed' : 'Uploaded'} {date(doc.received_at)}</p>{x && <p>Read by {x.model}</p>}</details>
         </VStack></div>
-        {doc.status === 'inbox' && <footer className="payvy-review-actions">
+        {doc.status === 'inbox' && can('bill.create') && <footer className="payvy-review-actions">
           <div className="payvy-review-primary"><div><strong>{!canCreate ? 'Complete the details' : open.length ? 'Review the checks above' : 'Ready for your review'}</strong><p>{missing.length
                   ? `To create the bill, ${missing.join(' and ')}.`
                   : visible.length > 1 && picked.length === 0
@@ -620,7 +623,7 @@ export function DocumentReview() {
               isDisabled={!canCreate || reading}
               clickAction={() => create()}
             /></div>
-          <div className="payvy-review-secondary">{x && <Button label="Read again" variant="ghost" size="sm" isDisabled={reading} clickAction={readAgain} />}<Button label="Not a bill" variant="ghost" size="sm" isDisabled={reading} onClick={() => setTrashing(true)} /></div>
+          <div className="payvy-review-secondary">{x && <Allowed command="document.extract"><Button label="Read again" variant="ghost" size="sm" isDisabled={reading} clickAction={readAgain} /></Allowed>}<Button label="Not a bill" variant="ghost" size="sm" isDisabled={reading} onClick={() => setTrashing(true)} /></div>
         </footer>}
       </section>
       <section className="payvy-review-original" aria-label="Original document">

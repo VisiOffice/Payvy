@@ -186,11 +186,20 @@ fn sign_in_mail(to: &str, links: &[(String, String)]) -> Mail {
     }
 }
 
-fn me(s: &SignedIn) -> Value {
-    json!({
+async fn me(state: &AppState, s: &SignedIn) -> anyhow::Result<Value> {
+    let actor = crate::Actor::person(s.person.org_id, &s.person.actor);
+    let mut tx = state.store.begin(actor.org_id).await?;
+    let roles = crate::permissions::roles(&mut tx, &actor).await?;
+    let commands: Vec<_> = payvy_domain::commands::COMMANDS
+        .iter()
+        .filter(|c| crate::permissions::allowed(&actor, &roles, c))
+        .map(|c| c.name)
+        .collect();
+    Ok(json!({
+        "roles": roles, "commands": commands,
         "person": { "actor": s.person.actor, "name": s.person.name, "email": s.person.email },
         "organization": { "id": s.person.org_id, "name": s.org_name },
-    })
+    }))
 }
 
 #[derive(Deserialize)]
@@ -235,7 +244,11 @@ async fn start_session(
         "{COOKIE}={session}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}{}",
         if auth.secure() { "; Secure" } else { "" }
     );
-    let mut res = Json(me(&signed_in)).into_response();
+    let body = match me(&state, &signed_in).await {
+        Ok(body) => body,
+        Err(e) => return internal(e),
+    };
+    let mut res = Json(body).into_response();
     res.headers_mut().insert(
         header::SET_COOKIE,
         HeaderValue::from_str(&cookie).expect("cookie is ASCII"),
@@ -268,7 +281,10 @@ pub async fn signed_in(state: &AppState, headers: &HeaderMap) -> anyhow::Result<
 
 async fn current(State(state): State<AppState>, headers: HeaderMap) -> Response {
     match signed_in(&state, &headers).await {
-        Ok(Some(s)) => Json(me(&s)).into_response(),
+        Ok(Some(s)) => match me(&state, &s).await {
+            Ok(body) => Json(body).into_response(),
+            Err(e) => internal(e),
+        },
         Ok(None) => error(StatusCode::UNAUTHORIZED, "signed_out", "Not signed in."),
         Err(e) => internal(e),
     }

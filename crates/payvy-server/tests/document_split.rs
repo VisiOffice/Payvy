@@ -636,7 +636,7 @@ async fn another_organization_cant_split_undo_or_see_the_parts() {
         .to_owned();
 
     let other = db.add_org().await;
-    let eve = Actor::person(other, "eve");
+    let eve = Actor::administrator(other, "eve");
     let e = split(&db, &eve, &id, 1, json!([[1]])).await.unwrap_err();
     assert!(matches!(e, CommandError::NotFound(_)), "{e}");
     let e = unsplit(&db, &eve, &part).await.unwrap_err();

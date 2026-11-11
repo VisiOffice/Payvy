@@ -1,3 +1,4 @@
+import { Allowed, useAccessVersion } from '../permissions';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router';
 import { Badge } from '@astryxdesign/core/Badge';
@@ -40,6 +41,7 @@ interface Detail {
   approvals: { step_id: string; actor: string; at: string }[];
   /** While it waits for approval: whether you can give it, and who else can. */
   approval?: ApprovalTurn | null;
+  can_release: boolean;
   payments: {
     id: string;
     state: string;
@@ -62,6 +64,7 @@ const STEP_STATE: Record<Step['state'], { label: string; variant: 'success' | 'i
 };
 
 export function BillPage() {
+  const access = useAccessVersion();
   const { id } = useParams<{ id: string }>();
   const [detail, setDetail] = useState<Detail | null>(null);
   const [read, setRead] = useState<Read | null>(null);
@@ -85,7 +88,7 @@ export function BillPage() {
       })
       .catch((e) => setError(e.message));
   }, [id]);
-  useEffect(load, [load]);
+  useEffect(() => { setOpen(null); load(); }, [load, access]);
 
   const highlights = useMemo(() => highlightsOf(read), [read]);
 
@@ -143,10 +146,10 @@ export function BillPage() {
       {isOpen && (
         <HStack gap={2}>
           {status === 'awaiting_approval' && detail.approval?.can_approve !== false && (
-            <Button label="Approve" variant="primary" clickAction={approve} />
+            <Allowed command="bill.approve"><Button label="Approve" variant="primary" clickAction={approve} /></Allowed>
           )}
-          {status === 'awaiting_release' && <Button label="Pay…" variant="primary" onClick={() => setOpen('release')} />}
-          <Button label="Reject" variant="ghost" onClick={() => setOpen('reject')} />
+          {status === 'awaiting_release' && detail.can_release && <Allowed command="bill.release"><Button label="Pay…" variant="primary" onClick={() => setOpen('release')} /></Allowed>}
+          <Allowed command="bill.reject"><Button label="Reject" variant="ghost" onClick={() => setOpen('reject')} /></Allowed>
         </HStack>
       )}
       {status === 'awaiting_approval' && detail.approval && !detail.approval.can_approve && (

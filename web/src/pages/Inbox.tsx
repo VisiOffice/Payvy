@@ -1,3 +1,4 @@
+import { Allowed, useAccessVersion } from '../permissions';
 import { useCallback, useEffect, useState } from 'react';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
@@ -31,6 +32,7 @@ type Open =
   | null;
 
 export function Inbox() {
+  const access = useAccessVersion();
   const [view, setView] = useState('all');
   const [data, setData] = useState<InboxData | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -53,7 +55,7 @@ export function Inbox() {
       })
       .catch((e) => setError(e.message));
   }, []);
-  useEffect(load, [load]);
+  useEffect(() => { setOpen(null); load(); }, [load, access]);
 
   /** Runs an action, says what happened, and reloads the inbox. */
   const act = useCallback(
@@ -263,9 +265,9 @@ function BillCard({
       </div>
       <strong className="payvy-queue-amount">{money(b.amount_cents)}</strong>
       <div className="payvy-queue-actions">
-        <Button label="Reject" variant="ghost" size="sm" onClick={onReject} />
-        {item.action === 'approve' && <Button label="Approve" variant="primary" size="sm" clickAction={onApprove} />}
-        {item.action === 'release' && <Button label="Pay…" variant="primary" size="sm" onClick={onRelease} />}
+        <Allowed command="bill.reject"><Button label="Reject" variant="ghost" size="sm" onClick={onReject} /></Allowed>
+        {item.action === 'approve' && <Allowed command="bill.approve"><Button label="Approve" variant="primary" size="sm" clickAction={onApprove} /></Allowed>}
+        {item.action === 'release' && <Allowed command="bill.release"><Button label="Pay…" variant="primary" size="sm" onClick={onRelease} /></Allowed>}
       </div>
     </div>
   );

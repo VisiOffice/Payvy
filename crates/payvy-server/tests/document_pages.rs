@@ -520,7 +520,7 @@ async fn another_organization_cant_see_or_arrange_the_pages() {
         .unwrap();
 
     let other = db.add_org().await;
-    let eve = Actor::person(other, "eve");
+    let eve = Actor::administrator(other, "eve");
     let e = commit(
         &db.state,
         &eve,
