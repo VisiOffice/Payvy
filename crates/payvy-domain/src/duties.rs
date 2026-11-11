@@ -391,6 +391,7 @@ mod tests {
                     released_at: None,
                     release_by_person: false,
                     now: at(),
+                    auto_pay_limit: crate::workflow::AutoPayLimit::effective(None, None),
                 },
             )
             .status;

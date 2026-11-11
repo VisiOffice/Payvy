@@ -2,8 +2,8 @@
 //! same validation, risk tiers, events and errors. Handlers live one module
 //! per area; the registry itself is `payvy_domain::commands::COMMANDS`.
 
-mod auto_pay;
 mod approval_rules;
+mod auto_pay;
 mod bank;
 mod bills;
 mod documents;

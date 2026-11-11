@@ -6,12 +6,10 @@ use std::collections::HashMap;
 
 use chrono::{Duration, NaiveDate};
 use payvy_domain::bills::{self as rules, Line, State};
+use payvy_domain::duties::{self, Refusal, Rules, Turn};
 use payvy_domain::workflow::{
     self, Approval, AutoPayLimit, Facts, Progress, Signal, Status, Workflow,
 };
-use payvy_store::{self as store, Bill, InsertBill, NewBill};
-use payvy_domain::duties::{self, Refusal, Rules, Turn};
-use payvy_domain::workflow::{self, Approval, Facts, Progress, Signal, Status, Workflow};
 use payvy_store::{self as store, ActorKind, Bill, InsertBill, NewBill};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -151,7 +149,6 @@ async fn detail(cx: &mut Cx<'_>, bill_id: Uuid) -> Result<Value, CommandError> {
         .for_vendor(bill.vendor_id);
     let progress =
         (bill.state == State::Open).then(|| evaluate(cx, &bill, &wf, &approvals, &signals, limit));
-        (bill.state == State::Open).then(|| evaluate(cx, &bill, &wf, &approvals, &signals));
     let approval = match &progress {
         Some(p) if matches!(p.status, Status::AwaitingApproval { .. }) => {
             let d = duties(cx, &[bill.id]).await?;
@@ -363,8 +360,7 @@ pub async fn list(cx: &mut Cx<'_>, input: List) -> Result<Value, CommandError> {
                 .filter(|(b, _)| *b == bill.id)
                 .map(|(_, s)| s.clone())
                 .collect();
-            evaluate(cx, bill, wf, &a, &s, limits.for_vendor(bill.vendor_id))
-            let p = evaluate(cx, bill, wf, &a, &s);
+            let p = evaluate(cx, bill, wf, &a, &s, limits.for_vendor(bill.vendor_id));
             approval = turn(cx, &d, bill, wf, &p, &a);
             p
         });
