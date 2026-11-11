@@ -202,6 +202,11 @@ pub struct Create {
     allow_duplicate: bool,
     document_id: Option<Uuid>,
     extraction_id: Option<Uuid>,
+    /// Only these pages of the document (the original's page numbers, in
+    /// this order): they are split into a new document filed with the bill.
+    pages: Option<Vec<u32>>,
+    /// The document's pages.version the caller saw.
+    expected_version: Option<i32>,
 }
 
 pub async fn create(cx: &mut Cx<'_>, input: Create) -> Result<Value, CommandError> {
@@ -242,8 +247,21 @@ pub async fn create(cx: &mut Cx<'_>, input: Create) -> Result<Value, CommandErro
     let workflow_id = store::effective_workflow(&mut cx.tx, vendor.id)
         .await?
         .map(|w| w.id);
+    // Some pages of a document: they become a document of their own first,
+    // in this transaction, so a refused bill leaves no split behind.
+    let (document_id, split_from) = match input.document_id {
+        Some(doc) => documents::for_bill(cx, doc, input.pages.as_deref(), input.expected_version)
+            .await
+            .map(|(d, from)| (Some(d), from))?,
+        None if input.pages.is_some() || input.expected_version.is_some() => {
+            return Err(CommandError::Invalid(
+                "pages and expected_version need document_id".into(),
+            ));
+        }
+        None => (None, None),
+    };
     // A bill from a document pins the page arrangement it was entered from.
-    let arrangement_id = match input.document_id {
+    let arrangement_id = match document_id {
         Some(doc) => documents::current_arrangement(cx, doc).await?.map(|a| a.id),
         None => None,
     };
@@ -283,10 +301,11 @@ pub async fn create(cx: &mut Cx<'_>, input: Create) -> Result<Value, CommandErro
         json!({ "bill_id": id, "vendor_id": vendor.id, "invoice_number": invoice_number,
                 "amount_cents": input.amount_cents, "workflow_id": workflow_id, "duplicate_allowed": input.allow_duplicate,
                 "extraction_id": input.extraction_id, "corrected": corrected,
-                "arrangement_id": arrangement_id }),
+                "arrangement_id": arrangement_id, "document_id": document_id,
+                "split_from": split_from }),
     )
     .await?;
-    if let Some(doc) = input.document_id {
+    if let Some(doc) = document_id {
         documents::file_with_bill(cx, doc, id).await?;
     }
     detail(cx, id).await

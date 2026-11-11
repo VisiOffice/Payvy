@@ -18,9 +18,15 @@ import { ApiError, run } from '../api/client';
 import { ReasonDialog } from '../inbox/ReasonDialog';
 import { cents, date, dollars, money } from '../money';
 import { DocumentViewer } from '../viewer/DocumentViewer';
-import { highlightsOf, type BillLine, type DocumentDetail, type ExtractionSummary } from '../documents/types';
+import {
+  highlightsOf,
+  type BillLine,
+  type DocumentDetail,
+  type ExtractionSummary,
+  type SuggestedInvoice,
+} from '../documents/types';
 import { PageStrip } from '../documents/PageStrip';
-import { historyLine } from '../documents/pages';
+import { describePages, historyLine, PAGE_EVENTS } from '../documents/pages';
 import { useSession } from '../session';
 
 interface Vendor {
@@ -57,6 +63,7 @@ const CHECK: Record<string, string> = {
   lines_add_up: 'Line items add up',
   subtotal_plus_tax: 'Subtotal plus tax is the total',
   not_a_duplicate: 'Possible duplicate',
+  one_invoice: 'One invoice',
 };
 
 /** A check's detail for a person: the server also writes it for agents. */
@@ -97,6 +104,24 @@ function suggested(x: ExtractionSummary | undefined): Form {
   };
 }
 
+/** The pages a person can tick: the visible ones, in the order shown. */
+function visiblePages(d: DocumentDetail): number[] {
+  return (d.pages.arrangement ?? []).filter((p) => !p.hidden).map((p) => p.page);
+}
+
+/**
+ * The invoices the reader found that are still here: each group whose pages
+ * are all still this document's. Two or more is a file to split.
+ */
+function invoicesHere(d: DocumentDetail): SuggestedInvoice[] {
+  const visible = visiblePages(d);
+  const found = d.extractions[0]?.invoices ?? [];
+  return found.filter((g) => g.pages.length > 0 && g.pages.every((p) => visible.includes(p)));
+}
+
+/** "Invoice 85273", or its place when no number was read. */
+const invoiceName = (g: SuggestedInvoice, i: number) => (g.invoice_number ? `Invoice ${g.invoice_number}` : `Invoice ${i + 1}`);
+
 /**
  * One inbox document beside what was read from it: correct anything that's
  * wrong, then make it a bill. Corrections are recorded against the reading.
@@ -115,6 +140,8 @@ export function DocumentReview() {
   const [trashing, setTrashing] = useState(false);
   const [mobileView, setMobileView] = useState('details');
   const [reading, setReading] = useState(false);
+  /** Pages ticked for the bill: the original's page numbers. */
+  const [selected, setSelected] = useState<Set<number>>(new Set());
   const request = useRef(0);
   const duplicateNotice = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -133,7 +160,12 @@ export function DocumentReview() {
       if (current !== request.current) return;
       setDetail(d.result);
       setVendors(v.result.vendors);
-      setForm(suggested(d.result.extractions[0]));
+      // A file of several invoices starts with the first one ticked.
+      const groups = invoicesHere(d.result);
+      const first = groups.length > 1 ? groups[0] : undefined;
+      const form = suggested(d.result.extractions[0]);
+      setForm(first ? withInvoice(form, first) : form);
+      setSelected(new Set(first ? first.pages : visiblePages(d.result)));
       setError(null);
     } catch (e) {
       if (current === request.current) setError(e instanceof Error ? e.message : String(e));
@@ -156,6 +188,13 @@ export function DocumentReview() {
     }
   }, [id, toast]);
 
+  /** The pages as they are now, keeping the ticks on pages still shown. */
+  const arranged = useCallback((d: DocumentDetail) => {
+    setDetail(d);
+    const visible = visiblePages(d);
+    setSelected((s) => new Set([...s].filter((p) => visible.includes(p))));
+  }, []);
+
   const latest = detail?.extractions[0];
   const highlights = useMemo(() => highlightsOf(latest?.extraction.answer), [latest]);
 
@@ -165,11 +204,22 @@ export function DocumentReview() {
   const doc = detail.document;
   const x = latest?.extraction;
   const amountCents = cents(form.amount);
+  const visible = visiblePages(detail);
+  const picked = visible.filter((p) => selected.has(p));
+  // Some pages, not all: they become their own document, filed with the bill.
+  const partial = visible.length > 1 && picked.length > 0 && picked.length < visible.length;
+  const groups = doc.status === 'inbox' ? invoicesHere(detail) : [];
   // The suggested lines only add up while the amount is the one they were read with.
   const lines: BillLine[] | undefined =
     latest?.bill_input?.lines && amountCents === latest.bill_input.amount_cents ? latest.bill_input.lines : undefined;
   const canCreate =
-    doc.status === 'inbox' && !!form.vendor_id && !!form.invoice_number.trim() && !!form.invoice_date && !!amountCents;
+    doc.status === 'inbox' &&
+    !!form.vendor_id &&
+    !!form.invoice_number.trim() &&
+    !!form.invoice_date &&
+    !!amountCents &&
+    (visible.length <= 1 || picked.length > 0);
+  const createLabel = partial ? `Create bill from ${picked.length} ${picked.length === 1 ? 'page' : 'pages'}` : 'Create bill';
   const set = (patch: Partial<Form>) => setForm((f) => ({ ...f, ...patch }));
 
   async function readAgain() {
@@ -209,8 +259,9 @@ export function DocumentReview() {
         ...(lines ? { lines } : {}),
         ...(x?.status === 'read' ? { extraction_id: x.id } : {}),
         ...(allowDuplicate ? { allow_duplicate: true } : {}),
+        ...(partial ? { pages: picked, expected_version: detail!.pages.version } : {}),
       });
-      toast({ body: 'Bill created' });
+      toast({ body: partial ? 'Bill created. The other pages stay in To review.' : 'Bill created' });
       navigate(`/bills/${r.result.bill.id}`);
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
@@ -222,9 +273,30 @@ export function DocumentReview() {
     }
   }
 
+  /** Tick one of the invoices the reader found, with its number and total. */
+  function pickInvoice(g: SuggestedInvoice) {
+    setSelected(new Set(g.pages));
+    setForm((f) => withInvoice(f, g));
+  }
+
+  async function undoSplit() {
+    const from = detail?.split_from;
+    if (!from) return;
+    try {
+      await run('document.unsplit', { document_id: doc.id });
+      toast({ body: `Pages put back in ${from.filename ?? 'the document they came from'}` });
+      navigate(`/documents/${from.id}`);
+    } catch (e) {
+      toast({ body: e instanceof Error ? e.message : String(e), type: 'error' });
+    }
+  }
+
   const checks = x?.checks ?? [];
-  // A vendor problem is settled once someone chooses or adds the vendor.
-  const open = checks.filter((c) => !c.ok && !(c.check === 'vendor' && form.vendor_id));
+  // A vendor problem is settled once someone chooses or adds the vendor;
+  // several invoices have their own notice below.
+  const open = checks.filter(
+    (c) => !c.ok && !(c.check === 'vendor' && form.vendor_id) && !(c.check === 'one_invoice' && groups.length > 1),
+  );
   const passed = checks.filter((c) => c.ok);
   const missing = [
     !form.vendor_id && 'choose a vendor',
@@ -234,7 +306,8 @@ export function DocumentReview() {
   ].filter((m): m is string => !!m);
 
   const nameOf = (actor: string) => (actor === me.person.actor ? me.person.name : actor);
-  const pageHistory = detail.history.filter((h) => h.kind === 'document.arranged').slice(0, 5);
+  const pageHistory = detail.history.filter((h) => PAGE_EVENTS.includes(h.kind)).slice(0, 5);
+  const parts = detail.split_into.filter((p) => p.pages.length > 0);
 
   const match = x?.vendor_match;
   const vendorNote =
@@ -250,7 +323,15 @@ export function DocumentReview() {
     <div className="payvy-document-review" data-mobile-view={mobileView}>
       <header className="payvy-review-header">
         <div><Link href="/documents">← Documents</Link><h1>Review invoice</h1><p className="payvy-review-filename" title={doc.filename}>{doc.filename}</p></div>
-        <span className="payvy-document-status">{doc.status === 'filed' ? 'Filed' : doc.status === 'trashed' ? 'Not a bill' : 'To review'}</span>
+        <span className="payvy-document-status">
+          {doc.status === 'filed'
+            ? 'Filed'
+            : doc.status === 'trashed'
+              ? 'Not a bill'
+              : doc.status === 'split'
+                ? 'Split'
+                : 'To review'}
+        </span>
       </header>
       <div className="payvy-review-tabs"><SegmentedControl label="Document view" value={mobileView} onChange={setMobileView}>
         <SegmentedControlItem value="details" label="Invoice details" /><SegmentedControlItem value="original" label="Original document" />
@@ -274,6 +355,75 @@ export function DocumentReview() {
           )}
           {doc.status === 'trashed' && (
             <Banner status="info" title="Set aside: not a bill" description={doc.trashed_reason ?? undefined} />
+          )}
+          {doc.status === 'split' && (
+            <Banner
+              status="info"
+              title="Its pages were moved to other documents"
+              description="Nothing is left to review here. The original file is kept."
+            />
+          )}
+          {detail.split_from && (
+            <Banner
+              status="info"
+              title={`Split from ${detail.split_from.filename ?? 'another document'}`}
+              description={
+                <>
+                  <Link href={`/documents/${detail.split_from.id}`}>Open the rest of the file</Link>
+                  {doc.status === 'inbox' && (
+                    <span className="payvy-split-note">Undo puts these pages back where they came from.</span>
+                  )}
+                </>
+              }
+              endContent={
+                doc.status === 'inbox' ? (
+                  <Button label="Undo" size="sm" variant="secondary" clickAction={undoSplit} />
+                ) : undefined
+              }
+            />
+          )}
+          {groups.length > 1 && !reading && (
+            <Banner
+              status="info"
+              title={`This file has ${groups.length} invoices`}
+              description={
+                <VStack gap={2}>
+                  <span>Tick the pages of one invoice and create its bill. The other pages stay here.</span>
+                  <ul className="payvy-split-list" aria-label="Invoices in this file">
+                    {groups.map((g, i) => (
+                      <li key={g.pages.join('-')}>
+                        <span>
+                          <strong>{invoiceName(g, i)}</strong> · {describePages(g.pages)}
+                          {g.total_cents !== null && ` · ${money(g.total_cents)}`}
+                        </span>
+                        <Button
+                          label={`Select ${invoiceName(g, i)}`}
+                          size="sm"
+                          variant="ghost"
+                          isDisabled={picked.length === g.pages.length && g.pages.every((p) => selected.has(p))}
+                          onClick={() => pickInvoice(g)}
+                        >
+                          Select
+                        </Button>
+                      </li>
+                    ))}
+                  </ul>
+                </VStack>
+              }
+            />
+          )}
+          {parts.length > 0 && (
+            <VStack gap={2}>
+              <Text type="label">Split into</Text>
+              <ul className="payvy-split-list" aria-label="Split into">
+                {parts.map((p) => (
+                  <li key={p.id}>
+                    <Link href={`/documents/${p.id}`}>{p.filename}</Link>
+                    <Text type="supporting">{p.status === 'filed' ? 'Filed' : p.status === 'trashed' ? 'Not a bill' : 'To review'}</Text>
+                  </li>
+                ))}
+              </ul>
+            </VStack>
           )}
 
           {reading && <div role="status" className="payvy-reading-notice">Reading the invoice… Your original stays available while we check the details.</div>}
@@ -458,7 +608,18 @@ export function DocumentReview() {
           <details className="payvy-document-provenance"><summary>Document information</summary><p>{doc.source === 'email' ? 'Emailed' : 'Uploaded'} {date(doc.received_at)}</p>{x && <p>Read by {x.model}</p>}</details>
         </VStack></div>
         {doc.status === 'inbox' && <footer className="payvy-review-actions">
-          <div className="payvy-review-primary"><div><strong>{!canCreate ? 'Complete the details' : open.length ? 'Review the checks above' : 'Ready for your review'}</strong><p>{missing.length ? `To create the bill, ${missing.join(' and ')}.` : 'The bill will follow your workflow.'}</p></div><Button label="Create bill" variant="primary" isDisabled={!canCreate || reading} clickAction={() => create()} /></div>
+          <div className="payvy-review-primary"><div><strong>{!canCreate ? 'Complete the details' : open.length ? 'Review the checks above' : 'Ready for your review'}</strong><p>{missing.length
+                  ? `To create the bill, ${missing.join(' and ')}.`
+                  : visible.length > 1 && picked.length === 0
+                    ? 'Tick the pages for this bill.'
+                    : partial
+                      ? `${describePages(picked)} ${picked.length === 1 ? 'becomes' : 'become'} a bill. The other pages stay in To review.`
+                      : 'The bill will follow your workflow.'}</p></div><Button
+              label={createLabel}
+              variant="primary"
+              isDisabled={!canCreate || reading}
+              clickAction={() => create()}
+            /></div>
           <div className="payvy-review-secondary">{x && <Button label="Read again" variant="ghost" size="sm" isDisabled={reading} clickAction={readAgain} />}<Button label="Not a bill" variant="ghost" size="sm" isDisabled={reading} onClick={() => setTrashing(true)} /></div>
         </footer>}
       </section>
@@ -467,8 +628,9 @@ export function DocumentReview() {
           documentId={doc.id}
           contentType={doc.content_type}
           pages={detail.pages}
-          onChange={setDetail}
+          onChange={arranged}
           onStale={refresh}
+          {...(doc.status === 'inbox' && !detail.pages.locked ? { selected, onSelect: setSelected } : {})}
         />
         <div className="payvy-review-viewer">
           <DocumentViewer
@@ -498,6 +660,15 @@ export function DocumentReview() {
       )}
     </div>
   );
+}
+
+/** The form for one of several invoices: its number and total, where read. */
+function withInvoice(form: Form, g: SuggestedInvoice): Form {
+  return {
+    ...form,
+    ...(g.invoice_number ? { invoice_number: g.invoice_number } : {}),
+    ...(g.total_cents ? { amount: dollars(g.total_cents) } : {}),
+  };
 }
 
 /** Focusing a form field finds the value it came from on the page. */

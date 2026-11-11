@@ -6,7 +6,7 @@
 use payvy_domain::bills::invoice_key;
 use payvy_domain::documents as doc_rules;
 use payvy_domain::extraction::{self as rules, Check, Draft, VendorMatch};
-use payvy_store::{self as store, Extraction, ExtractionRead, NewExtraction};
+use payvy_store::{self as store, ActorKind, Extraction, ExtractionRead, NewExtraction};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -43,12 +43,14 @@ pub async fn extract(cx: &mut Cx<'_>, input: Extract) -> Result<Value, CommandEr
         )));
     }
     let provider = extractor.provider_label();
-    // Step 1 of page arrangement: the model still reads the original file,
-    // but the reading records which arrangement it was made under, so a
-    // later change marks it out of date (docs/document-pages.md).
+    // The model reads the original file, told which of its pages are this
+    // document's when that isn't all of them (docs/document-pages.md). The
+    // reading records the arrangement it was made under, so a later change
+    // marks it out of date.
     let arrangement_version = super::documents::current_arrangement(cx, doc.id)
         .await?
         .map_or(0, |a| a.version);
+    let (doc_pages, hint) = super::documents::pages_to_read(cx, &doc).await?;
     if cx.preview {
         // Reading costs money and takes a while, so a preview says what
         // would happen instead.
@@ -64,12 +66,13 @@ pub async fn extract(cx: &mut Cx<'_>, input: Extract) -> Result<Value, CommandEr
             .map_err(|e| format!("couldn't fetch the file: {e:#}"))?;
         let kind = doc_rules::check(&bytes).map_err(|e| e.to_string())?;
         extractor
-            .read(&bytes, kind)
+            .read_pages(&bytes, kind, hint.as_deref())
             .await
             .map_err(|e| e.to_string())
     }
     .await;
 
+    let mut found = Vec::new();
     let row = match read {
         Err(error) => {
             let row = store::insert_extraction(
@@ -105,6 +108,21 @@ pub async fn extract(cx: &mut Cx<'_>, input: Extract) -> Result<Value, CommandEr
             let candidates = store::vendor_candidates(&mut cx.tx).await?;
             let matched = rules::match_vendor(&draft, sender.as_deref(), &candidates);
             vendor_checks(cx, &draft, &matched, &mut checks).await?;
+            // Several invoices in one file: where each is, if the pages
+            // the reader named are this document's, distinct and real.
+            let invoices = if doc_pages.is_empty() {
+                match out.read.invoices.as_deref() {
+                    Some(list) if list.len() > 1 => {
+                        Err("this file can't be read page by page".to_owned())
+                    }
+                    _ => Ok(Vec::new()),
+                }
+            } else {
+                rules::invoices(&out.read, &doc_pages)
+            };
+            checks.extend(rules::invoices_check(&invoices));
+            found = invoices.unwrap_or_default();
+            let invoices_json = (!found.is_empty()).then(|| json!(found));
             let row = store::insert_extraction(
                 &mut cx.tx,
                 cx.org,
@@ -117,6 +135,7 @@ pub async fn extract(cx: &mut Cx<'_>, input: Extract) -> Result<Value, CommandEr
                         draft: &json!(draft),
                         checks: &json!(checks),
                         vendor_match: &json!(matched),
+                        invoices: invoices_json.as_ref(),
                     }),
                     created_at: cx.now,
                     created_by: &cx.actor.name,
@@ -128,13 +147,39 @@ pub async fn extract(cx: &mut Cx<'_>, input: Extract) -> Result<Value, CommandEr
             cx.emit(
                 "document.extracted",
                 doc.id,
-                json!({ "document_id": doc.id, "extraction_id": row.id, "model": row.model, "ready": ready }),
+                json!({ "document_id": doc.id, "extraction_id": row.id, "model": row.model, "ready": ready,
+                        "invoices": found.len().max(1) }),
             )
             .await?;
             row
         }
     };
-    Ok(summary(&row))
+    let mut out = summary(&row);
+    // An agent's reading (the background reader's too) splits a file of
+    // several invoices straight away, one document per invoice, under the
+    // agent's name; it can be undone. A person on the page gets the
+    // suggestion instead. Only a file that arrived is split this way: a
+    // document already split from one never is, so this can't loop.
+    if found.len() > 1 && cx.actor.kind != ActorKind::Person && doc.derived_from.is_none() {
+        let groups: Vec<Vec<u32>> = found.iter().map(|f| f.pages.clone()).collect();
+        // The split checks everything before it writes, so a refusal
+        // leaves the reading as it is, with the reason.
+        match super::documents::split_pages(cx, &doc, Some(arrangement_version), &groups).await {
+            Ok(parts) => {
+                let ids: Vec<Uuid> = parts.iter().map(|d| d.id).collect();
+                out["split"] = json!({
+                    "documents": parts,
+                    "note": "Each new document is read on its own: the background reader picks them up, or call document.extract on each.",
+                    "to_read": ids,
+                });
+            }
+            Err(CommandError::Invalid(e) | CommandError::Conflict(e)) => {
+                out["split"] = json!({ "error": e });
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(out)
 }
 
 /// Adds the vendor and duplicate checks, which need the database.
@@ -213,6 +258,7 @@ pub(super) fn summary(row: &Extraction) -> Value {
     };
     json!({
         "extraction": row,
+        "invoices": row.invoices.clone().unwrap_or_else(|| json!([])),
         "ready": ready,
         "failed_checks": failed,
         "bill_input": bill_input,

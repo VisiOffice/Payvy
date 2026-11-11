@@ -899,11 +899,14 @@ pub struct Document {
     pub created_by: String,
     /// None: not counted yet. 0: the file can't be read as a PDF.
     pub page_count: Option<i32>,
+    /// The document this one was split from. It shares that document's
+    /// original file (`storage_key`, `sha256`) and shows only its own pages.
+    pub derived_from: Option<Uuid>,
 }
 
 macro_rules! document_cols {
     () => {
-        "id, sha256, content_type, size_bytes, filename, storage_key, source, status, bill_id, email_id, trashed_reason, received_at, created_by, page_count"
+        "id, sha256, content_type, size_bytes, filename, storage_key, source, status, bill_id, email_id, trashed_reason, received_at, created_by, page_count, derived_from"
     };
 }
 
@@ -923,6 +926,7 @@ fn document(r: &PgRow) -> Document {
         received_at: r.get("received_at"),
         created_by: r.get("created_by"),
         page_count: r.get("page_count"),
+        derived_from: r.get("derived_from"),
     }
 }
 
@@ -941,11 +945,13 @@ pub struct NewDocument<'a> {
     pub page_count: Option<i32>,
 }
 
+/// The file that arrived with this hash. Documents split from it share the
+/// hash and aren't counted: they are pages of the same file, not a second copy.
 pub async fn document_by_hash(tx: &mut Tx, sha256: &str) -> anyhow::Result<Option<Document>> {
     let row = sqlx::query(concat!(
         "SELECT ",
         document_cols!(),
-        " FROM documents WHERE sha256 = $1"
+        " FROM documents WHERE sha256 = $1 AND derived_from IS NULL"
     ))
     .bind(sha256)
     .fetch_optional(&mut **tx)
@@ -963,7 +969,7 @@ pub async fn insert_document(
         "INSERT INTO documents (id, org_id, sha256, content_type, size_bytes, filename, storage_key, source,
                                 email_id, received_at, created_by, page_count)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-         ON CONFLICT (org_id, sha256) DO NOTHING RETURNING ",
+         ON CONFLICT (org_id, sha256) WHERE derived_from IS NULL DO NOTHING RETURNING ",
         document_cols!()
     ))
     .bind(Uuid::new_v4())
@@ -981,6 +987,80 @@ pub async fn insert_document(
     .fetch_optional(&mut **tx)
     .await?;
     Ok(row.as_ref().map(document))
+}
+
+/// A new document holding some pages of `source`: the same original file,
+/// in the inbox, received when the source was. Its pages are its first
+/// arrangement, written by the caller.
+pub async fn insert_derived_document(
+    tx: &mut Tx,
+    org_id: Uuid,
+    source: &Document,
+    filename: &str,
+    created_by: &str,
+    page_count: Option<i32>,
+) -> anyhow::Result<Document> {
+    let row = sqlx::query(concat!(
+        "INSERT INTO documents (id, org_id, sha256, content_type, size_bytes, filename, storage_key, source,
+                                email_id, received_at, created_by, page_count, derived_from)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING ",
+        document_cols!()
+    ))
+    .bind(Uuid::new_v4())
+    .bind(org_id)
+    .bind(&source.sha256)
+    .bind(&source.content_type)
+    .bind(source.size_bytes)
+    .bind(filename)
+    .bind(&source.storage_key)
+    .bind(&source.source)
+    .bind(source.email_id)
+    .bind(source.received_at)
+    .bind(created_by)
+    .bind(page_count)
+    .bind(source.id)
+    .fetch_one(&mut **tx)
+    .await?;
+    Ok(document(&row))
+}
+
+/// Documents split from this one, oldest first.
+pub async fn derived_documents(tx: &mut Tx, source_id: Uuid) -> anyhow::Result<Vec<Document>> {
+    let rows = sqlx::query(concat!(
+        "SELECT ",
+        document_cols!(),
+        " FROM documents WHERE derived_from = $1 ORDER BY received_at, filename, id"
+    ))
+    .bind(source_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    Ok(rows.iter().map(document).collect())
+}
+
+/// Filenames by id, for naming where documents came from.
+pub async fn document_filenames(tx: &mut Tx, ids: &[Uuid]) -> anyhow::Result<Vec<(Uuid, String)>> {
+    let rows = sqlx::query("SELECT id, filename FROM documents WHERE id = ANY($1)")
+        .bind(ids)
+        .fetch_all(&mut **tx)
+        .await?;
+    Ok(rows
+        .iter()
+        .map(|r| (r.get("id"), r.get("filename")))
+        .collect())
+}
+
+/// Moves a document between the inbox and split (every page moved to
+/// other documents). Never for filing or trashing, which have their own.
+pub async fn set_split(tx: &mut Tx, id: Uuid, split: bool) -> anyhow::Result<()> {
+    sqlx::query(
+        "UPDATE documents SET status = CASE WHEN $2 THEN 'split' ELSE 'inbox' END
+         WHERE id = $1 AND bill_id IS NULL",
+    )
+    .bind(id)
+    .bind(split)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
 }
 
 /// Locks the document for the rest of the transaction.
@@ -1478,11 +1558,14 @@ pub struct Extraction {
     pub created_by: String,
     /// The document's page arrangement version when it was read.
     pub arrangement_version: i32,
+    /// The invoices it found, when the file holds several and their pages
+    /// checked out.
+    pub invoices: Option<serde_json::Value>,
 }
 
 macro_rules! extraction_cols {
     () => {
-        "id, document_id, status, provider, model, answer, draft, checks, vendor_match, error, created_at, created_by, arrangement_version"
+        "id, document_id, status, provider, model, answer, draft, checks, vendor_match, error, created_at, created_by, arrangement_version, invoices"
     };
 }
 
@@ -1501,6 +1584,7 @@ fn extraction(r: &PgRow) -> Extraction {
         created_at: r.get("created_at"),
         created_by: r.get("created_by"),
         arrangement_version: r.get("arrangement_version"),
+        invoices: r.get("invoices"),
     }
 }
 
@@ -1520,6 +1604,8 @@ pub struct ExtractionRead<'a> {
     pub draft: &'a serde_json::Value,
     pub checks: &'a serde_json::Value,
     pub vendor_match: &'a serde_json::Value,
+    /// Several invoices found in the file; None for one.
+    pub invoices: Option<&'a serde_json::Value>,
 }
 
 pub async fn insert_extraction(
@@ -1533,8 +1619,8 @@ pub async fn insert_extraction(
     };
     let row = sqlx::query(concat!(
         "INSERT INTO extractions (id, org_id, document_id, status, provider, model, answer, draft, checks,
-                                  vendor_match, error, created_at, created_by, arrangement_version)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING ",
+                                  vendor_match, error, created_at, created_by, arrangement_version, invoices)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING ",
         extraction_cols!()
     ))
     .bind(Uuid::new_v4())
@@ -1551,6 +1637,7 @@ pub async fn insert_extraction(
     .bind(new.created_at)
     .bind(new.created_by)
     .bind(new.arrangement_version)
+    .bind(read.and_then(|r| r.invoices))
     .fetch_one(&mut **tx)
     .await?;
     Ok(extraction(&row))

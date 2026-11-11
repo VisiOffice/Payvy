@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type SVGProps } from 'react';
 import { Button } from '@astryxdesign/core/Button';
+import { CheckboxInput } from '@astryxdesign/core/CheckboxInput';
 import { Icon } from '@astryxdesign/core/Icon';
 import { useToast } from '@astryxdesign/core/Toast';
 import { run } from '../api/client';
@@ -50,6 +51,8 @@ function Thumbnail({ page, rotation, label }: { page: Page; rotation: number; la
  * The document's pages as thumbnails, in the order they are shown. Move a
  * page earlier or later (or drag it), turn it, hide or restore it; each
  * change saves straight away as a new version through `document.arrange`.
+ * With `selected`, each visible page has a checkbox ("Attach page"), with
+ * All and None, for creating a bill from some of the pages.
  */
 export function PageStrip({
   documentId,
@@ -57,6 +60,8 @@ export function PageStrip({
   pages,
   onChange,
   onStale,
+  selected,
+  onSelect,
 }: {
   documentId: string;
   contentType: string;
@@ -65,6 +70,9 @@ export function PageStrip({
   onChange: (detail: DocumentDetail) => void;
   /** Someone else changed the pages first: load them again. */
   onStale: () => void;
+  /** Pages ticked for a bill (the original's numbers); leave out when pages can't be picked. */
+  selected?: ReadonlySet<number>;
+  onSelect?: (next: Set<number>) => void;
 }) {
   const loaded = useDocumentPages(documentId, contentType);
   const toast = useToast();
@@ -118,6 +126,15 @@ export function PageStrip({
   }
 
   const disabled = locked || saving;
+  const picking = !!selected && !!onSelect;
+  const visiblePages = arrangement.filter((p) => !p.hidden).map((p) => p.page);
+  const ticked = visiblePages.filter((p) => selected?.has(p)).length;
+  function tick(page: number, on: boolean) {
+    const next = new Set(selected);
+    if (on) next.add(page);
+    else next.delete(page);
+    onSelect?.(next);
+  }
 
   return (
     <section className="payvy-pages" aria-label="Pages" aria-busy={saving}>
@@ -130,6 +147,31 @@ export function PageStrip({
         {locked && pages.locked_reason && (
           <span className="payvy-pages-locked" role="note">
             {pages.locked_reason}
+          </span>
+        )}
+        {picking && visiblePages.length > 1 && (
+          <span className="payvy-pages-pick">
+            <span role="status">
+              {ticked} of {visiblePages.length} selected
+            </span>
+            <Button
+              label="Select all pages"
+              size="sm"
+              variant="ghost"
+              isDisabled={ticked === visiblePages.length}
+              onClick={() => onSelect?.(new Set(visiblePages))}
+            >
+              All
+            </Button>
+            <Button
+              label="Select no pages"
+              size="sm"
+              variant="ghost"
+              isDisabled={ticked === 0}
+              onClick={() => onSelect?.(new Set())}
+            >
+              None
+            </Button>
           </span>
         )}
       </div>
@@ -169,9 +211,22 @@ export function PageStrip({
                   <span className="payvy-page-thumb-blank" role="img" aria-label={label} />
                 )}
               </div>
-              <span className="payvy-page-thumb-number">
-                {p.hidden ? `${label} · hidden` : label}
-              </span>
+              {picking && !p.hidden && visiblePages.length > 1 ? (
+                <div className="payvy-page-thumb-pick">
+                  <CheckboxInput
+                    label={`Attach page ${p.page}`}
+                    isLabelHidden
+                    size="sm"
+                    value={selected.has(p.page)}
+                    onChange={(on) => tick(p.page, on)}
+                  />
+                  <span className="payvy-page-thumb-number">{label}</span>
+                </div>
+              ) : (
+                <span className="payvy-page-thumb-number">
+                  {p.hidden ? `${label} · hidden` : label}
+                </span>
+              )}
               <div className="payvy-page-thumb-actions">
                 <Button
                   label={`Move page ${p.page} earlier`}

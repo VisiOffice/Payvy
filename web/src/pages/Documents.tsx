@@ -11,12 +11,14 @@ import { TextInput } from '@astryxdesign/core/TextInput';
 import { useToast } from '@astryxdesign/core/Toast';
 import { Page } from '../Page';
 import { run } from '../api/client';
-import type { Doc } from '../documents/types';
+import type { Doc, SplitFrom } from '../documents/types';
 import { readWithin } from '../documents/Loading';
 import { date } from '../money';
 
 type Status = Doc['status'];
-const LABEL: Record<Status, string> = { inbox: 'To review', filed: 'Filed', trashed: 'Not bills' };
+/** A row of document.list: a split document says where it came from. */
+type Row = Doc & { split_from: SplitFrom | null };
+const LABEL: Record<Status, string> = { inbox: 'To review', filed: 'Filed', trashed: 'Not bills', split: 'Split' };
 const ACCEPT = 'application/pdf,image/png,image/jpeg,image/gif,image/webp,image/tiff';
 const MAX_BYTES = 25 * 1024 * 1024;
 function base64(file: File): Promise<string> {
@@ -31,7 +33,7 @@ export const fileSize = (bytes: number) => bytes < 1024 * 1024 ? `${Math.max(1, 
 
 export function Documents() {
   const [status, setStatus] = useState<Status>('inbox');
-  const [docs, setDocs] = useState<Doc[] | null>(null);
+  const [docs, setDocs] = useState<Row[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [files, setFiles] = useState<File[]>([]);
@@ -42,7 +44,7 @@ export function Documents() {
   const load = useCallback(() => {
     const current = ++request.current;
     setDocs(null); setError(null);
-    readWithin(run<{ documents: Doc[] }>('document.list', { status, limit: 200 }))
+    readWithin(run<{ documents: Row[] }>('document.list', { status, limit: 200 }))
       .then(r => { if (current === request.current) setDocs(r.result.documents); })
       .catch(e => { if (current === request.current) setError(e.message); });
   }, [status]);
@@ -71,6 +73,16 @@ export function Documents() {
     } finally { setUploading(null); setFiles([]); }
     if (status === 'inbox') load(); else setStatus('inbox');
   }
+  /** Puts a split document's pages back where they came from. */
+  async function undoSplit(d: Row) {
+    try {
+      await run('document.unsplit', { document_id: d.id });
+      toast({ body: `Pages put back in ${d.split_from?.filename ?? 'the document they came from'}` });
+      load();
+    } catch (e) {
+      toast({ body: e instanceof Error ? e.message : String(e), type: 'error' });
+    }
+  }
   const visible = docs?.filter(d => d.filename.toLocaleLowerCase().includes(search.toLocaleLowerCase()));
   return <Page title="Documents" eyebrow="Invoice intake" description="A place for every invoice. Review the details, then create a bill.">
     <section className="payvy-document-upload" aria-label="Add invoices">
@@ -92,7 +104,23 @@ export function Documents() {
       <div className="payvy-document-list-heading"><h2>{LABEL[status]}</h2><span>{visible.length} {visible.length === 1 ? 'document' : 'documents'}{docs!.length === 200 ? ' · latest 200 loaded' : ''}</span></div>
       {visible.length === 0 ? <EmptyState title={search ? 'No matching documents' : status === 'inbox' ? 'You’re all caught up' : 'Nothing here yet'} description={search ? 'Try another filename.' : status === 'filed' ? 'Documents appear here after you create a bill.' : status === 'trashed' ? 'Documents you set aside stay here.' : 'Upload an invoice or forward one to your bill inbox.'} /> :
         <table className="payvy-documents-table"><thead><tr><th>Document</th><th>Source</th><th>Received</th><th><span className="payvy-sr-only">Status</span></th></tr></thead><tbody>
-          {visible.map(d => <tr key={d.id}><td><div className="payvy-document-name"><span className="payvy-file-glyph" aria-hidden="true">{d.content_type === 'application/pdf' ? 'PDF' : 'IMG'}</span><div><Link href={`/documents/${d.id}`}>{d.filename}</Link><p>{fileSize(d.size_bytes)}{d.trashed_reason ? ` · ${d.trashed_reason}` : ''}</p></div></div></td><td>{d.source === 'email' ? 'Email' : 'Upload'}</td><td>{date(d.received_at)}</td><td><span className="payvy-document-status">{LABEL[d.status]}</span></td></tr>)}
+          {visible.map(d => <tr key={d.id}><td><div className="payvy-document-name"><span className="payvy-file-glyph" aria-hidden="true">{d.content_type === 'application/pdf' ? 'PDF' : 'IMG'}</span><div><Link href={`/documents/${d.id}`}>{d.filename}</Link><p>{fileSize(d.size_bytes)}{d.trashed_reason ? ` · ${d.trashed_reason}` : ''}</p>
+            {d.split_from && (
+              <p className="payvy-split-from">
+                <span>Split from {d.split_from.filename ?? 'another document'}</span>
+                {d.status === 'inbox' && (
+                  <Button
+                    label={`Undo split of ${d.filename}`}
+                    size="sm"
+                    variant="ghost"
+                    clickAction={() => undoSplit(d)}
+                  >
+                    Undo
+                  </Button>
+                )}
+              </p>
+            )}
+          </div></div></td><td>{d.source === 'email' ? 'Email' : 'Upload'}</td><td>{date(d.received_at)}</td><td><span className="payvy-document-status">{LABEL[d.status]}</span></td></tr>)}
         </tbody></table>}
     </section>}
   </Page>;
