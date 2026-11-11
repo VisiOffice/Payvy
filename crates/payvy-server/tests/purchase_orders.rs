@@ -1066,3 +1066,75 @@ async fn activation_refuses_opening_consumption_over_authorized_plus_allowance()
     assert_eq!(active["result"]["amounts"]["consumed_cents"], 110_000);
     db.drop().await;
 }
+
+#[tokio::test]
+async fn the_overrider_is_not_shown_the_bill_as_waiting_on_them() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let robert = person("robert");
+    let olga = person("olga");
+    po_on(&db).await;
+    let v = manual_po_vendor(&db).await;
+    let b = bill(&db.state, &agent("claude-ap"), &v, "gate-list-1", 50_000).await;
+    common::confirm(
+        &db.state,
+        &olga,
+        "po.override",
+        json!({
+            "bill_id": b, "authorized_excess_cents": 50_000,
+            "reason": "paperwork follows",
+        }),
+    )
+    .await
+    .unwrap();
+
+    // bill.get already refuses Olga the release; the lists must agree.
+    let got_olga = commit(&db.state, &olga, "bill.get", json!({ "bill_id": b }))
+        .await
+        .unwrap();
+    assert_eq!(got_olga["result"]["can_release"], false);
+    let got_robert = commit(&db.state, &robert, "bill.get", json!({ "bill_id": b }))
+        .await
+        .unwrap();
+    assert_eq!(got_robert["result"]["can_release"], true);
+
+    // Waiting-on-you (bill.list, mine): Olga's list does not carry it as
+    // hers; Robert's does, with can_release true.
+    let mine_olga = commit(&db.state, &olga, "bill.list", json!({ "mine": true }))
+        .await
+        .unwrap();
+    assert!(
+        mine_olga["result"]["bills"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|x| x["bill"]["id"] != b),
+        "the overrider must not see the bill as waiting on them"
+    );
+    let mine_robert = commit(&db.state, &robert, "bill.list", json!({ "mine": true }))
+        .await
+        .unwrap();
+    let item = mine_robert["result"]["bills"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["bill"]["id"] == b)
+        .expect("another releaser still sees the bill as theirs");
+    assert_eq!(item["can_release"], true);
+    assert_eq!(item["overridden_by"], "olga");
+
+    // The inbox shows it to Olga only as a look, never a release, and does
+    // not count it as waiting on her.
+    let inbox = commit(&db.state, &olga, "inbox.get", json!({}))
+        .await
+        .unwrap();
+    let entry = inbox["result"]["bills"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["bill"]["id"] == b)
+        .expect("the bill is still visible to the overrider in the inbox");
+    assert_eq!(entry["action"], "look");
+    db.drop().await;
+}

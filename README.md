@@ -89,10 +89,6 @@ See [`docs/extraction.md`](docs/extraction.md). An optional [richer reader pilot
 adds quantity/rate details, source citations and checked line review. It is off by default;
 real-invoice accuracy evaluation remains a rollout gate.
 
-**Try historical invoices.** The [legacy importer pilot](docs/legacy-invoice-import.md)
-exports a small sample from old Django Payvy into Documents for review. It includes
-a synthetic sample, dry run, and resumable uploads; it does not create bills or payments.
-
 **Paid from your bank, never twice.** Connect Mercury with an API token and link each vendor to
 a recipient you already have there. Payvy never stores account numbers, and only a person can
 change where a vendor is paid. A release sends the payment under a key the bank honours, so a

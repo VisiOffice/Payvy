@@ -72,3 +72,32 @@ test('the settings page fits a phone', async ({ page }, info) => {
   expect(overflow).toBeLessThanOrEqual(0);
   await page.screenshot({ path: info.outputPath('po-settings-390.png'), fullPage: true });
 });
+
+test("a vendor's PO rules are set on its page and persist", async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'Waiting on you', exact: true })).toBeVisible();
+  await page.goto('/settings/purchase-orders');
+  const toggle = page.getByRole('switch', { name: 'Use purchase orders', exact: true });
+  if (!(await toggle.isChecked())) await toggle.click();
+  await expect(toggle).toBeChecked();
+
+  const v = await vendor('PO Settings Vendor');
+  await page.goto(`/vendors/${v}`);
+  await expect(page.getByRole('heading', { name: 'Purchase orders', exact: true })).toBeVisible();
+  const requireSwitch = page.getByRole('switch', { name: 'Bills from this vendor require a PO', exact: true });
+  await expect(requireSwitch).not.toBeChecked();
+  await requireSwitch.click();
+  await expect(page.getByText('PO settings saved').first()).toBeVisible();
+  await page.getByLabel('Overage cap ($)', { exact: true }).fill('25');
+  await page.getByLabel('Overage cap (%)', { exact: true }).fill('5');
+  await page.getByRole('button', { name: 'Save caps', exact: true }).click();
+  await expect(page.getByText('PO settings saved').first()).toBeVisible();
+
+  // The server agrees, and a reload shows the same values.
+  const settings = await command(page, 'po.vendor_settings', { vendor_id: v });
+  expect(settings).toMatchObject({ require_po: true, overage_cents_cap: 2500, overage_percent_bp: 500 });
+  await page.reload();
+  await expect(page.getByRole('switch', { name: 'Bills from this vendor require a PO', exact: true })).toBeChecked();
+  await expect(page.getByLabel('Overage cap ($)', { exact: true })).toHaveValue('25.00');
+  await expect(page.getByLabel('Overage cap (%)', { exact: true })).toHaveValue('5');
+});

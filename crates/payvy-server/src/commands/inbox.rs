@@ -27,6 +27,7 @@ pub async fn get(cx: &mut Cx<'_>) -> Result<Value, CommandError> {
             let action = match b["progress"]["status"].as_str() {
                 Some("awaiting_approval") if b["approval"]["can_approve"] == false => "look",
                 Some("awaiting_approval") => "approve",
+                Some("awaiting_release") if b["can_release"] == false => "look",
                 Some("awaiting_release") => "release",
                 _ => "look",
             };
