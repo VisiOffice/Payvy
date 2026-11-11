@@ -437,9 +437,11 @@ export function DocumentViewer({
                 aria-keyshortcuts="ArrowLeft K"
                 onClick={() => go(index - 1)}
               />
+              <span className="payvy-viewer-key" aria-hidden="true"><Kbd keys="k" /></span>
               <span className="payvy-viewer-counter" aria-live="polite" aria-atomic="true">
                 Page {index + 1} of {shown.length}
               </span>
+              <span className="payvy-viewer-key" aria-hidden="true"><Kbd keys="j" /></span>
               <Button
                 label="Next page"
                 tooltip="Next page (→ or J)"
@@ -451,13 +453,6 @@ export function DocumentViewer({
                 aria-keyshortcuts="ArrowRight J"
                 onClick={() => go(index + 1)}
               />
-              <span className="payvy-viewer-keys" aria-hidden="true">
-                <Kbd keys="left" />
-                <Kbd keys="right" />
-                <span>or</span>
-                <Kbd keys="j" />
-                <Kbd keys="k" />
-              </span>
             </div>
           )}
           {ready && shown.length <= 1 && (

@@ -42,7 +42,7 @@ test('one page at a time, turned with the buttons, arrows and J K', async ({ pag
   await page.screenshot({ path: info.outputPath('viewer-desktop.png'), animations: 'disabled' });
 
   // The keys are shown, and the buttons name them too.
-  await expect(toolbar(page).locator('.payvy-viewer-keys')).toBeVisible();
+  await expect(toolbar(page).locator('.payvy-viewer-key')).toHaveCount(2);
   await expect(page.getByRole('button', { name: 'Next page' })).toHaveAttribute('aria-keyshortcuts', 'ArrowRight J');
   await expect(page.getByRole('button', { name: 'Previous page' })).toBeDisabled();
 
