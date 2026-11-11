@@ -172,7 +172,7 @@ impl Extractor {
     ) -> Result<Output, ExtractError> {
         if pages.is_empty() || pages.len() > 24 {
             return Err(ExtractError::Unsupported(
-                "Extraction v2 needs 1–24 selected pages; split a longer document first".into(),
+                "Extraction v2 supports 1–24 selected pages. Split only at verified invoice boundaries; a single longer invoice needs manual review until page batching is available.".into(),
             ));
         }
         self.read_mode(bytes, kind, Some(pages), true).await

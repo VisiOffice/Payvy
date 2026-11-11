@@ -66,6 +66,7 @@ pub async fn extract(cx: &mut Cx<'_>, input: Extract) -> Result<Value, CommandEr
     if !store::claim_extraction_read(&mut cx.tx, doc.id, read_token, cx.now).await? {
         return Err(CommandError::Conflict("This document is already being read. If the reader stopped unexpectedly, retry after ten minutes.".into()));
     }
+    cx.extraction_claim = Some((doc.id, read_token));
     let v2 = store::extraction_v2_enabled(&mut cx.tx).await?
         || store::extraction_v2_enrolled(&mut cx.tx, doc.id).await?;
     if v2 && store::enroll_extraction_v2(&mut cx.tx, doc.id).await? {
@@ -93,7 +94,7 @@ pub async fn extract(cx: &mut Cx<'_>, input: Extract) -> Result<Value, CommandEr
         if v2 {
             if doc_pages.is_empty() || doc_pages.len() > 24 {
                 return Err(
-                    "Extraction v2 needs 1–24 selected pages; split a longer document first".into(),
+                    "Extraction v2 supports at most 24 selected pages. Split only at verified invoice boundaries; keep a single longer invoice intact for manual review. Automatic page batching is not available yet.".into(),
                 );
             }
             let (read, pages) = tokio::join!(

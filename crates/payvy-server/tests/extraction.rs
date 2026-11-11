@@ -784,3 +784,135 @@ async fn v2_eval_scores_fields_nulls_repeated_rows_and_coverage() {
         "only fractional and scanned match this deliberately fixed fake answer"
     );
 }
+
+#[tokio::test]
+async fn revoked_reader_releases_claim_for_an_authorized_retry() {
+    let Some((db, fake)) = db_with(Provider::OpenAiCompatible).await else {
+        return;
+    };
+    let operator = person("operator");
+    commit(
+        &db.state,
+        &operator,
+        "person.add",
+        json!({"name":"Clerk","actor":"clerk","email":"clerk@example.com","roles":["ap_clerk"]}),
+    )
+    .await
+    .unwrap();
+    let clerk = payvy_server::Actor::person(payvy_store::DEFAULT_ORG, "clerk");
+    let doc = upload_rich(&db).await;
+    let started = Arc::new(tokio::sync::Notify::new());
+    let resume = Arc::new(tokio::sync::Notify::new());
+    *fake.gate.lock().unwrap() = Some((started.clone(), resume.clone()));
+    fake.answer(StatusCode::OK, openai_says(&rich_invoice()));
+    let state = db.state.clone();
+    let d = doc.clone();
+    let reading = tokio::spawn(async move {
+        commit(&state, &clerk, "document.extract", json!({"document_id":d})).await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), started.notified())
+        .await
+        .unwrap();
+    commit(
+        &db.state,
+        &operator,
+        "person.set_roles",
+        json!({"actor":"clerk","roles":["approver"]}),
+    )
+    .await
+    .unwrap();
+    resume.notify_one();
+    assert!(matches!(
+        reading.await.unwrap(),
+        Err(CommandError::Forbidden(_))
+    ));
+    *fake.gate.lock().unwrap() = None;
+    fake.answer(StatusCode::OK, openai_says(&rich_invoice()));
+    let retry = commit(
+        &db.state,
+        &operator,
+        "document.extract",
+        json!({"document_id":doc}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(retry["result"]["extraction"]["status"], "read");
+    db.drop().await;
+}
+
+#[tokio::test]
+async fn write_and_commit_failures_release_claim_without_clearing_a_replacement() {
+    let Some((db, fake)) = db_with(Provider::OpenAiCompatible).await else {
+        return;
+    };
+    let who = person("reviewer");
+    let doc = upload_rich(&db).await;
+    let id: uuid::Uuid = doc.parse().unwrap();
+    for deferred in [false, true] {
+        let mut tx = db.state.store.begin(who.org_id).await.unwrap();
+        sqlx::query("CREATE OR REPLACE FUNCTION fail_extraction_write() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected extraction failure'; END $$").execute(&mut *tx).await.unwrap();
+        let trigger = if deferred {
+            "CREATE CONSTRAINT TRIGGER fail_extraction AFTER INSERT ON extractions DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION fail_extraction_write()"
+        } else {
+            "CREATE TRIGGER fail_extraction BEFORE INSERT ON extractions FOR EACH ROW EXECUTE FUNCTION fail_extraction_write()"
+        };
+        sqlx::query(trigger).execute(&mut *tx).await.unwrap();
+        tx.commit().await.unwrap();
+        fake.answer(StatusCode::OK, openai_says(&rich_invoice()));
+        assert!(
+            commit(
+                &db.state,
+                &who,
+                "document.extract",
+                json!({"document_id":doc})
+            )
+            .await
+            .is_err()
+        );
+        let mut tx = db.state.store.begin(who.org_id).await.unwrap();
+        let available: bool =
+            sqlx::query_scalar("SELECT extraction_read_token IS NULL FROM documents WHERE id=$1")
+                .bind(id)
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap();
+        assert!(available, "failed read must not wait for lease expiry");
+        sqlx::query("DROP TRIGGER fail_extraction ON extractions")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+    }
+    // A cleanup with an older token must not unlock a newer read.
+    let mut tx = db.state.store.begin(who.org_id).await.unwrap();
+    let replacement = uuid::Uuid::new_v4();
+    assert!(
+        payvy_store::claim_extraction_read(&mut tx, id, replacement, (db.state.clock)())
+            .await
+            .unwrap()
+    );
+    payvy_store::finish_extraction_read(&mut tx, id, uuid::Uuid::new_v4())
+        .await
+        .unwrap();
+    assert!(
+        payvy_store::extraction_read_is_current(&mut tx, id, replacement)
+            .await
+            .unwrap()
+    );
+    payvy_store::finish_extraction_read(&mut tx, id, replacement)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    fake.answer(StatusCode::OK, openai_says(&rich_invoice()));
+    assert!(
+        commit(
+            &db.state,
+            &who,
+            "document.extract",
+            json!({"document_id":doc})
+        )
+        .await
+        .is_ok()
+    );
+    db.drop().await;
+}

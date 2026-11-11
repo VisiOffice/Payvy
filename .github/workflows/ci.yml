@@ -26,7 +26,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Local invoice text and OCR tools
-        run: sudo apt-get update && sudo apt-get install -y poppler-utils tesseract-ocr tesseract-ocr-eng
+        run: bash scripts/install-ocr-tools.sh
 
       # The same stores as local development, so the init script creates
       # the payvy role (NOSUPERUSER NOBYPASSRLS) and RLS is really enforced.
@@ -71,7 +71,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Local invoice text and OCR tools
-        run: sudo apt-get update && sudo apt-get install -y poppler-utils tesseract-ocr tesseract-ocr-eng
+        run: bash scripts/install-ocr-tools.sh
 
       - name: Start Postgres and SeaweedFS
         run: |

@@ -171,6 +171,7 @@ pub async fn run(
         now: (state.clock)(),
         clock: &state.clock,
         events: Vec::new(),
+        extraction_claim: None,
         preview,
         storage: state.storage.as_deref(),
         inbound_domain: state.inbound.as_ref().map(|i| i.domain.as_str()),
@@ -178,12 +179,30 @@ pub async fn run(
         bank: state.bank.as_deref(),
         auth: state.auth.as_deref(),
     };
-    let result = execute(&mut cx, spec.name, &input).await?;
-    let Cx { tx, events, .. } = cx;
-    if preview {
-        tx.rollback().await.map_err(anyhow::Error::from)?;
+    let result = execute(&mut cx, spec.name, &input).await;
+    let Cx {
+        tx,
+        events,
+        extraction_claim,
+        ..
+    } = cx;
+    let result = match result {
+        Ok(value) => value,
+        Err(error) => {
+            // Release row/advisory locks before opening the cleanup transaction.
+            let _ = tx.rollback().await;
+            cleanup_extraction_claim(state, actor.org_id, extraction_claim).await;
+            return Err(error);
+        }
+    };
+    let finished = if preview {
+        tx.rollback().await
     } else {
-        tx.commit().await.map_err(anyhow::Error::from)?;
+        tx.commit().await
+    };
+    if let Err(error) = finished {
+        cleanup_extraction_claim(state, actor.org_id, extraction_claim).await;
+        return Err(anyhow::Error::from(error).into());
     }
 
     let mut out = json!({
@@ -196,6 +215,24 @@ pub async fn run(
         out["confirm_token"] = json!(state.confirm.issue(spec.name, &input));
     }
     Ok(out)
+}
+
+/// Best effort only: the expiring lease remains the fallback for a DB outage,
+/// process crash or task cancellation. Token matching never clears a newer read.
+async fn cleanup_extraction_claim(state: &AppState, org: Uuid, claim: Option<(Uuid, Uuid)>) {
+    let Some((document, token)) = claim else {
+        return;
+    };
+    let cleanup = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let mut tx = state.store.begin(org).await?;
+        store::finish_extraction_read(&mut tx, document, token).await?;
+        tx.commit().await?;
+        Ok::<(), anyhow::Error>(())
+    })
+    .await;
+    if !matches!(cleanup, Ok(Ok(()))) {
+        tracing::warn!(%document, "Could not release failed extraction claim; its expiry remains in force");
+    }
 }
 
 async fn execute(cx: &mut Cx<'_>, name: &str, input: &Value) -> Result<Value, CommandError> {
@@ -306,6 +343,8 @@ async fn execute(cx: &mut Cx<'_>, name: &str, input: &Value) -> Result<Value, Co
 /// What a handler works with: one organization-scoped transaction, who is
 /// acting, the time, and the events appended so far.
 pub(crate) struct Cx<'a> {
+    /// A committed extraction lease to clean up if the command/commit fails.
+    extraction_claim: Option<(Uuid, Uuid)>,
     pub tx: Tx,
     pub roles: Vec<payvy_domain::permissions::Role>,
     pub store: &'a store::Store,

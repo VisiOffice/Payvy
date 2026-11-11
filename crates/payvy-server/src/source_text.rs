@@ -7,6 +7,9 @@ use std::{
 };
 use tokio::{io::AsyncReadExt, process::Command};
 
+// Shared across organizations and requests in this API process. Acquire before
+// creating scratch files; waiting is included in the 90-second source deadline.
+static OCR_JOBS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
 const TEXT_LIMIT: usize = 128 * 1024;
 struct Scratch(PathBuf);
 impl Drop for Scratch {
@@ -28,6 +31,7 @@ fn scratch() -> std::io::Result<Scratch> {
 async fn output(program: &str, args: &[&str]) -> Option<String> {
     let mut child = Command::new(program)
         .args(args)
+        .env("OMP_THREAD_LIMIT", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -70,11 +74,22 @@ pub async fn read(bytes: &[u8], kind: Kind, pages: &[u32]) -> Vec<SourcePage> {
     if pages.is_empty() || pages.len() > 24 {
         return missing(pages);
     }
-    tokio::time::timeout(Duration::from_secs(90), collect(bytes, kind, pages))
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| missing(pages))
+    read_limited(bytes, kind, pages, &OCR_JOBS).await
+}
+async fn read_limited(
+    bytes: &[u8],
+    kind: Kind,
+    pages: &[u32],
+    slots: &tokio::sync::Semaphore,
+) -> Vec<SourcePage> {
+    tokio::time::timeout(Duration::from_secs(90), async {
+        let _permit = slots.acquire().await.ok()?;
+        collect(bytes, kind, pages).await
+    })
+    .await
+    .ok()
+    .flatten()
+    .unwrap_or_else(|| missing(pages))
 }
 async fn collect(bytes: &[u8], kind: Kind, pages: &[u32]) -> Option<Vec<SourcePage>> {
     let dir = scratch().ok()?;
@@ -123,6 +138,7 @@ async fn collect(bytes: &[u8], kind: Kind, pages: &[u32]) -> Option<Vec<SourcePa
             )
             .await;
             if ok.is_none() {
+                let _ = std::fs::remove_file(prefix.with_extension("png"));
                 found.extend(missing(&[page]));
                 continue;
             }
@@ -136,6 +152,10 @@ async fn collect(bytes: &[u8], kind: Kind, pages: &[u32]) -> Option<Vec<SourcePa
         )
         .await
         .filter(|s| !s.trim().is_empty());
+        // Retain only the input and one rendered page, even on long scans.
+        if kind == Kind::Pdf {
+            let _ = std::fs::remove_file(&image);
+        }
         found.push(SourcePage {
             page,
             method: if text.is_some() { "ocr" } else { "unavailable" }.into(),
@@ -175,5 +195,28 @@ mod tests {
             "Install tesseract-ocr with English language data for extraction tests"
         );
         assert!(pages[0].text.as_ref().unwrap().contains("Disposal"));
+    }
+    #[tokio::test]
+    async fn source_work_waits_for_capacity_and_canceled_waiters_do_not_take_it() {
+        let slots = tokio::sync::Semaphore::new(1);
+        let occupied = slots.acquire().await.unwrap();
+        let data = include_bytes!("../../../fixtures/invoices/king-environmental-189727.pdf");
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(30),
+                read_limited(data, Kind::Pdf, &[1], &slots)
+            )
+            .await
+            .is_err()
+        );
+        drop(occupied);
+        let pages = tokio::time::timeout(
+            Duration::from_secs(5),
+            read_limited(data, Kind::Pdf, &[1], &slots),
+        )
+        .await
+        .unwrap();
+        assert_eq!(pages[0].method, "native_text");
+        assert_eq!(slots.available_permits(), 1);
     }
 }

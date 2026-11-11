@@ -57,13 +57,18 @@ same original file. Switching off new enrollment cannot bypass an in-flight or f
 richer review. Previously enrolled files continue using v2 when re-read.
 
 A ten-minute document lease refuses overlapping reads without holding a business lock.
-After a crash it expires; a late response cannot clear a replacement lease or become current.
+Ordinary command and commit failures roll back before attempting token-checked lease cleanup
+in a separate transaction (five-second deadline). A database outage, crash or canceled task
+can still leave the lease until expiry; a late response cannot clear a replacement lease or become current.
 The reader releases document and company locks before model/OCR calls, then reacquires
 and checks current permissions, page arrangement and document status. A late answer for
 changed pages is retained as stale history, cannot become the current review seed, and
 cannot trigger automatic splitting. Other document actions can proceed during the read.
 
-Read at most 24 selected pages per request; split longer documents first. The model is
+Read at most 24 selected pages per request. Split multi-invoice documents only at verified
+invoice boundaries. Keep a single longer invoice intact for manual review; automatic
+page batching is not implemented, and agents must not split an invoice just to fit the limit.
+The model is
 sent the original with an explicit page selection, not a cropped replacement. Its page
 coverage declaration is checked against that selection, but remains a model claim to
 review. Maximum 1,000 rows, 30 citations per row, 2,000 characters per quote, 128 KiB source
@@ -72,6 +77,14 @@ provider responses. Incomplete/oversized responses fail safely. Provider error b
 not stored in document history. The existing background reader retries failed reads after 15 minutes, stopping after
 three failures; this can incur provider costs. No additional multi-model review calls are added; the configured provider
 fallback behavior is unchanged.
+
+The production API container is configured for 1 GiB memory and a 128 MiB `/tmp` tmpfs
+(which counts against that memory). Source extraction is limited to one job per API
+process, including native text extraction; waiting for capacity counts against the
+90-second deadline. The slot is acquired before creating scratch files. OCR uses one
+OpenMP thread, and each rendered PDF page is removed after OCR so pages do not accumulate.
+These limits still require validation against real workloads; multiple API processes each
+have their own slot. CI retries required OCR package installation four times before failing.
 
 Extraction analysis records schema/prompt versions and hashes, original SHA-256, selected
 pages, arrangement version, timestamps, elapsed time, coverage, source method/text and
