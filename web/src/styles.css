@@ -281,3 +281,11 @@ button.payvy-wf-node:hover { background: rgb(127 127 127 / 0.06); }
 .payvy-issues li + li { margin-top: 2px; }
 .payvy-passed { padding-top: 6px; }
 .payvy-total { border-top: 1px solid var(--color-border); padding-top: 6px; margin-top: 2px; }
+
+/* Invoice review: dense rows remain readable in the document's narrow pane. */
+.payvy-line-review { border-top: 1px solid var(--payvy-border, #7775); padding-top: 1rem; }
+.payvy-review-row { border: 1px solid var(--payvy-border, #7775); border-radius: 8px; padding: .65rem; }
+.payvy-review-row[data-excluded="true"] { border-style: dashed; }
+.payvy-review-row-fields { display: grid; grid-template-columns: minmax(0, 1fr) 7rem; gap: .5rem; margin: .45rem 0; }
+.payvy-review-reconciliation { padding: .7rem; border-radius: 8px; background: color-mix(in srgb, currentColor 5%, transparent); display: grid; gap: .35rem; }
+@media (max-width: 400px) { .payvy-review-row-fields { grid-template-columns: minmax(0, 1fr); } }

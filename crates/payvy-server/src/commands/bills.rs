@@ -188,8 +188,19 @@ async fn detail(cx: &mut Cx<'_>, bill_id: Uuid) -> Result<Value, CommandError> {
         None => None,
     };
     let payments = store::bill_payments(&mut cx.tx, bill.id).await?;
+    let invoice_review = store::bill_invoice_review(&mut cx.tx, bill.id).await?;
+    // Versions keep this notice true even if pages were later restored to the
+    // same order. The original review and posted lines are never rewritten.
+    let invoice_review_pages_changed = invoice_review.as_ref().is_some_and(|r| {
+        arrangement
+            .as_ref()
+            .and_then(|a| a["version"].as_i64())
+            .is_some_and(|version| version != i64::from(r.arrangement_version))
+    });
     Ok(json!({
         "payments": payments,
+        "invoice_review": invoice_review,
+        "invoice_review_pages_changed": invoice_review_pages_changed,
         "bill": bill,
         "lines": lines,
         "progress": progress,
@@ -228,6 +239,7 @@ pub struct Create {
     allow_duplicate: bool,
     document_id: Option<Uuid>,
     extraction_id: Option<Uuid>,
+    review_id: Option<Uuid>,
     /// Only these pages of the document (the original's page numbers, in
     /// this order): they are split into a new document filed with the bill.
     pages: Option<Vec<u32>>,
@@ -235,7 +247,67 @@ pub struct Create {
     expected_version: Option<i32>,
 }
 
-pub async fn create(cx: &mut Cx<'_>, input: Create) -> Result<Value, CommandError> {
+pub async fn create(cx: &mut Cx<'_>, mut input: Create) -> Result<Value, CommandError> {
+    let review = match input.document_id {
+        Some(doc) => {
+            // Keep enrollment changes atomic with document-backed bill creation.
+            // Manual bills do not participate in enrollment or take its lock.
+            store::lock_invoice_settings(&mut cx.tx, cx.org).await?;
+            super::invoice_reviews::for_bill(cx, doc, input.review_id).await?
+        }
+        None if input.review_id.is_some() => {
+            return Err(CommandError::Invalid(
+                "review_id requires document_id".into(),
+            ));
+        }
+        None => None,
+    };
+    if let Some(r) = &review {
+        let p = &r.payload;
+        let v = payvy_domain::invoice_review::validate(p);
+        if p.vendor_id.as_deref() != Some(input.vendor_id.to_string().as_str())
+            || p.invoice_number.trim() != input.invoice_number.trim()
+            || p.invoice_date != Some(input.invoice_date)
+            || p.due_date != input.due_date
+            || v.total_cents != Some(input.amount_cents)
+            || p.memo.trim() != input.memo.as_deref().unwrap_or("").trim()
+        {
+            return Err(CommandError::Conflict(
+                "Bill details differ from the saved review. Save changes first.".into(),
+            ));
+        }
+        let lines = if r.summary_reason.is_some() {
+            Vec::new()
+        } else {
+            v.lines
+        };
+        if !input.lines.is_empty() && input.lines != lines {
+            return Err(CommandError::Invalid(
+                "Bill lines must match the saved review".into(),
+            ));
+        }
+        if let Some(pages) = &input.pages {
+            let doc = store::get_document(&mut cx.tx, r.document_id)
+                .await?
+                .ok_or(CommandError::NotFound("document"))?;
+            let count = documents::page_count(cx, &doc).await?;
+            let a = documents::current_arrangement(cx, doc.id).await?;
+            let visible: Vec<_> = documents::arranged(a.as_ref(), count)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|p| !p.hidden)
+                .map(|p| p.page)
+                .collect();
+            if pages != &visible {
+                return Err(CommandError::Invalid(
+                    "Split selected pages into a document before reviewing its lines".into(),
+                ));
+            }
+        }
+        input.lines = lines;
+        input.extraction_id = r.extraction_id;
+        input.expected_version = Some(r.arrangement_version);
+    }
     let vendor = store::get_vendor(&mut cx.tx, input.vendor_id)
         .await?
         .ok_or(CommandError::NotFound("vendor"))?;
@@ -321,12 +393,15 @@ pub async fn create(cx: &mut Cx<'_>, input: Create) -> Result<Value, CommandErro
             )));
         }
     };
+    if let Some(r) = &review {
+        store::link_invoice_review(&mut cx.tx, cx.org, id, r.id).await?;
+    }
     cx.emit(
         "bill.created",
         id,
         json!({ "bill_id": id, "vendor_id": vendor.id, "invoice_number": invoice_number,
                 "amount_cents": input.amount_cents, "workflow_id": workflow_id, "duplicate_allowed": input.allow_duplicate,
-                "extraction_id": input.extraction_id, "corrected": corrected,
+                "extraction_id": input.extraction_id, "corrected": corrected, "review_id": input.review_id,
                 "arrangement_id": arrangement_id, "document_id": document_id,
                 "split_from": split_from }),
     )

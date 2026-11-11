@@ -7,5 +7,15 @@
   "account_number": "004417",
   "tax_cents": 3400,
   "total_cents": 45900,
-  "line_count": 2
+  "line_count": 2,
+  "lines": [
+    {
+      "description": "30 yd roll-off haul, 1420 Elm St",
+      "amount_cents": 30000
+    },
+    {
+      "description": "Disposal, 2.5 tons",
+      "amount_cents": 12500
+    }
+  ]
 }

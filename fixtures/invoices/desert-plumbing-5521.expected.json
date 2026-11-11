@@ -7,5 +7,19 @@
   "po_number": "QR-2231",
   "tax_cents": null,
   "total_cents": 142000,
-  "line_count": 3
+  "line_count": 3,
+  "lines": [
+    {
+      "description": "Service call",
+      "amount_cents": 9500
+    },
+    {
+      "description": "Replace 40 gal water heater",
+      "amount_cents": 128000
+    },
+    {
+      "description": "Haul away old unit",
+      "amount_cents": 4500
+    }
+  ]
 }

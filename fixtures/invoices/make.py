@@ -87,7 +87,8 @@ CASES = {
         ),
         {"kind": "invoice", "vendor_name": "King Environmental", "invoice_number": "189727",
          "invoice_date": "2026-11-01", "due_date": "2026-12-01", "account_number": "004417",
-         "tax_cents": 3400, "total_cents": 45900, "line_count": 2},
+         "tax_cents": 3400, "total_cents": 45900, "line_count": 2,
+         "lines": [{"description":"30 yd roll-off haul, 1420 Elm St","amount_cents":30000}, {"description":"Disposal, 2.5 tons","amount_cents":12500}]},
     ),
     "desert-plumbing-5521": (
         document(
@@ -100,7 +101,8 @@ CASES = {
         ),
         {"kind": "invoice", "vendor_name": "Desert Plumbing & Drain", "invoice_number": "DP-5521",
          "invoice_date": "2026-10-28", "due_date": "2026-11-12", "po_number": "QR-2231",
-         "tax_cents": None, "total_cents": 142000, "line_count": 3},
+         "tax_cents": None, "total_cents": 142000, "line_count": 3,
+         "lines": [{"description":"Service call","amount_cents":9500}, {"description":"Replace 40 gal water heater","amount_cents":128000}, {"description":"Haul away old unit","amount_cents":4500}]},
     ),
     "mesa-electric-30117": (
         document(
@@ -111,7 +113,8 @@ CASES = {
             [("Subtotal", "315.45"), ("Tax", "26.18"), ("Amount Due", "341.63")],
         ),
         {"kind": "invoice", "vendor_name": "Mesa Electric Supply", "invoice_number": "30117",
-         "invoice_date": "2026-10-30", "tax_cents": 2618, "total_cents": 34163, "line_count": 3},
+         "invoice_date": "2026-10-30", "tax_cents": 2618, "total_cents": 34163, "line_count": 3,
+         "lines": [{"description":"12/2 Romex, 250 ft (2)","amount_cents":23800}, {"description":"20A breakers (10)","amount_cents":11250}, {"description":"Contractor discount 10%","amount_cents":-3505}]},
     ),
     "acme-supply-statement": (
         document(

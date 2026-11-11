@@ -1,3 +1,4 @@
+import { LineReview, type ReviewDetail, type ReviewPayload, type ReviewRevision, type ReviewValidation } from '../documents/LineReview';
 import { Allowed, useCan } from '../permissions';
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps, type ReactNode } from 'react';
 import { useNavigate, useParams } from 'react-router';
@@ -47,6 +48,10 @@ interface Form {
   /** Dollars as typed, e.g. "1,234.56". */
   amount: string;
   memo: string;
+}
+
+function formOfReview(p: ReviewPayload): Form {
+  return {vendor_id:p.vendor_id ?? '',invoice_number:p.invoice_number,invoice_date:p.invoice_date ?? '',due_date:p.due_date ?? '',amount:p.total,memo:p.memo};
 }
 
 const EMPTY: Form = { vendor_id: '', invoice_number: '', invoice_date: '', due_date: '', amount: '', memo: '' };
@@ -164,6 +169,10 @@ export function DocumentReview() {
   const [vendors, setVendors] = useState<Vendor[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [form, setForm] = useState<Form>(EMPTY);
+  const [reviewDetail, setReviewDetail] = useState<ReviewDetail | null>(null);
+  const [reviewPayload, setReviewPayload] = useState<ReviewPayload | null>(null);
+  const [reviewBusy, setReviewBusy] = useState(false);
+  const [reviewExtraction, setReviewExtraction] = useState<string | null>(null);
   const [focus, setFocus] = useState<string | null>(null);
   const [duplicate, setDuplicate] = useState<string | null>(null);
   const [trashing, setTrashing] = useState(false);
@@ -185,9 +194,10 @@ export function DocumentReview() {
     const current = ++request.current;
     setError(null);
     try {
-      const [d, v] = await readWithin(Promise.all([
+      const [d, v, review] = await readWithin(Promise.all([
         run<DocumentDetail>('document.get', { document_id: id }),
         run<{ vendors: Vendor[] }>('vendor.list', {}),
+        run<ReviewDetail>('document.review_get', { document_id: id }),
       ]));
       if (current !== request.current) return;
       setDetail(d.result);
@@ -196,7 +206,10 @@ export function DocumentReview() {
       const groups = invoicesHere(d.result);
       const first = groups.length > 1 ? groups[0] : undefined;
       const form = suggested(d.result.extractions[0]);
-      setForm(first ? withInvoice(form, first) : form);
+      setReviewDetail(review.result);
+      setReviewPayload(review.result.review?.payload ?? review.result.initial);
+      setReviewExtraction(review.result.review?.extraction_id ?? review.result.extraction_id);
+      setForm(review.result.required && review.result.review ? formOfReview(review.result.review.payload) : first ? withInvoice(form, first) : form);
       setSelected(new Set(first ? first.pages : visiblePages(d.result)));
       setError(null);
     } catch (e) {
@@ -234,7 +247,23 @@ export function DocumentReview() {
   }, []);
 
   const latest = detail?.extractions[0];
-  const highlights = useMemo(() => highlightsOf(latest?.extraction.answer), [latest]);
+  const highlights = useMemo(() => {
+    const answer = detail?.extractions.find(x => x.extraction.id === reviewExtraction)?.extraction.answer;
+    const sourceLines = answer?.lines ?? [];
+    return [...highlightsOf(latest?.extraction.answer), ...sourceLines.map((row,i) => ({key:`line-${i}`,label:`Original line ${i+1}`,candidates:[row.description].filter(Boolean)}))];
+  }, [latest, detail, reviewExtraction]);
+
+  const activeReview = !!reviewDetail?.required;
+  const currentReview: ReviewPayload | null = reviewPayload ? { ...reviewPayload,
+    vendor_id: form.vendor_id || null, invoice_number: form.invoice_number,
+    invoice_date: form.invoice_date || null, due_date: form.due_date || null,
+    total: form.amount, memo: form.memo,
+  } : null;
+  const reviewDirty = JSON.stringify(currentReview) !== JSON.stringify(reviewDetail?.review?.payload)
+    || reviewExtraction !== reviewDetail?.review?.extraction_id;
+  const reviewReady = !!reviewDetail?.review && !reviewDirty
+    && reviewDetail.review.arrangement_version === detail?.pages.version
+    && (reviewDetail.validation.ready || (!!reviewDetail.review.summary_reason && reviewDetail.validation.header_ready));
 
   // Click-to-copy: text from the page into a field, read as that field reads it.
   const editable = !!detail && detail.document.status === 'inbox' && can('bill.create');
@@ -292,7 +321,7 @@ export function DocumentReview() {
     !!form.invoice_number.trim() &&
     !!form.invoice_date &&
     !!amountCents &&
-    (visible.length <= 1 || picked.length > 0);
+    (visible.length <= 1 || picked.length > 0) && (!activeReview || (reviewReady && !partial && groups.length <= 1));
   const createLabel = partial ? `Create bill from ${picked.length} ${picked.length === 1 ? 'page' : 'pages'}` : 'Create bill';
   const set = (patch: Partial<Form>) => setForm((f) => ({ ...f, ...patch }));
   const picking = doc.status === 'inbox' && !detail.pages.locked;
@@ -309,11 +338,58 @@ export function DocumentReview() {
   async function readAgain() {
     setReading(true);
     try {
+      const firstRead = activeReview && !reviewDetail?.review && !reviewExtraction
+        && JSON.stringify(currentReview) === JSON.stringify(reviewDetail?.initial);
+      if (activeReview && reviewDirty && !firstRead) await saveReview();
       await run('document.extract', { document_id: doc.id, again: true });
-      await load();
+      if (activeReview && !firstRead) {
+        await refresh();
+        const r = await run<ReviewDetail>('document.review_get', { document_id: doc.id });
+        setReviewDetail(r.result);
+      } else await load();
     } catch (e) {
       toast({ body: e instanceof Error ? e.message : String(e), type: 'error' });
     } finally { setReading(false); }
+  }
+
+  async function saveReview() {
+    if (!currentReview || !reviewDetail) return;
+    setReviewBusy(true);
+    try {
+      const r = await run<{review: ReviewRevision; validation: ReviewValidation}>('document.review_save', {
+        document_id: doc.id, extraction_id: reviewExtraction,
+        expected_version: reviewDetail.review?.version ?? 0,
+        arrangement_version: detail!.pages.version, request_id: crypto.randomUUID(), payload: currentReview,
+      });
+      setReviewDetail(d => d ? {...d, ...r.result, history:[r.result.review,...d.history]} : d);
+      setReviewPayload(r.result.review.payload);
+      toast({body:'Review saved'});
+    } finally { setReviewBusy(false); }
+  }
+  async function acceptSummary(reason: string) {
+    if (!reviewDetail?.review) return;
+    setReviewBusy(true);
+    try {
+      const r = await run<{review: ReviewRevision; validation: ReviewValidation}>('document.review_accept_summary', {
+        document_id:doc.id, expected_version:reviewDetail.review.version,
+        arrangement_version:detail!.pages.version, request_id:crypto.randomUUID(),reason,
+      });
+      setReviewDetail(d => d ? {...d,...r.result,history:[r.result.review,...d.history]} : d);
+      toast({body:'Summary-only decision recorded'});
+    } finally { setReviewBusy(false); }
+  }
+  function useNewReading() {
+    if (!reviewDetail) return;
+    setReviewPayload(reviewDetail.initial); setForm(formOfReview(reviewDetail.initial));
+    setReviewExtraction(reviewDetail.extraction_id);
+  }
+
+  async function splitForReview() {
+    if (!partial || !can('document.split')) return;
+    if (reviewDirty) await saveReview();
+    const r = await run<{documents:{id:string}[]}>('document.split', {document_id:doc.id, expected_version:detail!.pages.version, groups:[picked]});
+    const child = r.result.documents[0];
+    if (child) navigate(`/documents/${child.id}`);
   }
 
   async function addVendor() {
@@ -340,7 +416,7 @@ export function DocumentReview() {
         document_id: doc.id,
         ...(form.due_date ? { due_date: form.due_date } : {}),
         ...(form.memo.trim() ? { memo: form.memo.trim() } : {}),
-        ...(lines ? { lines } : {}),
+        ...(activeReview ? { review_id: reviewDetail!.review!.id } : lines ? { lines } : {}),
         ...(x?.status === 'read' ? { extraction_id: x.id } : {}),
         ...(allowDuplicate ? { allow_duplicate: true } : {}),
         ...(partial ? { pages: picked, expected_version: detail!.pages.version } : {}),
@@ -375,7 +451,7 @@ export function DocumentReview() {
     }
   }
 
-  const checks = x?.checks ?? [];
+  const checks = (x?.checks ?? []).filter(c => !activeReview || !['lines_readable', 'lines_add_up', 'subtotal_plus_tax'].includes(c.check));
   // A vendor problem is settled once someone chooses or adds the vendor;
   // several invoices have their own notice below.
   const open = checks.filter(
@@ -554,7 +630,7 @@ export function DocumentReview() {
           )}
 
           {doc.status === 'inbox' && (
-            <fieldset disabled={!can('bill.create')} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}><VStack gap={4}>
+            <fieldset disabled={!can('bill.create') || reviewBusy || reading} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}><VStack gap={4}>
               <Field focusKey="vendor_name" onFocus={setFocus} copying={copying}>
                 <Selector
                   label="Vendor"
@@ -629,7 +705,13 @@ export function DocumentReview() {
                 <TextInput label="Memo" value={form.memo} onChange={(v) => set({ memo: v })} />
               </Field>
 
-              {lines && (
+              {activeReview && currentReview && reviewDetail && <LineReview
+                value={currentReview} onChange={setReviewPayload} detail={reviewDetail}
+                dirty={reviewDirty} busy={reviewBusy} save={saveReview} summary={acceptSummary}
+                canSummary={can('document.review_accept_summary')} source={i => setFocus(`line-${i}`)}
+                newer={reviewDetail.extraction_id !== reviewExtraction} useNew={useNewReading} partial={partial || groups.length > 1} split={partial ? splitForReview : null}
+              />}
+              {!activeReview && lines && (
                 <VStack gap={1}>
                   <Text type="label">Lines</Text>
                   {lines.map((l, i) => (
@@ -648,7 +730,7 @@ export function DocumentReview() {
                   )}
                 </VStack>
               )}
-              {latest?.bill_input?.lines && !lines && (
+              {!activeReview && latest?.bill_input?.lines && !lines && (
                 <Text type="supporting">
                   The amount was changed, so the lines read from the document no longer add up and the bill is
                   entered without them.
@@ -670,6 +752,14 @@ export function DocumentReview() {
             </VStack></fieldset>
           )}
 
+          {doc.status !== 'inbox' && reviewDetail?.review && <section aria-label="Saved invoice review"><VStack gap={2}>
+            <Text weight="semibold">Saved invoice review</Text>
+            {reviewDetail.history.map(r => <Collapsible key={r.id} defaultIsOpen={false} trigger={<Text>Revision {r.version} · {r.created_by}</Text>}>
+              <VStack gap={1}><Text>{r.payload.invoice_number} · {r.payload.total} {r.payload.currency}</Text>
+              {r.payload.rows.map(row => <Text key={row.id}>{row.description || '(blank)'} — {row.amount || '(missing)'}{row.excluded_reason !== null ? ` · excluded: ${row.excluded_reason}` : ''}</Text>)}
+              {r.summary_reason && <Text>Summary-only: {r.summary_reason}</Text>}</VStack>
+            </Collapsible>)}
+          </VStack></section>}
           {passed.length > 0 && (
             <Collapsible
               defaultIsOpen={false}
@@ -705,7 +795,7 @@ export function DocumentReview() {
           <details className="payvy-document-provenance"><summary>Document information</summary><p>{doc.source === 'email' ? 'Emailed' : 'Uploaded'} {date(doc.received_at)}</p>{x && <p>Read by {x.model}</p>}</details>
         </VStack></div>
         {doc.status === 'inbox' && can('bill.create') && <footer className="payvy-review-actions">
-          <div className="payvy-review-primary"><div><strong>{!canCreate ? 'Complete the details' : open.length ? 'Review the checks above' : 'Ready for your review'}</strong><p>{missing.length
+          <div className="payvy-review-primary"><div><strong>{!canCreate ? activeReview ? 'Save and resolve the invoice review' : 'Complete the details' : open.length ? 'Review the checks above' : 'Ready for your review'}</strong><p>{missing.length
                   ? `To create the bill, ${missing.join(' and ')}.`
                   : visible.length > 1 && picked.length === 0
                     ? 'Tick the pages for this bill.'
@@ -714,7 +804,7 @@ export function DocumentReview() {
                       : 'The bill will follow your workflow.'}</p></div><Button
               label={createLabel}
               variant="primary"
-              isDisabled={!canCreate || reading}
+              isDisabled={!canCreate || reading || reviewBusy}
               clickAction={() => create()}
             /></div>
           <div className="payvy-review-secondary">{x && <Allowed command="document.extract"><Button label="Read again" variant="ghost" size="sm" isDisabled={reading} clickAction={readAgain} /></Allowed>}<Button label="Not a bill" variant="ghost" size="sm" isDisabled={reading} onClick={() => setTrashing(true)} /></div>

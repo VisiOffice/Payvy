@@ -1,3 +1,4 @@
+import { ReviewSettings } from '../documents/ReviewSettings';
 // Settings > Company: the organization's name, as people see it in the app
 // and in sign-in emails. Renaming is org.update (person_only).
 import { useEffect, useState } from 'react';
@@ -107,6 +108,7 @@ export function CompanySettings() {
           </form>
         </Card>
       )}
+      <ReviewSettings />
     </Page>
   );
 }

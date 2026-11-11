@@ -407,7 +407,10 @@ async fn the_eval_scores_answers_against_the_fixtures() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/invoices");
     let score = payvy_server::eval::run(&extractor, &dir).await.unwrap();
     assert_eq!(score.failed_documents, 0);
-    assert_eq!(score.total, 9 + 9 + 7 + 3 + 4);
+    assert_eq!(score.total, 10 + 10 + 8 + 3 + 4);
+    // Row count alone cannot pass the full-row expectation: the fake omits
+    // the service location from King's description.
+    assert_eq!(score.right, 11);
     assert!(
         score.right >= 9 && score.right < score.total,
         "{}",

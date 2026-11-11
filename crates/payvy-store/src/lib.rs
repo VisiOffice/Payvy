@@ -3,6 +3,8 @@
 //! and its event either both land or neither does.
 
 pub use payvy_domain::permissions::Role;
+mod invoice_reviews;
+pub use invoice_reviews::*;
 mod notifications;
 mod roles;
 pub use notifications::*;

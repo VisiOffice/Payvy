@@ -52,14 +52,16 @@ pub enum BillError {
     NotPositive,
     #[error("invoice_number can't be empty")]
     NoInvoiceNumber,
-    #[error("line {0}: amount_cents must be more than zero")]
-    LineNotPositive(usize),
+    #[error("line amounts exceed the supported range")]
+    AmountOverflow,
     #[error("the lines add up to {lines} cents but the bill is {total} cents")]
     LinesDontAddUp { lines: Cents, total: Cents },
     #[error("due_date is before invoice_date")]
     DueBeforeInvoice,
 }
 
+/// All bills may contain signed adjustments and zero rows. A nonempty breakdown
+/// must reconcile exactly to a positive total, without integer overflow.
 pub fn validate(
     amount_cents: Cents,
     invoice_number: &str,
@@ -73,11 +75,11 @@ pub fn validate(
     if invoice_key(invoice_number).is_empty() {
         return Err(BillError::NoInvoiceNumber);
     }
-    if let Some(i) = lines.iter().position(|l| l.amount_cents <= 0) {
-        return Err(BillError::LineNotPositive(i + 1));
-    }
     if !lines.is_empty() {
-        let sum: Cents = lines.iter().map(|l| l.amount_cents).sum();
+        let sum = lines
+            .iter()
+            .try_fold(0i64, |s, l| s.checked_add(l.amount_cents))
+            .ok_or(BillError::AmountOverflow)?;
         if sum != amount_cents {
             return Err(BillError::LinesDontAddUp {
                 lines: sum,
@@ -138,6 +140,30 @@ mod tests {
         assert_eq!(invoice_key("000"), "0");
         assert_eq!(invoice_key(" - "), "");
         assert_eq!(invoice_key("A10-020"), invoice_key("A10-20"));
+    }
+
+    #[test]
+    fn signed_and_zero_lines_reconcile_but_overflow_is_refused() {
+        let d = NaiveDate::from_ymd_opt(2026, 11, 1).unwrap();
+        let lines = |amounts: &[i64]| {
+            amounts
+                .iter()
+                .map(|&amount_cents| Line {
+                    description: "Printed line".into(),
+                    amount_cents,
+                    account: None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert!(validate(9000, "SIGNED", &lines(&[10000, -1000, 0]), d, None).is_ok());
+        assert_eq!(
+            validate(1, "OVERFLOW", &lines(&[i64::MAX, 1, -i64::MAX]), d, None),
+            Err(BillError::AmountOverflow)
+        );
+        assert_eq!(
+            validate(0, "ZERO", &lines(&[1000, -1000]), d, None),
+            Err(BillError::NotPositive)
+        );
     }
 
     #[test]
