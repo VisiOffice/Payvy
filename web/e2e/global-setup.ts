@@ -30,6 +30,44 @@ import {
 const BIN = path.join(ROOT, 'target/debug/payvy');
 const WEB = path.join(ROOT, 'web/dist');
 
+/** The Cloudflare Worker in local workerd, as a separate `wrangler dev` process. */
+async function startEdge(port: number) {
+  const log = path.join(STATE_DIR, 'edge.log');
+  const out = fs.openSync(log, 'w');
+  const edge = spawn(
+    path.join(ROOT, 'web/node_modules/.bin/wrangler'),
+    [
+      'dev', 'worker/index.ts',
+      '--config', 'wrangler.jsonc', '--env', 'local',
+      '--ip', '127.0.0.1', '--port', String(port), '--inspector-port', String(port + 1),
+      '--var', `API_ORIGIN:${API_URL}`,
+      '--persist-to', path.join(STATE_DIR, 'wrangler'),
+      '--show-interactive-dev-session=false', '--live-reload=false', '--log-level', 'warn',
+    ],
+    {
+      cwd: path.join(ROOT, 'web'),
+      env: { ...process.env, WRANGLER_SEND_METRICS: 'false', CI: 'true' },
+      stdio: ['ignore', out, out],
+    },
+  );
+  const until = Date.now() + 60_000;
+  for (;;) {
+    if (edge.exitCode !== null) {
+      throw new Error(`wrangler dev exited (${edge.exitCode}):\n${fs.readFileSync(log, 'utf8')}`);
+    }
+    try {
+      if ((await fetch(`http://127.0.0.1:${port}/`)).ok) return edge;
+    } catch {
+      // not listening yet
+    }
+    if (Date.now() > until) {
+      edge.kill('SIGTERM');
+      throw new Error(`wrangler dev did not start:\n${fs.readFileSync(log, 'utf8')}`);
+    }
+    await new Promise((r) => setTimeout(r, 250));
+  }
+}
+
 async function waitForHealth(server: ReturnType<typeof spawn>, log: string) {
   const until = Date.now() + 30_000;
   for (;;) {
@@ -113,14 +151,10 @@ export default async function globalSetup() {
 
   // Exercise the same asset routing and streaming proxy as Cloudflare, against
   // this run's isolated Rust server. No production API or bank is contacted.
-  const edge = EDGE_PORT ? await (await import('wrangler')).unstable_dev(
-    path.join(ROOT, 'web/worker/index.ts'), {
-      config: path.join(ROOT, 'web/wrangler.jsonc'), env: 'local',
-      ip: '127.0.0.1', port: EDGE_PORT, inspectorPort: 0, local: true,
-      vars: { API_ORIGIN: API_URL }, persist: false, logLevel: 'error',
-      experimental: { disableExperimentalWarning: true, disableDevRegistry: true, watch: false },
-    },
-  ) : null;
+  // `wrangler dev` runs as its own process: loaded into Playwright's process,
+  // wrangler 4.40 crashed the whole run whenever the Worker logged an error
+  // (miniflare's source mapping reads require.cache, which is undefined there).
+  const edge = EDGE_PORT ? await startEdge(EDGE_PORT) : null;
 
   const cli = (...args: string[]) => execFileSync(BIN, args, { env, encoding: 'utf8', stdio: 'pipe' });
   cli('person', 'add', '--email', PERSON.email, '--name', PERSON.name);
@@ -163,7 +197,10 @@ export default async function globalSetup() {
   fs.writeFileSync(STATE_FILE, JSON.stringify({ agentKey, serverLog, mercuryUrl: `http://127.0.0.1:${BANK_PORT}/mercury` } satisfies State));
 
   return async () => {
-    await edge?.stop();
+    if (edge && edge.exitCode === null) {
+      edge.kill('SIGTERM');
+      await new Promise((r) => edge.once('exit', r));
+    }
     server.kill('SIGTERM');
     await new Promise((r) => server.once('exit', r));
     model.close();
