@@ -388,6 +388,19 @@ pub async fn activate(cx: &mut Cx<'_>, input: PoId) -> Result<Value, CommandErro
                 .into(),
         ));
     }
+    // Imported opening consumption must fit the budget it activates against:
+    // refuse rather than activating a PO that starts over its ceiling.
+    let amounts = po_store::amounts(&mut cx.tx, &po).await?;
+    if amounts.committed_cents() > amounts.ceiling_cents() {
+        return Err(CommandError::Conflict(format!(
+            "PO {} has {} in opening consumption, over its authorized {} plus allowance {}. \
+             Raise the authorized amount (po.update) or correct the import before activating",
+            po.po_number,
+            payvy_domain::workflow::dollars(amounts.committed_cents()),
+            payvy_domain::workflow::dollars(amounts.authorized_cents),
+            payvy_domain::workflow::dollars(amounts.allowance_cents)
+        )));
+    }
     po_store::set_status(
         &mut cx.tx,
         po.id,
