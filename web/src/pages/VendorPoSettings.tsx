@@ -144,8 +144,8 @@ export function VendorPoSettings({ vendorId }: { vendorId: string }) {
             <Text type="supporting">
               Zero is the default: no overage at all. If both caps are set, the smaller one governs — a
               $1,000 PO with a $25 cap and a 5% cap may run to $1,025 in total, across every bill, not per
-              bill. Blank means not configured, which is also zero. The caps are pinned onto each PO when
-              it is made or revised, so changing them here applies to new and revised POs, never rewrites
+              bill. Leave one cap blank to use only the other; leave both blank for no overage. The caps
+              are pinned onto each PO when it is made or revised, so changing them here applies to new and revised POs, never rewrites
               one that already exists.
             </Text>
             {!canSet && <Text type="supporting">Only an admin changes these settings.</Text>}
