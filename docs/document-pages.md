@@ -244,6 +244,41 @@ be the source document's reading; corrections are recorded against it. `bill.cre
   a desktop the original starts at the top of the window. The bill page keeps every page in a
   column.
 
+## Click-to-copy
+
+On document review, text on a PDF's page can be copied into the form, as on Bill.com. It is pointer
+and touch sugar over the viewer (`CopyLayer` in `web/src/viewer/DocumentViewer.tsx`, the state in
+`web/src/documents/clickToCopy.tsx`); the fields still take typing and an ordinary Ctrl/⌘+V.
+
+- **Runs.** pdf.js's text items are split into words, placed by their share of the item's width,
+  and joined into runs (`web/src/viewer/runs.ts`): words on one line with about a space between
+  them. A run breaks at a wider gap (two spaces, a column) and after a label ending in a colon, so
+  "Invoice #: 85273" gives "Invoice #:" and "85273". Glyphs placed one by one are joined back into
+  words. Hovering a run highlights it with "Click to copy: …"; Shift-click copies only the word
+  under the pointer. The boxes turn and scale with the page, so rotation, zoom, fit modes and
+  paging need nothing extra; the highlights of what was read stay underneath.
+- **Copy, then paste.** A click (a tap on a touch screen) copies the run: a chip says "Copied
+  85273 · Click a field to paste", and the text goes to the system clipboard too where the browser
+  allows (a refusal is ignored). Clicking or focusing a field then fills it and the copied text is
+  used up; Esc or the chip's button lets it go.
+- **Or the field first.** With nothing copied, the field focused last says "Click text on the
+  document to fill", and the next text clicked fills it, once. Typing in it, or choosing a value
+  in it, means it isn't waiting any more, and focus moving to another control in the form clears
+  it; focus moving to the viewer's own controls (page, zoom) keeps it.
+- **Each field reads the text its own way** (`parseAmount`, `parseDate` in `match.ts`): Amount
+  takes "$8,034.89" as 8034.89 (anything else goes in as it is, and the field's check says what's
+  wrong); the dates take "6/15/26", "06/15/2026", "June 15, 2026" and the like, month first; text
+  that isn't a date leaves the date alone and stays copied for another field. Invoice number and
+  memo take the text trimmed. The vendor list opens with the text in its search (the longest start
+  of it some vendor name contains), and the person picks: a vendor is never chosen or created.
+- **Read only.** When the form can't change (filed, set aside, no `bill.create`) a click still
+  copies to the system clipboard and says so; nothing waits to be pasted.
+- **Accessibility.** The boxes are hidden from assistive technology (the form's fields are the
+  way in), and every copy and fill is announced in a polite live region.
+- **Not yet:** photos and scanned PDFs have no text layer, so there is nothing to click (the
+  viewer says copying needs a PDF with text); OCR would add one. The bill's lines aren't editable
+  on document review, so there is no line amount to paste into.
+
 ## Later steps
 
 3. `document.merge` (with `merged_into`, and refusing a document already merged), and

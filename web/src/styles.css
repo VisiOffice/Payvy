@@ -60,6 +60,79 @@ body,
   .payvy-hl-focus { animation: none; }
 }
 
+/* Click-to-copy: runs of a PDF's text, over the page (always white paper). */
+.payvy-copy-layer { position: absolute; inset: 0; }
+.payvy-copy-run { position: absolute; border-radius: 3px; cursor: copy; touch-action: manipulation; }
+.payvy-copy-run[data-hover] {
+  background: rgb(37 99 235 / 0.14);
+  outline: 1px solid rgb(37 99 235 / 0.55);
+}
+.payvy-copy-tip {
+  position: absolute;
+  z-index: 3;
+  transform: translateY(-100%);
+  max-width: 236px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: var(--color-text-primary);
+  color: var(--color-background-surface);
+  font-size: 12px;
+  line-height: 1.35;
+  pointer-events: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 0.25);
+}
+.payvy-copy-tip[data-below] { transform: none; }
+
+/* What was copied, and where it can go. */
+.payvy-copy-chip {
+  position: fixed;
+  z-index: 50;
+  left: 50%;
+  bottom: 20px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(560px, calc(100vw - 32px));
+  padding: 6px 6px 6px 14px;
+  border-radius: 999px;
+  background: var(--color-text-primary);
+  color: var(--color-background-surface);
+  font-size: 13px;
+  box-shadow: 0 4px 16px rgb(0 0 0 / 0.25);
+}
+.payvy-copy-chip-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.payvy-copy-chip-text span { opacity: 0.75; }
+.payvy-copy-chip button {
+  flex: none;
+  border: 0;
+  border-radius: 999px;
+  padding: 3px 10px;
+  background: color-mix(in srgb, var(--color-background-surface) 18%, transparent);
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.payvy-copy-chip button:focus-visible { outline: 2px solid var(--color-background-surface); outline-offset: 1px; }
+@media (max-width: 900px) {
+  /* Under the app bar, clear of the sticky Create bill bar. */
+  .payvy-copy-chip { top: 60px; bottom: auto; }
+}
+/* The field that receives what is clicked on the document. */
+.payvy-copy-hint { display: block; margin-top: 4px; font-size: 11px; color: var(--color-text-accent); }
+.payvy-copy-field[data-flash] { border-radius: 6px; animation: payvy-filled 1.2s ease-out; }
+@keyframes payvy-filled {
+  0% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-success) 55%, transparent); }
+  100% { box-shadow: 0 0 0 3px transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .payvy-copy-field[data-flash] { animation: none; outline: 2px solid var(--color-success); outline-offset: 2px; }
+}
+
 /* A field read from a document; choosing one finds it on the page. */
 .payvy-field {
   display: flex;

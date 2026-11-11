@@ -98,3 +98,60 @@ function span(
     return { x: it.x + (it.w * first) / n, y: it.y, w: (it.w * (last - first + 1)) / n, h: it.h };
   });
 }
+
+const pad2 = (n: number) => String(n).padStart(2, '0');
+
+/** A real calendar date as YYYY-MM-DD, or null. */
+function isoOf(y: number, m: number, d: number): string | null {
+  if (m < 1 || m > 12 || d < 1 || d > 31) return null;
+  const t = new Date(Date.UTC(y, m - 1, d));
+  if (t.getUTCMonth() !== m - 1) return null;
+  return `${y}-${pad2(m)}-${pad2(d)}`;
+}
+
+/** Two-digit years are this century: "26" is 2026. */
+const fullYear = (y: string) => (y.length === 2 ? 2000 + Number(y) : Number(y));
+
+/** "June", "Jun" or "Jun." → 6; null if it isn't a month. */
+function monthOf(s: string): number | null {
+  const t = s.replace(/\.$/, '').toLowerCase();
+  if (t.length < 3) return null;
+  const i = MONTHS.findIndex((m) => m.toLowerCase().startsWith(t));
+  return i < 0 ? null : i + 1;
+}
+
+/**
+ * A date as printed on a US invoice, as YYYY-MM-DD: the reverse of
+ * `dateForms`. Numbers are month first ("6/15/26", "06-15-2026"); a month
+ * may be named ("June 15, 2026", "Jun. 15 2026", "15 June 2026"). Null when
+ * the text isn't one date.
+ */
+export function parseDate(text: string): string | null {
+  const s = text.trim().replace(/\s+/g, ' ').replace(/[.,;]$/, '');
+  let m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(s);
+  if (m) return isoOf(Number(m[1]), Number(m[2]), Number(m[3]));
+  m = /^(\d{1,2})[/.-](\d{1,2})[/.-](\d{2}|\d{4})$/.exec(s);
+  if (m) return isoOf(fullYear(m[3]!), Number(m[1]), Number(m[2]));
+  m = /^([A-Za-z]{3,9}\.?) (\d{1,2})(?:st|nd|rd|th)?,? (\d{4})$/.exec(s);
+  if (m) {
+    const mo = monthOf(m[1]!);
+    return mo ? isoOf(Number(m[3]), mo, Number(m[2])) : null;
+  }
+  m = /^(\d{1,2}) ([A-Za-z]{3,9}\.?),? (\d{4})$/.exec(s);
+  if (m) {
+    const mo = monthOf(m[2]!);
+    return mo ? isoOf(Number(m[3]), mo, Number(m[1])) : null;
+  }
+  return null;
+}
+
+/**
+ * An amount as printed, as it is typed into an amount field: "$8,034.89" →
+ * "8034.89", "USD 1,200" → "1200.00". Null when the text isn't one amount.
+ */
+export function parseAmount(text: string): string | null {
+  const s = text.trim().replace(/^(?:USD|US\$|\$)\s*/i, '').replace(/\s*(?:USD)$/i, '');
+  const m = /^(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d{1,2}))?$/.exec(s);
+  if (!m) return null;
+  return `${m[1]!.replaceAll(',', '')}.${(m[2] ?? '').padEnd(2, '0')}`;
+}
