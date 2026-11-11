@@ -24,6 +24,8 @@ const AutoPaySettings = lazy(() => import('./pages/AutoPaySettings').then((m) =>
 const NotificationSettings = lazy(() => import('./pages/NotificationSettings').then(m => ({ default: m.NotificationSettings })));
 const ApprovalSettings = lazy(() => import('./pages/ApprovalSettings').then((m) => ({ default: m.ApprovalSettings })));
 const VendorPage = lazy(() => import('./pages/Vendor').then((m) => ({ default: m.VendorPage })));
+const PurchaseOrderSettings = lazy(() => import('./pages/PurchaseOrderSettings').then((m) => ({ default: m.PurchaseOrderSettings })));
+const PurchaseOrders = lazy(() => import('./pages/PurchaseOrders').then((m) => ({ default: m.PurchaseOrders })));
 const DocumentReview = lazy(() =>
   import('./pages/DocumentReview').then((m) => ({ default: m.DocumentReview })),
 );
@@ -124,6 +126,14 @@ export function App() {
           <Route path="/workflows/:key" element={<OldWorkflowLink />} />
           <Route path="/vendors" element={<Vendors />} />
           <Route
+            path="/purchase-orders"
+            element={
+              <Suspense fallback={<Spinner label="Loading" />}>
+                <PurchaseOrders />
+              </Suspense>
+            }
+          />
+          <Route
             path="/vendors/:id"
             element={
               <Suspense fallback={<Spinner label="Loading" />}>
@@ -151,6 +161,7 @@ export function App() {
           <Route path="/settings/company" element={<Suspense fallback={<Spinner label="Loading" />}><Access command="org.update"><CompanySettings /></Access></Suspense>} />
           <Route path="/settings/auto-pay" element={<Suspense fallback={<Spinner label="Loading" />}><Access command="auto_pay.raise_limit"><AutoPaySettings /></Access></Suspense>} />
           <Route path="/settings/notifications" element={<Suspense fallback={<Spinner label="Loading" />}><Access command="notification.configure"><NotificationSettings /></Access></Suspense>} />
+          <Route path="/settings/purchase-orders" element={<Suspense fallback={<Spinner label="Loading" />}><Access command="po.configure"><PurchaseOrderSettings /></Access></Suspense>} />
           <Route
             path="/settings/approvals"
             element={

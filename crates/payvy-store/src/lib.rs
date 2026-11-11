@@ -2793,6 +2793,7 @@ pub async fn lock_invite_vendor(tx: &mut Tx, vendor_id: Uuid) -> anyhow::Result<
     )
 }
 
+pub mod purchase_orders;
 pub mod ramp;
 
 /// Serialize connection changes and payee decisions, including the empty-bank case.

@@ -172,6 +172,15 @@ async fn detail(cx: &mut Cx<'_>, bill_id: Uuid) -> Result<Value, CommandError> {
         _ => None,
     };
     let lines = store::bill_lines(&mut cx.tx, bill.id).await?;
+    let purchase_orders = super::purchase_orders::bill_po_view(cx, &bill).await?;
+    // Whoever permitted a PO exception can't release the bill it makes payable.
+    let release_blocked = match &progress {
+        Some(p) if can_release(cx, &p.status) => {
+            let by = super::purchase_orders::overridden_by(cx, &bill).await?;
+            duties::release_refusal(by.as_deref(), &cx.actor.name).is_some()
+        }
+        _ => false,
+    };
     let history = store::list_events(&mut cx.tx, Some(bill.id), 200).await?;
     let documents = store::bill_documents(&mut cx.tx, bill.id).await?;
     let arrangement = match documents.first() {
@@ -185,9 +194,10 @@ async fn detail(cx: &mut Cx<'_>, bill_id: Uuid) -> Result<Value, CommandError> {
         "lines": lines,
         "progress": progress,
         "approval": approval,
-        "can_release": progress.as_ref().is_some_and(|p| can_release(cx, &p.status)),
+        "can_release": !release_blocked && progress.as_ref().is_some_and(|p| can_release(cx, &p.status)),
         "workflow": { "id": bill.workflow_id, "mermaid": wf.mermaid() },
         "auto_pay_limit": limit,
+        "purchase_orders": purchase_orders,
         "approvals": approvals,
         "signals": signals,
         "documents": documents,
@@ -623,6 +633,8 @@ pub async fn release(cx: &mut Cx<'_>, input: Release) -> Result<Value, CommandEr
             )));
         }
     }
+    super::purchase_orders::ensure_payable(cx, &bill).await?;
+    super::purchase_orders::ensure_not_overrider(cx, &bill).await?;
     // With a paying bank connected, a release pays through it, to the payee a
     // person accepted for this vendor. With no paying bank — Rho connected
     // or none — a release records that it will be paid elsewhere, exactly
@@ -703,6 +715,7 @@ pub async fn auto_pay(cx: &mut Cx<'_>, input: AutoPay) -> Result<Value, CommandE
     }
     // Checked here as well as at sending, so a preview says it too.
     payments::within_auto_pay_limit(cx, &bill).await?;
+    super::purchase_orders::ensure_payable(cx, &bill).await?;
     let c = store::live_paying_connection(&mut cx.tx)
         .await?
         .filter(|c| c.provider == "mercury")
@@ -784,6 +797,11 @@ pub async fn mark_paid(cx: &mut Cx<'_>, input: MarkPaid) -> Result<Value, Comman
         ));
     }
     let reference = text(input.reference);
+    // mark_paid records a payment that already happened outside Payvy, so a
+    // PO exception warns rather than refusing to record reality.
+    let po_warning = super::purchase_orders::bill_exception(cx, &bill)
+        .await?
+        .map(|e| format!("paid while a PO exception stood: {} ({})", e.kind, e.detail));
     store::mark_paid(
         &mut cx.tx,
         bill.id,
@@ -799,7 +817,9 @@ pub async fn mark_paid(cx: &mut Cx<'_>, input: MarkPaid) -> Result<Value, Comman
                 "method": input.method, "reference": reference }),
     )
     .await?;
-    detail(cx, bill.id).await
+    let mut out = detail(cx, bill.id).await?;
+    out["po_warning"] = json!(po_warning);
+    Ok(out)
 }
 
 #[derive(Deserialize)]
@@ -822,6 +842,7 @@ pub async fn void(cx: &mut Cx<'_>, input: Close) -> Result<Value, CommandError> 
         let reason = text(Some(input.reason))
             .ok_or_else(|| CommandError::Invalid("reason can't be empty".into()))?;
         store::close_bill(&mut cx.tx, bill.id, State::Void, &reason).await?;
+        super::purchase_orders::release_bill_allocations(cx, bill.id, "bill voided").await?;
         cx.emit(
             "bill.voided",
             bill.id,
@@ -844,6 +865,15 @@ async fn close(
     let (bill, _, progress) = open_bill(cx, input.bill_id).await?;
     no_open_payment(cx, bill.id).await?;
     store::close_bill(&mut cx.tx, bill.id, state, &reason).await?;
+    let release_reason = format!(
+        "bill {}",
+        if state == State::Void {
+            "voided"
+        } else {
+            "rejected"
+        }
+    );
+    super::purchase_orders::release_bill_allocations(cx, bill.id, &release_reason).await?;
     cx.emit(
         event,
         bill.id,
@@ -882,6 +912,7 @@ pub(super) async fn notification_targets(
     let step = progress.active_step().unwrap_or_default().to_owned();
     let d = duties(cx, &[bill.id]).await?;
     let uploaded_by: Vec<_> = d.uploaders.iter().map(|(_, a)| a.clone()).collect();
+    let overrider = super::purchase_orders::overridden_by(cx, &bill).await?;
     let mut recipients = vec![];
     for person in store::people(&mut cx.tx, cx.org).await? {
         let roles = store::actor_roles(&mut cx.tx, cx.org, &person.actor).await?;
@@ -905,7 +936,9 @@ pub(super) async fn notification_targets(
                     .is_some_and(|t| t.can_approve)
             }
             Status::AwaitingRelease { by, .. } => {
-                Permission::Pay.allows(&roles) && (by.is_empty() || by.contains(&person.actor))
+                Permission::Pay.allows(&roles)
+                    && (by.is_empty() || by.contains(&person.actor))
+                    && duties::release_refusal(overrider.as_deref(), &person.actor).is_none()
             }
             _ => false,
         };
