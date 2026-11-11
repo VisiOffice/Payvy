@@ -36,7 +36,7 @@ async function reclamationVendor(): Promise<void> {
 
 
 const strip = (page: Page) => page.getByRole('region', { name: 'Pages' });
-const attach = (page: Page, n: number) => strip(page).getByRole('checkbox', { name: `Attach page ${n}` });
+const attach = (page: Page, n: number) => strip(page).getByRole('checkbox', { name: `Include page ${n} in bill` });
 const invoices = (page: Page) => page.getByRole('list', { name: 'Invoices in this file' });
 const noSideScroll = (page: Page) => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth);
 

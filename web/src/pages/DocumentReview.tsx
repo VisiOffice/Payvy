@@ -699,7 +699,7 @@ export function DocumentReview() {
                 picking && visible.length > 1 ? (
                   <span className="payvy-viewer-attach">
                     <CheckboxInput
-                      label={`Attach page ${ref.page}`}
+                      label={`Include page ${ref.page} in bill`}
                       size="sm"
                       value={selected.has(ref.page)}
                       onChange={(on) => tick(ref.page, on)}

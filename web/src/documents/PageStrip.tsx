@@ -52,7 +52,7 @@ function Thumbnail({ page, rotation, label }: { page: Page; rotation: number; la
  * The document's pages as thumbnails, in the order they are shown. Move a
  * page earlier or later (or drag it), turn it, hide or restore it; each
  * change saves straight away as a new version through `document.arrange`.
- * With `selected`, each visible page has a checkbox ("Attach page"), with
+ * With `selected`, each visible page has a checkbox ("Include page N in bill"), with
  * All and None, for creating a bill from some of the pages. Clicking a
  * thumbnail shows that page in the viewer (`current`, `onPick`). Closed, it
  * is one slim row: the count, the ticks, All and None, and Show thumbnails.
@@ -262,7 +262,7 @@ export function PageStrip({
               {picking && !p.hidden && visiblePages.length > 1 ? (
                 <div className="payvy-page-thumb-pick">
                   <CheckboxInput
-                    label={`Attach page ${p.page}`}
+                    label={`Include page ${p.page} in bill`}
                     isLabelHidden
                     size="sm"
                     value={selected.has(p.page)}

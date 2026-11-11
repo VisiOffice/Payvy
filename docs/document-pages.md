@@ -200,7 +200,7 @@ be the source document's reading; corrections are recorded against it. `bill.cre
 
 ### Web
 
-- Document review: the page strip has a checkbox per visible page ("Attach page 3"), with All and
+- Document review: the page strip has a checkbox per visible page ("Include page 3 in bill"), with All and
   None and "2 of 4 selected". With some but not all pages ticked, the button reads "Create bill
   from 2 pages" and runs `bill.create` with `pages`; with all ticked it is Create bill, as before;
   with none it is disabled ("Tick the pages for this bill"). Hidden pages have no checkbox.
@@ -234,7 +234,7 @@ be the source document's reading; corrections are recorded against it. `bill.cre
   buttons' tooltips. The keys are ignored while typing (any field but a tick box), in a menu, list
   or radio group, while a dialog is open, and with Ctrl, ⌘, Alt or Shift held. Focusing a form
   field turns to the page its value was read from. A swipe turns the page on a touch screen when it
-  fits the width. The toolbar has the page's own "Attach page N" tick, so pages can be ticked while
+  fits the width. The toolbar has the page's own "Include page N in bill" tick, so pages can be ticked while
   flipping through. A one-page document (a photo) has no page controls.
 - **The thumbnails can be hidden** (Show/Hide thumbnails). Hidden, the strip is one row: the page
   count, "N of M selected", All and None. The choice is kept in the browser (`localStorage`
