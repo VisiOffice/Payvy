@@ -23,6 +23,7 @@ import { PayeeInvites, type PayeeInvite } from './PayeeInvites';
 import { RampPayee } from './RampPayee';
 import { VendorDialog } from './VendorDialog';
 import { VendorAutoPayLimit } from './AutoPaySettings';
+import { VendorPoSettings } from './VendorPoSettings';
 import { BillsTable, type Listed } from '../bills/BillsTable';
 import { METHOD } from '../inbox/types';
 import { date } from '../money';
@@ -239,6 +240,7 @@ export function VendorPage() {
         </VStack>
       </HStack>
       <VendorAutoPayLimit vendorId={vendor.id} limit={detail.auto_pay_limit} onSaved={() => void loadVendor()} />
+      <VendorPoSettings vendorId={vendor.id} />
       <section ref={workflowRef} id="workflow" className="payvy-vendor-workflow" style={{ scrollMarginTop: 16 }}>
         <div className="payvy-section-heading">
           <Heading level={2}>Workflow</Heading>
