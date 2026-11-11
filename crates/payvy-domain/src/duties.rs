@@ -53,6 +53,7 @@ pub struct Context<'a> {
 #[serde(tag = "code", rename_all = "snake_case")]
 pub enum Refusal {
     NotAPerson,
+    MissingRole,
     NotAnApprover { approvers: Vec<String> },
     AlreadyApprovedStep,
     AlreadyApprovedBill { step_id: String },
@@ -292,6 +293,7 @@ fn refusal(
 
 fn reason(r: &Refusal, step_id: &str) -> String {
     match r {
+        Refusal::MissingRole => "You need the Approver role".into(),
         Refusal::NotAPerson => "only a person can approve a bill".into(),
         Refusal::NotAnApprover { approvers } => format!(
             "you aren't an approver on step {step_id}; it needs {}",

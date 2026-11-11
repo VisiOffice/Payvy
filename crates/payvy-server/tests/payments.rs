@@ -858,7 +858,7 @@ async fn invitation_preview_completion_acceptance_and_payment() {
     assert!(matches!(
         commit(
             &db.state,
-            &payvy_server::Actor::person(other, "other"),
+            &payvy_server::Actor::administrator(other, "other"),
             "vendor.refresh_payee_invite",
             json!({"invite_id": id})
         )

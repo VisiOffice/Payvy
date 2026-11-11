@@ -1,3 +1,4 @@
+import { Allowed, useCan } from '../permissions';
 // One vendor: how its bills are approved and paid (edited here), its bills,
 // where it's paid, and the account numbers it bills under.
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -49,6 +50,7 @@ interface VendorDetail {
 }
 
 export function VendorPage() {
+  const can = useCan();
   const { id = '' } = useParams();
   const { hash } = useLocation();
   const [detail, setDetail] = useState<VendorDetail | null>(null);
@@ -123,7 +125,7 @@ export function VendorPage() {
   return (
     <Page
       title={vendor.name}
-      actions={<Button label="Edit vendor" variant="secondary" onClick={() => setEditing(true)} />}
+      actions={<Allowed command="vendor.update"><Button label="Edit vendor" variant="secondary" onClick={() => setEditing(true)} /></Allowed>}
       above={
         <Breadcrumbs>
           <BreadcrumbItem href="/vendors">Vendors</BreadcrumbItem>
@@ -165,7 +167,7 @@ export function VendorPage() {
                 </VStack>
               ) : (
                 <Text type="supporting">
-                  Not set. Anyone can propose where this vendor is paid; a person accepts it in Waiting on you.
+                  Not set. An AP clerk can propose a mapping; a payment releaser accepts it in Waiting on you.
                 </Text>
               )}
               <RampPayee key={`ramp:${vendor.id}`} vendorId={vendor.id} vendorName={vendor.name} onChanged={loadVendor} />
@@ -196,7 +198,7 @@ export function VendorPage() {
                     <MetadataListItem key={a.id} label={a.account_number}>
                       <HStack gap={2} vAlign="center" hAlign="between">
                         <Text>{a.location ?? '—'}</Text>
-                        <Button
+                        <Allowed command="vendor.remove_account"><Button
                           label="Remove"
                           aria-label={`Remove account number ${a.account_number}`}
                           variant="ghost"
@@ -205,7 +207,7 @@ export function VendorPage() {
                           clickAction={() =>
                             changeAccounts(() => run('vendor.remove_account', { vendor_id: vendor.id, account_id: a.id }))
                           }
-                        />
+                        /></Allowed>
                       </HStack>
                     </MetadataListItem>
                   ))}
@@ -214,7 +216,7 @@ export function VendorPage() {
               <HStack gap={2} wrap="wrap" vAlign="end">
                 <TextInput label="Account number" value={accountNumber} onChange={setAccountNumber} isDisabled={accountBusy} />
                 <TextInput label="Location" value={location} onChange={setLocation} placeholder="Optional, e.g. a job site" isDisabled={accountBusy} />
-                <Button
+                <Allowed command="vendor.add_account"><Button
                   label="Add"
                   variant="secondary"
                   isDisabled={accountBusy || !accountNumber.trim()}
@@ -229,7 +231,7 @@ export function VendorPage() {
                       setLocation('');
                     })
                   }
-                />
+                /></Allowed>
               </HStack>
               {accountError && <Banner status="error" title={accountError} />}
             </VStack>
@@ -241,8 +243,8 @@ export function VendorPage() {
         <div className="payvy-section-heading">
           <Heading level={2}>Workflow</Heading>
           <span className="payvy-muted">{detail.workflow.source === 'vendor' ? 'For this vendor' : 'Company default'}</span>
-          <Button label={editingWorkflow ? 'Close editor' : 'Edit workflow'} variant="secondary" size="sm"
-            onClick={() => setEditingWorkflow(v => !v)} aria-expanded={editingWorkflow} />
+          <Allowed command="workflow.propose"><Button label={editingWorkflow ? 'Close editor' : 'Edit workflow'} variant="secondary" size="sm"
+            onClick={() => setEditingWorkflow(v => !v)} aria-expanded={editingWorkflow} /></Allowed>
         </div>
         {editingWorkflow ? <Builder vendor={{ id: vendor.id, name: vendor.name }} current={detail.workflow}
           people={people} onSaved={loadVendor} /> : <div className="payvy-workflow-summary">
@@ -250,7 +252,7 @@ export function VendorPage() {
             <span className="payvy-step-number">{index + 1}</span>
             <span>{describeStep(step, actor => people.find(p => p.value === actor)?.label ?? actor)}</span>
           </div>)}
-          {detail.workflow.proposals.length > 0 && <Button label={`Review ${detail.workflow.proposals.length} proposed changes`}
+          {can('workflow.accept') && detail.workflow.proposals.length > 0 && <Button label={`Review ${detail.workflow.proposals.length} proposed changes`}
             variant="secondary" onClick={() => setEditingWorkflow(true)} />}
         </div>}
       </section>

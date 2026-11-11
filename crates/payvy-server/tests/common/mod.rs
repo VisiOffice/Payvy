@@ -112,8 +112,10 @@ impl TestDb {
     }
 }
 
+/// Existing business-rule fixtures use a trusted operator. Role/security tests
+/// explicitly use Actor::person and real sessions/keys to exercise authorization.
 pub fn person(name: &str) -> Actor {
-    Actor::person(payvy_store::DEFAULT_ORG, name)
+    Actor::administrator(payvy_store::DEFAULT_ORG, name)
 }
 
 pub fn agent(name: &str) -> Actor {

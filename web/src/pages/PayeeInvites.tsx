@@ -1,3 +1,4 @@
+import { Allowed } from '../permissions';
 import { useEffect, useState } from 'react';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
@@ -53,8 +54,8 @@ export function PayeeInvites({ vendor, invites, payees, onChanged }: {
     {current.map(invite => <InviteStatus key={invite.id} invite={invite} proposalStatus={payees.find(p => p.id === invite.proposal_id)?.status} onChanged={onChanged} />)}
     {loaded && !connection && <Text type="supporting">Connect Mercury to invite this vendor to supply payment details.</Text>}
     {connection?.provider === 'mercury' && !pending && <HStack gap={2} wrap="wrap">
-      <Button label="Invite payment details…" variant="secondary" onClick={() => setOpen(true)} />
-      <Button label="Enter bank details…" variant="ghost" onClick={() => setEntering(true)} />
+      <Allowed command="vendor.invite_payee"><Button label="Invite payment details…" variant="secondary" onClick={() => setOpen(true)} /></Allowed>
+      <Allowed command="vendor.create_recipient"><Button label="Enter bank details…" variant="ghost" onClick={() => setEntering(true)} /></Allowed>
     </HStack>}
     {entering && <RecipientDialog vendor={vendor} onClose={() => setEntering(false)} onChanged={onChanged} />}
     {open && <InviteDialog vendor={vendor} onClose={() => setOpen(false)} onChanged={onChanged} />}
@@ -83,8 +84,8 @@ function InviteStatus({ invite, proposalStatus, onChanged }: { invite: PayeeInvi
     {invite.status === 'created' && <Text type="supporting">Payvy checks with Mercury every few minutes. When the vendor finishes, their payment details appear in Waiting on you for you to accept.</Text>}
     {proposalStatus === 'proposed' && <Text type="supporting">Review the proposed destination in Waiting on you before paying this vendor.</Text>}
     {error && <Banner status="warning" title={error} />}
-    {unresolved && <Button label={invite.status === 'unknown' ? 'Check invitation' : 'Check now'} variant="secondary" clickAction={refresh}
-      isDisabled={invite.status === 'unknown' && !invite.mercury_invite_id && !recoveryId.trim()} />}
+    {unresolved && <Allowed command="vendor.refresh_payee_invite"><Button label={invite.status === 'unknown' ? 'Check invitation' : 'Check now'} variant="secondary" clickAction={refresh}
+      isDisabled={invite.status === 'unknown' && !invite.mercury_invite_id && !recoveryId.trim()} /></Allowed>}
   </VStack>;
 }
 

@@ -1,6 +1,9 @@
+import type { PersonSetRolesInput } from '../api/commands.gen';
+import { MultiSelector } from '@astryxdesign/core/MultiSelector';
+import { ROLES, useCan, type Role } from '../permissions';
 // Settings > People: who can sign in to this company's Payvy. Adding and
-// removing are person.add and person.remove (both person_only). There are no
-// roles: everyone who signs in has every right a person has.
+// removing are person.add and person.remove (both person_only). Company
+// roles are enforced by the command dispatcher for sessions and person keys.
 import { useCallback, useEffect, useState } from 'react';
 import { AlertDialog } from '@astryxdesign/core/AlertDialog';
 import { Badge } from '@astryxdesign/core/Badge';
@@ -28,12 +31,15 @@ interface Person {
   name: string;
   created_at: string;
   created_by: string;
+  roles: Role[];
 }
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 export function PeopleSettings() {
   const { me } = useSession();
+  const can = useCan();
+  const [editing, setEditing] = useState<Person | null>(null);
   const toast = useToast();
   const [people, setPeople] = useState<Person[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -75,8 +81,8 @@ export function PeopleSettings() {
     <Page
       title="People"
       narrow
-      description="Everyone who can sign in to this company's Payvy. Each person can approve bills, release payments, and accept payees and workflows."
-      actions={people && <Button label="Add person" variant="primary" onClick={() => setAdding(true)} />}
+      description="Manage who can sign in and what they can do. Roles combine; workflow assignments and approval rules still apply."
+      actions={people && can('person.add') && <Button label="Add person" variant="primary" onClick={() => setAdding(true)} />}
     >
       {error && <Banner status="error" title="Couldn't load people" description={error} />}
       {added && (
@@ -101,6 +107,7 @@ export function PeopleSettings() {
                     <HStack gap={2} vAlign="center" wrap="wrap">
                       <Text weight="semibold">{p.name}</Text>
                       {you && <Badge label="You" variant="info" />}
+                      {(p.roles ?? []).map(role => <Badge key={role} label={ROLES.find(r => r.value === role)?.label ?? role} variant="neutral" />)}
                     </HStack>
                   }
                   description={
@@ -112,9 +119,9 @@ export function PeopleSettings() {
                       </span>
                     </HStack>
                   }
-                  endContent={
-                    !you &&
-                    !onlyOne && (
+                  endContent={can('person.set_roles') && <HStack gap={2}>
+                    <Button label="Edit roles" aria-label={`Edit roles for ${p.name}`} size="sm" variant="secondary" onClick={() => setEditing(p)} />
+                    {!you && !onlyOne && (
                       <Button
                         label="Remove"
                         aria-label={`Remove ${p.name}`}
@@ -122,8 +129,8 @@ export function PeopleSettings() {
                         size="sm"
                         onClick={() => setRemoving(p)}
                       />
-                    )
-                  }
+                    )}
+                  </HStack>}
                 />
               );
             })}
@@ -133,10 +140,11 @@ export function PeopleSettings() {
       {people && (
         <Text type="supporting">
           {onlyOne
-            ? "You're the only person here. Add someone before you could ever need to be removed."
-            : "You can't remove yourself; someone else here can. Removing a person signs them out everywhere, and what they did stays on the record."}
+            ? "You're the only person here. Add another admin before you could ever need to be removed."
+            : "You can't remove yourself; another admin can. Removing a person signs them out everywhere, and what they did stays on the record."}
         </Text>
       )}
+      {editing && <RolesDialog person={editing} onClose={() => setEditing(null)} onSaved={async () => { setEditing(null); await load(); }} />}
       {adding && (
         <AddPersonDialog
           onClose={() => setAdding(false)}
@@ -161,6 +169,7 @@ export function PeopleSettings() {
 }
 
 function AddPersonDialog({ onClose, onAdded }: { onClose: () => void; onAdded: (p: Person) => void | Promise<void> }) {
+  const [roles, setRoles] = useState<Role[]>(['ap_clerk']);
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [actor, setActor] = useState('');
@@ -173,6 +182,7 @@ function AddPersonDialog({ onClose, onAdded }: { onClose: () => void; onAdded: (
     setError(null);
     try {
       const r = await run<{ person: Person }>('person.add', {
+        roles: roles as PersonSetRolesInput['roles'],
         name: name.trim(),
         email: email.trim(),
         ...(actor.trim() ? { actor: actor.trim() } : {}),
@@ -204,15 +214,40 @@ function AddPersonDialog({ onClose, onAdded }: { onClose: () => void; onAdded: (
           description="Optional. The name their actions are recorded under: a-z 0-9 . _ -"
           isDisabled={busy}
         />
-        <Text type="supporting">
-          Everyone here has the same rights: approving bills, releasing payments, and accepting payees and workflows.
-        </Text>
+        <RolePicker roles={roles} onChange={setRoles} />
         {error && <Banner status="error" title={error} />}
         <HStack gap={2} hAlign="end">
           <Button label="Cancel" variant="ghost" isDisabled={busy} onClick={close} />
-          <Button label="Add person" variant="primary" isDisabled={busy || !name.trim() || !emailOk} clickAction={add} />
+          <Button label="Add person" variant="primary" isDisabled={busy || !roles.length || !name.trim() || !emailOk} clickAction={add} />
         </HStack>
       </VStack>
     </Dialog>
   );
+}
+
+function RolePicker({ roles, onChange }: { roles: Role[]; onChange: (roles: Role[]) => void }) {
+  return <VStack gap={2}>
+    <MultiSelector label="Roles" options={ROLES} value={roles} onChange={values => onChange(values as Role[])} triggerDisplay="badges" placeholder="Choose at least one role" />
+    <Text type="supporting">Admin: full access, including approvals and payments. AP clerk: prepare invoices and vendors. Approver: approve or reject bills. Payment releaser: release payments and accept payee changes. Everyone can view company records.</Text>
+    <Text type="supporting">Named workflow assignments and separation-of-duties rules still apply to every role, including Admin.</Text>
+  </VStack>;
+}
+function RolesDialog({ person, onClose, onSaved }: { person: Person; onClose: () => void; onSaved: () => Promise<void> }) {
+  const [roles, setRoles] = useState<Role[]>(person.roles);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const unchanged = [...roles].sort().join() === [...person.roles].sort().join();
+  return <Dialog isOpen onOpenChange={open => !open && !busy && onClose()} width={520} purpose="form">
+    <DialogHeader title={`Roles for ${person.name}`} />
+    <VStack gap={4} padding={4}>
+      <RolePicker roles={roles} onChange={setRoles} />
+      <Text type="supporting">Changes apply to their next action, including existing sessions and person API keys. The last admin cannot be demoted.</Text>
+      {error && <Banner status="error" title={error} />}
+      <HStack gap={2} hAlign="end"><Button label="Cancel" variant="ghost" isDisabled={busy} onClick={onClose} /><Button label="Save roles" variant="primary" isDisabled={busy || !roles.length || unchanged} clickAction={async () => {
+        setBusy(true); setError(null);
+        try { await run('person.set_roles', { actor: person.actor, roles: roles as PersonSetRolesInput['roles'] }); await onSaved(); }
+        catch (e) { setError(message(e)); } finally { setBusy(false); }
+      }} /></HStack>
+    </VStack>
+  </Dialog>;
 }

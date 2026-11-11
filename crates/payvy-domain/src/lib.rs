@@ -8,6 +8,7 @@ pub mod duties;
 pub mod email;
 pub mod extraction;
 pub mod pages;
+pub mod permissions;
 pub mod workflow;
 
 /// Money is integer cents, always.

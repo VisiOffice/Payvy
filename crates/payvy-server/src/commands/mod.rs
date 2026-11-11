@@ -113,6 +113,19 @@ pub async fn run(
     if spec.person_only && actor.kind != ActorKind::Person {
         return Err(CommandError::PersonOnly(spec.name));
     }
+    let preview = matches!(mode, Mode::Preview);
+    let mut tx = state.store.begin(actor.org_id).await?;
+    if matches!(name, "person.add" | "person.remove" | "person.set_roles") {
+        store::lock_roles(&mut tx, actor.org_id).await?;
+    }
+    let roles = crate::permissions::roles(&mut tx, actor).await?;
+    if !crate::permissions::allowed(actor, &roles, spec) {
+        return Err(CommandError::Forbidden(format!(
+            "{} requires the {} role",
+            spec.name,
+            spec.permission.label()
+        )));
+    }
     match (spec.tier, &mode) {
         (
             RiskTier::Confirmed,
@@ -136,8 +149,6 @@ pub async fn run(
         _ => {}
     }
 
-    let preview = matches!(mode, Mode::Preview);
-    let mut tx = state.store.begin(actor.org_id).await?;
     if let Mode::Commit {
         confirm_token: Some(t),
     } = &mode
@@ -150,6 +161,7 @@ pub async fn run(
     }
     let mut cx = Cx {
         tx,
+        roles,
         store: &state.store,
         org: actor.org_id,
         actor,
@@ -204,6 +216,7 @@ async fn execute(cx: &mut Cx<'_>, name: &str, input: &Value) -> Result<Value, Co
         "approval_rules.set" => approval_rules::set(cx, parse(input)?).await,
         "person.list" => people::list(cx).await,
         "person.add" => people::add(cx, parse(input)?).await,
+        "person.set_roles" => people::set_roles(cx, parse(input)?).await,
         "person.remove" => people::remove(cx, parse(input)?).await,
         "org.get" => org::get(cx).await,
         "org.update" => org::update(cx, parse(input)?).await,
@@ -258,6 +271,7 @@ async fn execute(cx: &mut Cx<'_>, name: &str, input: &Value) -> Result<Value, Co
 /// acting, the time, and the events appended so far.
 pub(crate) struct Cx<'a> {
     pub tx: Tx,
+    pub roles: Vec<payvy_domain::permissions::Role>,
     pub store: &'a store::Store,
     pub org: Uuid,
     pub actor: &'a Actor,
@@ -275,6 +289,11 @@ pub(crate) struct Cx<'a> {
 }
 
 impl<'a> Cx<'a> {
+    pub fn can(&self, name: &str) -> bool {
+        commands::find(name)
+            .is_some_and(|spec| crate::permissions::allowed(self.actor, &self.roles, spec))
+    }
+
     pub fn storage(&self) -> Result<&'a payvy_storage::Storage, CommandError> {
         self.storage.ok_or(CommandError::NotConfigured(
             "no document storage is configured (set PAYVY_S3_ENDPOINT, PAYVY_S3_BUCKET and its keys)",

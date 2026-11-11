@@ -1,3 +1,4 @@
+import { Allowed } from '../permissions';
 import { useEffect, useRef, useState } from 'react';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
@@ -87,7 +88,7 @@ export function RampPayee({ vendorId, vendorName, onChanged }: { vendorId: strin
       options={destinations.map(d => ({ value: d.instrument_id, label: `${d.destination} · Fee ${money(d.fee.amount)}${destinations.filter(other => other.destination === d.destination).length > 1 ? ` · ${d.instrument_id.slice(-6)}` : ''}` }))} />}
     {error && <Banner status="error" title={error} />}
     {sent && <Text>Proposed. Review it in Waiting on you.</Text>}
-    <Button label="Propose Ramp payee" variant="secondary" isDisabled={busy || !!blocked || !instrument || sent} onClick={async () => {
+    <Allowed command="vendor.propose_payee"><Button label="Propose Ramp payee" variant="secondary" isDisabled={busy || !!blocked || !instrument || sent} onClick={async () => {
       const d = destinations.find(d => d.instrument_id === instrument);
       if (!d) return;
       setBusy(true); setError(null);
@@ -96,6 +97,6 @@ export function RampPayee({ vendorId, vendorName, onChanged }: { vendorId: strin
           method: 'ach', instrument_id: d.instrument_id, instrument_fingerprint: d.fingerprint });
         setSent(true); await onChanged();
       } catch (e) { setError(message(e)); } finally { setBusy(false); }
-    }} />
+    }} /></Allowed>
   </VStack>;
 }

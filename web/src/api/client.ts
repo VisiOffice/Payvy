@@ -26,6 +26,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   const text = await res.text();
   const data = text ? JSON.parse(text) : null;
   if (!res.ok) {
+    if (res.status === 403) window.dispatchEvent(new Event('payvy:access-changed'));
     const e = data?.error ?? {};
     throw new ApiError(res.status, e.code ?? 'error', e.message ?? res.statusText);
   }
@@ -33,6 +34,8 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 }
 
 export interface Me {
+  roles: import('../permissions').Role[];
+  commands: CommandName[];
   person: { actor: string; name: string; email: string };
   organization: { id: string; name: string };
 }

@@ -248,6 +248,11 @@ async fn the_web_app_reads_a_file_through_the_server() {
 
     // Another organization can't read it.
     let other = db.add_org().await;
+    let mut tx = db.state.store.begin(other).await.unwrap();
+    payvy_store::set_actor_roles(&mut tx, other, "eve", &[payvy_store::Role::ApClerk])
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
     let (key, hash) = payvy_server::new_api_key().unwrap();
     db.state
         .store
