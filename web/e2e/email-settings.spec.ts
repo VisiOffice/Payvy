@@ -1,15 +1,15 @@
 import { expect, test } from '@playwright/test';
 import { agent } from './api';
 
-test('a person creates the bill inbox address, then replaces it', async ({ page }) => {
+test('a person creates the email-in address, then replaces it', async ({ page }) => {
   await page.goto('/');
-  await page.getByRole('link', { name: 'Bill inbox' }).click();
+  await page.getByRole('link', { name: 'Email-in address' }).click();
   await expect(page).toHaveURL(/\/settings\/email$/);
 
-  const address = page.getByLabel('Bill inbox address', { exact: true });
+  const address = page.getByLabel('Email-in address', { exact: true });
   const existing = await agent<{ address: string | null }>('email.address', {});
   if (!existing.address) {
-    await expect(page.getByText('No bill inbox yet.')).toBeVisible();
+    await expect(page.getByText('No email-in address yet.')).toBeVisible();
     await page.getByRole('button', { name: 'Create address' }).click();
   }
   await expect(address).toHaveText(/^[a-z0-9]{12}@in\.payvy\.test$/);

@@ -1,4 +1,5 @@
 import { LineReview, type ReviewDetail, type ReviewPayload, type ReviewRevision, type ReviewValidation, type SourceEvidence, type ReviewAnalysis } from '../documents/LineReview';
+import { CHECK } from '../documents/checks';
 import { Allowed, useCan } from '../permissions';
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps, type ReactNode } from 'react';
 import { useNavigate, useParams } from 'react-router';
@@ -57,23 +58,6 @@ function formOfReview(p: ReviewPayload): Form {
 const EMPTY: Form = { vendor_id: '', invoice_number: '', invoice_date: '', due_date: '', amount: '', memo: '' };
 
 
-/** What each extraction check looks at, in words. */
-const CHECK: Record<string, string> = {
-  is_invoice: 'It is an invoice',
-  vendor: 'Vendor',
-  total: 'Total',
-  invoice_number: 'Invoice number',
-  invoice_date: 'Invoice date',
-  invoice_date_readable: 'Invoice date',
-  due_date_readable: 'Due date',
-  due_after_invoice: 'Due after the invoice date',
-  currency: 'Currency',
-  lines_readable: 'Line items',
-  lines_add_up: 'Line items add up',
-  subtotal_plus_tax: 'Subtotal plus tax is the total',
-  not_a_duplicate: 'Possible duplicate',
-  one_invoice: 'One invoice',
-};
 
 /** A check's detail for a person: the server also writes it for agents. */
 function checkDetail(c: { check: string; detail: string }, newVendor: string | undefined): string {
@@ -330,7 +314,7 @@ export function DocumentReview() {
   };
   const copying = useClickToCopy(editable, fill);
 
-  if (error) return <div className="payvy-review-error"><Link href="/documents">← Documents</Link><h1>Review invoice</h1><Banner status="error" title="Couldn't load this document" description={error} /><Button label="Try again" variant="secondary" onClick={() => void load()} /></div>;
+  if (error) return <div className="payvy-review-error"><Link href="/documents">← Inbox</Link><h1>Review invoice</h1><Banner status="error" title="Couldn't load this document" description={error} /><Button label="Try again" variant="secondary" onClick={() => void load()} /></div>;
   if (!detail) return <DocumentLoading />;
 
   const doc = detail.document;
@@ -516,7 +500,7 @@ export function DocumentReview() {
   return (
     <div className="payvy-document-review" data-mobile-view={mobileView}>
       <header className="payvy-review-header">
-        <Link href="/documents">← Documents</Link>
+        <Link href="/documents">← Inbox</Link>
         <h1>Review invoice</h1>
         <p className="payvy-review-filename" title={doc.filename}>{doc.filename}</p>
         <span className="payvy-document-status">

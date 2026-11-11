@@ -5,20 +5,18 @@ import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
 import { EmptyState } from '@astryxdesign/core/EmptyState';
 import { FileInput } from '@astryxdesign/core/FileInput';
-import { Link } from '@astryxdesign/core/Link';
+import { Kbd } from '@astryxdesign/core/Kbd';
 import { SegmentedControl, SegmentedControlItem } from '@astryxdesign/core/SegmentedControl';
 import { Spinner } from '@astryxdesign/core/Spinner';
 import { TextInput } from '@astryxdesign/core/TextInput';
 import { useToast } from '@astryxdesign/core/Toast';
 import { Page } from '../Page';
 import { run } from '../api/client';
-import type { Doc, SplitFrom } from '../documents/types';
+import type { Doc } from '../documents/types';
+import { InboxBoard, InboxTable, useInboxView, type Row } from '../documents/InboxViews';
 import { readWithin } from '../documents/Loading';
-import { date } from '../money';
 
 type Status = Doc['status'];
-/** A row of document.list: a split document says where it came from. */
-type Row = Doc & { split_from: SplitFrom | null };
 const LABEL: Record<Status, string> = { inbox: 'To review', filed: 'Filed', trashed: 'Not bills', split: 'Split' };
 const ACCEPT = 'application/pdf,image/png,image/jpeg,image/gif,image/webp,image/tiff';
 const MAX_BYTES = 25 * 1024 * 1024;
@@ -33,7 +31,9 @@ function base64(file: File): Promise<string> {
 export const fileSize = (bytes: number) => bytes < 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 
 export function Documents() {
+  const [view, setView] = useInboxView();
   const [status, setStatus] = useState<Status>('inbox');
+  const [filed, setFiled] = useState<Row[] | null>(null);
   const [docs, setDocs] = useState<Row[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
@@ -50,6 +50,18 @@ export function Documents() {
       .catch(e => { if (current === request.current) setError(e.message); });
   }, [status]);
   useEffect(() => { load(); return () => { request.current++; }; }, [load]);
+  // The board's last column: what became bills, latest first.
+  const board = view === 'board';
+  const loadFiled = useCallback(() => {
+    if (!board) return;
+    run<{ documents: Row[] }>('document.list', { status: 'filed', limit: 200 })
+      .then(r => setFiled(r.result.documents.slice(-12).reverse()))
+      .catch(() => setFiled([]));
+  }, [board]);
+  useEffect(() => { loadFiled(); }, [loadFiled]);
+  // The board is To review; switching to it shows that.
+  useEffect(() => { if (board && status !== 'inbox') { setStatus('inbox'); setSearch(''); } }, [board, status]);
+  const refresh = () => { load(); loadFiled(); };
 
   async function upload(picked: File | File[] | null) {
     const list = picked ? (Array.isArray(picked) ? picked : [picked]) : [];
@@ -79,13 +91,15 @@ export function Documents() {
     try {
       await run('document.unsplit', { document_id: d.id });
       toast({ body: `Pages put back in ${d.split_from?.filename ?? 'the document they came from'}` });
-      load();
+      refresh();
     } catch (e) {
       toast({ body: e instanceof Error ? e.message : String(e), type: 'error' });
     }
   }
-  const visible = docs?.filter(d => d.filename.toLocaleLowerCase().includes(search.toLocaleLowerCase()));
-  return <Page title="Documents" eyebrow="Invoice intake" description="A place for every invoice. Review the details, then create a bill.">
+  const q = search.trim().toLocaleLowerCase();
+  const visible = docs?.filter(d => !q || [d.filename, d.reading?.vendor.name, d.reading?.vendor.printed, ...(d.reading?.invoice_numbers ?? [])]
+    .some(v => v?.toLocaleLowerCase().includes(q)));
+  return <Page title="Inbox" eyebrow="Invoice intake" description="Every invoice that arrives, with what was read from it. Review the details, then create a bill.">
     <Allowed command="document.upload"><section className="payvy-document-upload" aria-label="Add invoices">
       <div className="payvy-upload-intro"><span className="payvy-file-glyph" aria-hidden="true">↑</span><div><h2>Add your invoices</h2><p>PDFs, scans, or photos · up to 25 MB each</p></div></div>
       <FileInput label="Add invoices" isLabelHidden mode="dropzone" isMultiple accept={ACCEPT} maxSize={MAX_BYTES}
@@ -94,35 +108,26 @@ export function Documents() {
       {uploading && <div role="status" className="payvy-upload-progress"><Spinner size="sm" /><div><strong>{uploading.title}</strong><p>{uploading.detail}</p></div></div>}
     </section></Allowed>
     <div className="payvy-documents-toolbar">
-      <SegmentedControl label="Show" value={status} onChange={v => { setStatus(v as Status); setSearch(''); }}>
-        <SegmentedControlItem value="inbox" label="To review" /><SegmentedControlItem value="filed" label="Filed" /><SegmentedControlItem value="trashed" label="Not bills" />
-      </SegmentedControl>
-      <div className="payvy-documents-search"><TextInput label="Search documents" isLabelHidden placeholder="Search filenames…" value={search} onChange={setSearch} /><Button label="Refresh" variant="ghost" onClick={load} /></div>
+      <div className="payvy-documents-switches">
+        {!board && <SegmentedControl label="Show" value={status} onChange={v => { setStatus(v as Status); setSearch(''); }}>
+          <SegmentedControlItem value="inbox" label="To review" /><SegmentedControlItem value="filed" label="Filed" /><SegmentedControlItem value="trashed" label="Not bills" />
+        </SegmentedControl>}
+        <div className="payvy-view-switch">
+          <SegmentedControl label="View" value={view} onChange={v => setView(v as 'table' | 'board')}>
+            <SegmentedControlItem value="table" label="Table" /><SegmentedControlItem value="board" label="Board" />
+          </SegmentedControl>
+          <span className="payvy-view-keys" aria-hidden="true"><Kbd keys="t" /><Kbd keys="b" /></span>
+        </div>
+      </div>
+      <div className="payvy-documents-search"><TextInput label="Search documents" isLabelHidden placeholder="Search vendors, invoices, files…" value={search} onChange={setSearch} /><Button label="Refresh" variant="ghost" onClick={refresh} /></div>
     </div>
     {error && <Banner status="error" title="Couldn't load documents" description={error} endContent={<Button label="Try again" variant="secondary" onClick={load} />} />}
     {!docs && !error && <div className="payvy-document-list-loading" aria-busy="true"><div role="status" className="payvy-loading-message"><Spinner size="sm" />Loading documents</div><div aria-hidden="true">{[0, 1, 2].map(i => <div className="payvy-document-row-placeholder" key={i}><span className="payvy-file-glyph" /><span className="payvy-skeleton" /><span className="payvy-skeleton" /></div>)}</div></div>}
-    {visible && <section className="payvy-document-list" aria-label={LABEL[status]}>
+    {visible && board && <InboxBoard docs={visible} filed={filed} undoSplit={undoSplit} />}
+    {visible && !board && <section className="payvy-document-list" aria-label={LABEL[status]}>
       <div className="payvy-document-list-heading"><h2>{LABEL[status]}</h2><span>{visible.length} {visible.length === 1 ? 'document' : 'documents'}{docs!.length === 200 ? ' · latest 200 loaded' : ''}</span></div>
-      {visible.length === 0 ? <EmptyState title={search ? 'No matching documents' : status === 'inbox' ? 'You’re all caught up' : 'Nothing here yet'} description={search ? 'Try another filename.' : status === 'filed' ? 'Documents appear here after you create a bill.' : status === 'trashed' ? 'Documents you set aside stay here.' : 'Upload an invoice or forward one to your bill inbox.'} /> :
-        <table className="payvy-documents-table"><thead><tr><th>Document</th><th>Source</th><th>Received</th><th><span className="payvy-sr-only">Status</span></th></tr></thead><tbody>
-          {visible.map(d => <tr key={d.id}><td><div className="payvy-document-name"><span className="payvy-file-glyph" aria-hidden="true">{d.content_type === 'application/pdf' ? 'PDF' : 'IMG'}</span><div><Link href={`/documents/${d.id}`}>{d.filename}</Link><p>{fileSize(d.size_bytes)}{d.trashed_reason ? ` · ${d.trashed_reason}` : ''}</p>
-            {d.split_from && (
-              <p className="payvy-split-from">
-                <span>Split from {d.split_from.filename ?? 'another document'}</span>
-                {d.status === 'inbox' && (
-                  <Allowed command="document.unsplit"><Button
-                    label={`Undo split of ${d.filename}`}
-                    size="sm"
-                    variant="ghost"
-                    clickAction={() => undoSplit(d)}
-                  >
-                    Undo
-                  </Button></Allowed>
-                )}
-              </p>
-            )}
-          </div></div></td><td>{d.source === 'email' ? 'Email' : 'Upload'}</td><td>{date(d.received_at)}</td><td><span className="payvy-document-status">{LABEL[d.status]}</span></td></tr>)}
-        </tbody></table>}
+      {visible.length === 0 ? <EmptyState title={search ? 'No matching documents' : status === 'inbox' ? 'You’re all caught up' : 'Nothing here yet'} description={search ? 'Try another vendor, invoice number or filename.' : status === 'filed' ? 'Documents appear here after you create a bill.' : status === 'trashed' ? 'Documents you set aside stay here.' : 'Upload an invoice or email one to your email-in address.'} /> :
+        <InboxTable docs={visible} undoSplit={undoSplit} />}
     </section>}
   </Page>;
 }

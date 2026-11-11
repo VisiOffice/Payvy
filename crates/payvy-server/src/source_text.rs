@@ -165,6 +165,36 @@ async fn collect(bytes: &[u8], kind: Kind, pages: &[u32]) -> Option<Vec<SourcePa
     Some(found)
 }
 
+// Thumbnails are small and quick, but a list asks for many at once.
+static COVER_JOBS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+
+/// One page of a PDF as a small PNG, for lists. None when it can't be drawn.
+pub async fn cover(bytes: &[u8], page: u32) -> Option<Vec<u8>> {
+    let _slot = COVER_JOBS.acquire().await.ok()?;
+    let dir = scratch().ok()?;
+    let input = dir.0.join("source.pdf");
+    std::fs::write(&input, bytes).ok()?;
+    let prefix = dir.0.join("cover");
+    let p = page.to_string();
+    output(
+        "pdftoppm",
+        &[
+            "-f",
+            &p,
+            "-l",
+            &p,
+            "-singlefile",
+            "-scale-to",
+            "360",
+            "-png",
+            path(&input),
+            path(&prefix),
+        ],
+    )
+    .await?;
+    std::fs::read(prefix.with_extension("png")).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,6 +204,18 @@ mod tests {
         let pages = read(b"%PDF-1.4\n%%EOF", Kind::Pdf, &[2]).await;
         assert_eq!(pages[0].page, 2);
         assert_eq!(pages[0].method, "unavailable");
+    }
+    #[tokio::test]
+    async fn a_cover_is_a_small_png_of_the_page() {
+        let data = include_bytes!("../../../fixtures/invoices/king-environmental-189727.pdf");
+        let png = cover(data, 1)
+            .await
+            .expect("Install poppler-utils for cover tests");
+        assert!(png.starts_with(b"\x89PNG"));
+        assert!(
+            cover(data, 9).await.is_none(),
+            "a page the file doesn't have"
+        );
     }
     #[tokio::test]
     async fn native_fixture_is_located_without_a_model() {

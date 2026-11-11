@@ -395,6 +395,81 @@ pub(super) fn summary(row: &Extraction) -> Value {
     })
 }
 
+/// What a reading found, compact enough for one row of a list: who it is
+/// from, how many invoices and for how much, and what still needs a person.
+pub(super) fn glance(row: &Extraction) -> Value {
+    let full = summary(row);
+    let draft: Option<Draft> = row
+        .draft
+        .clone()
+        .and_then(|d| serde_json::from_value(d).ok());
+    let matched: Option<VendorMatch<Uuid>> = row
+        .vendor_match
+        .clone()
+        .and_then(|m| serde_json::from_value(m).ok());
+    let found: Vec<Value> = row
+        .invoices
+        .as_ref()
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let (vendor_name, vendor_id, vendor_match) = match &matched {
+        Some(VendorMatch::Matched {
+            vendor_id,
+            name,
+            confidence,
+            ..
+        }) => (
+            Some(name.clone()),
+            Some(*vendor_id),
+            json!({ "result": "matched", "confidence": confidence }),
+        ),
+        Some(VendorMatch::Ambiguous { .. }) => (None, None, json!({ "result": "ambiguous" })),
+        Some(VendorMatch::NoMatch) => (None, None, json!({ "result": "new" })),
+        None => (None, None, Value::Null),
+    };
+    let printed = draft.as_ref().and_then(|d| d.vendor_name.clone());
+    // Several invoices: their own numbers and the sum of their totals. One:
+    // what the reading drafted.
+    let (numbers, total_cents): (Vec<Value>, Option<i64>) = if found.len() > 1 {
+        let totals: Option<i64> = found.iter().map(|i| i["total_cents"].as_i64()).sum();
+        (
+            found.iter().map(|i| i["invoice_number"].clone()).collect(),
+            totals,
+        )
+    } else {
+        (
+            draft
+                .as_ref()
+                .and_then(|d| d.invoice_number.clone())
+                .map(Value::from)
+                .into_iter()
+                .collect(),
+            draft.as_ref().and_then(|d| d.total_cents),
+        )
+    };
+    json!({
+        "status": row.status,
+        "kind": draft.as_ref().map(|d| d.kind),
+        "vendor": {
+            "id": vendor_id,
+            "name": vendor_name.clone().or(printed.clone()),
+            "printed": printed,
+            "match": vendor_match,
+        },
+        "invoice_count": if found.len() > 1 { found.len() } else { usize::from(!numbers.is_empty()) },
+        "invoice_numbers": numbers,
+        "total_cents": total_cents,
+        "currency": draft.as_ref().and_then(|d| d.currency.clone()),
+        "invoice_date": draft.as_ref().and_then(|d| d.invoice_date),
+        "due_date": draft.as_ref().and_then(|d| d.due_date),
+        "failed_checks": full["failed_checks"],
+        "ready": full["ready"],
+        "review_required": full["review_required"],
+        "read_at": row.created_at,
+    })
+}
+
 /// The `bill.create` input this extraction suggests, once a vendor is known
 /// and the essentials were read.
 fn bill_input(row: &Extraction, d: &Draft, matched: Option<&VendorMatch<Uuid>>) -> Option<Value> {
