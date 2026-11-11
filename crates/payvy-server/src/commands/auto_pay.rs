@@ -1,14 +1,15 @@
 //! The ceiling on automatic payments. A workflow's `pay` step set to `auto`
 //! pays a bill without a person, but never above the limit in force: the
-//! lower of the company's limit (the default until a person sets one) and
-//! the vendor's own. A bill over it waits for a person to release it
+//! vendor's own limit if it has one (higher or lower than the company's),
+//! else the company's (the default until a person sets one). A bill over it waits for a person to release it
 //! (`workflow::evaluate`), and the payment itself is checked again as it is
 //! sent (`payments::submit`).
 //!
-//! Only a person changes a limit, and every change is an event. Lowering is
-//! always safe and runs at once; raising lets bigger bills go without a
-//! person, so it is confirmed: the preview lists the bills that would start
-//! paying automatically.
+//! Only a person changes a limit, and every change is an event. A change
+//! that lowers (or keeps) the limit in force runs at once; one that raises
+//! it lets bigger bills go without a person, so it is confirmed: the preview
+//! lists the bills that would start paying automatically. That includes a
+//! vendor override above the company's, and removing an override below it.
 
 use payvy_domain::Cents;
 use payvy_domain::workflow::{
@@ -37,9 +38,7 @@ async fn snapshot(cx: &mut Cx<'_>) -> Result<Value, CommandError> {
             .unwrap_or_default();
         vendors.push(json!({
             "vendor_id": id, "vendor_name": name, "limit_cents": cents,
-            // A vendor limit at or above the company's (the company's was
-            // lowered after it) has no effect until the company's is raised.
-            "in_force": *cents < company.cents,
+            "above_company": *cents > company.cents,
         }));
     }
     vendors.sort_by(|a, b| a["vendor_name"].as_str().cmp(&b["vendor_name"].as_str()));
@@ -106,10 +105,10 @@ pub async fn set(cx: &mut Cx<'_>, input: Set, way: Way) -> Result<Value, Command
     if let Some(c) = new {
         workflow::check_auto_pay_limit(c).map_err(CommandError::Invalid)?;
     }
-    if new.is_none() && (way == Way::Lower || input.vendor_id.is_none()) {
+    if new.is_none() && input.vendor_id.is_none() {
         return Err(CommandError::Invalid(
-            "only a vendor's own limit can be removed (limit_cents null, with vendor_id, \
-             through auto_pay.raise_limit); the company always has a limit"
+            "only a vendor's own limit can be removed (limit_cents null, with vendor_id); \
+             the company always has a limit"
                 .into(),
         ));
     }
@@ -128,53 +127,46 @@ pub async fn set(cx: &mut Cx<'_>, input: Set, way: Way) -> Result<Value, Command
     let own = input
         .vendor_id
         .and_then(|id| limits.vendors.get(&id).copied());
-    // What applies now, and what will.
+    // What applies now, and what will. A vendor's own limit overrides the
+    // company's in either direction; without one, the company's applies.
     let (from, to) = match &vendor {
         None => (company, new.unwrap_or(company)),
-        Some(_) => (
-            own.unwrap_or(company).min(company),
-            new.unwrap_or(company).min(company),
-        ),
+        Some(_) => (own.unwrap_or(company), new.unwrap_or(company)),
     };
     let label = match &vendor {
         Some(v) => format!("{}'s auto-pay limit", v.name),
         None => "the company's auto-pay limit".to_owned(),
     };
-    if let (Some(v), Some(c)) = (&vendor, new)
-        && c >= company
-    {
-        return Err(CommandError::Invalid(format!(
-            "a vendor's limit must be lower than the company's {}; to let {} pay up to that, \
-             remove its own limit (limit_cents null)",
-            dollars(company),
-            v.name
+    if vendor.is_some() && new.is_none() && own.is_none() {
+        return Err(CommandError::Conflict(format!(
+            "{label} isn't set; this vendor already follows the company's {}",
+            dollars(company)
         )));
     }
-    let unchanged = |was: Cents, will: Cents| {
-        let (more, use_) = match way {
-            Way::Lower => ("lower", "auto_pay.raise_limit to raise"),
-            Way::Raise => ("higher", "auto_pay.lower_limit to lower"),
-        };
-        CommandError::Conflict(format!(
-            "{label} is {}; {} isn't {more}. Use {use_} it",
-            dollars(was),
-            dollars(will)
-        ))
-    };
-    match (way, &vendor) {
-        (Way::Lower, _) if to >= from => return Err(unchanged(from, to)),
-        (Way::Raise, None) if to <= from => return Err(unchanged(from, to)),
-        (Way::Raise, Some(v)) => match (own, new) {
-            (None, _) => {
-                return Err(CommandError::Conflict(format!(
-                    "{} has no limit of its own; it follows the company's {}. Raise that instead",
-                    v.name,
-                    dollars(company)
-                )));
-            }
-            (Some(was), Some(will)) if will <= was => return Err(unchanged(was, will)),
-            _ => {}
-        },
+    if vendor.is_some() && new == own || vendor.is_none() && to == from {
+        return Err(CommandError::Conflict(format!(
+            "{label} is already {}",
+            dollars(from)
+        )));
+    }
+    // Anything that lets a bigger bill pay without a person is a raise, and
+    // confirmed; anything else (lower, or the same amount from another
+    // source) runs at once.
+    match way {
+        Way::Lower if to > from => {
+            return Err(CommandError::Conflict(format!(
+                "this raises {label} from {} to {}. Use auto_pay.raise_limit, which is confirmed",
+                dollars(from),
+                dollars(to)
+            )));
+        }
+        Way::Raise if to <= from => {
+            return Err(CommandError::Conflict(format!(
+                "this doesn't raise {label} ({} to {}). Use auto_pay.lower_limit",
+                dollars(from),
+                dollars(to)
+            )));
+        }
         _ => {}
     }
 

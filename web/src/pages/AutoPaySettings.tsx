@@ -25,7 +25,7 @@ export interface Limits {
   company: { limit_cents: number; source: 'default' | 'company'; label: string };
   default_cents: number;
   max_cents: number;
-  vendors: { vendor_id: string; vendor_name: string; limit_cents: number; in_force: boolean }[];
+  vendors: { vendor_id: string; vendor_name: string; limit_cents: number; above_company: boolean }[];
 }
 
 interface Listed {
@@ -73,20 +73,21 @@ export function LimitEditor({
 
   const wanted = value.trim() === '' ? null : cents(value);
   const invalid = value.trim() !== '' && wanted === null;
-  // What applies to this scope now: a vendor without its own follows the company.
-  const now = vendorId ? Math.min(current ?? company, company) : company;
+  // What applies to this scope now: a vendor's own overrides the company's.
+  const now = vendorId ? (current ?? company) : company;
 
   async function save(limit: number | null) {
     setError(null);
     setBusy(true);
     const input = { ...(vendorId ? { vendor_id: vendorId } : {}), limit_cents: limit };
     try {
-      const lower = limit !== null && limit < now;
-      if (lower) {
-        const r = await run<Changed>('auto_pay.lower_limit', { ...input, limit_cents: limit });
+      // Anything that lets bigger bills pay on their own is confirmed.
+      const after = limit ?? company;
+      if (after <= now) {
+        const r = await run<Changed>('auto_pay.lower_limit', input);
         const held = r.result.change.now_waits_for_a_person.length;
         toast({
-          body: `Auto-pay limit is now ${money(limit)}${held ? `; ${held} bill${held === 1 ? '' : 's'} now wait for you` : ''}`,
+          body: `${limit === null ? 'This vendor now follows the company limit' : `Auto-pay limit is now ${money(limit)}`}${held ? `; ${held} bill${held === 1 ? '' : 's'} now wait for you` : ''}`,
         });
         onSaved();
       } else {
@@ -218,16 +219,17 @@ export function AutoPaySettings() {
               </MetadataList>
               <LimitEditor current={limits.company.limit_cents} company={limits.company.limit_cents} onSaved={load} />
               <Text type="supporting">
-                Lowering takes effect at once. Raising shows which bills would start paying automatically, and asks
-                you to confirm. Every change is in the history.
+                Vendors with their own limit keep it: changing the company limit doesn't change theirs. Lowering takes
+                effect at once. Raising shows which bills would start paying automatically, and asks you to confirm.
+                Every change is in the history.
               </Text>
             </VStack>
           </Card>
           <VStack gap={3}>
-            <Heading level={2}>Vendors with a lower limit</Heading>
+            <Heading level={2}>Vendors with their own limit</Heading>
             {limits.vendors.length === 0 ? (
               <Text type="supporting">
-                None. Set one on a vendor's page to keep its automatic payments smaller than the company's.
+                None. Set one on a vendor's page to let it pay more, or less, automatically than the company limit.
               </Text>
             ) : (
               <Card>
@@ -236,7 +238,7 @@ export function AutoPaySettings() {
                     <MetadataListItem key={v.vendor_id} label={v.vendor_name}>
                       <HStack gap={2} vAlign="center">
                         <Link href={`/vendors/${v.vendor_id}#auto-pay`}>{money(v.limit_cents)}</Link>
-                        {!v.in_force && <Text type="supporting">(above the company's; the company's applies)</Text>}
+                        <Text type="supporting">{v.above_company ? '(above the company limit)' : '(below or at the company limit)'}</Text>
                       </HStack>
                     </MetadataListItem>
                   ))}
@@ -266,17 +268,23 @@ export function VendorAutoPayLimit({
         <Heading level={2}>Auto-pay limit</Heading>
         <Card>
           <VStack gap={3}>
-            <Text>
+            <MetadataList>
+              <MetadataListItem label="Uses">
+                {limit.own_cents != null ? 'Its own limit' : 'The company limit'}
+              </MetadataListItem>
+              <MetadataListItem label="In force">
+                <Text weight="semibold" hasTabularNumbers>
+                  {money(limit.in_force.cents)}
+                </Text>
+              </MetadataListItem>
+              <MetadataListItem label="Company limit">
+                <Link href="/settings/auto-pay">{money(limit.company_cents)}</Link>
+              </MetadataListItem>
+            </MetadataList>
+            <Text type="supporting">
               Bills over {money(limit.in_force.cents)} wait for a person to release them, even if this vendor's
-              workflow pays automatically.{' '}
-              {limit.in_force.source === 'vendor' ? (
-                <>This vendor has its own limit, below the company's {money(limit.company_cents)}.</>
-              ) : (
-                <>
-                  That's the company's limit (<Link href="/settings/auto-pay">Settings</Link>); set a lower one for
-                  this vendor here.
-                </>
-              )}
+              workflow pays automatically. A limit for this vendor replaces the company limit, higher or lower;
+              changes to the company limit don't affect it.
             </Text>
             <LimitEditor vendorId={vendorId} current={limit.own_cents ?? null} company={limit.company_cents} onSaved={onSaved} />
           </VStack>

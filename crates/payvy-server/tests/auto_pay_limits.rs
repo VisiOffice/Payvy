@@ -177,7 +177,7 @@ async fn a_bill_over_the_default_limit_waits_for_a_person_and_says_why() {
     assert_eq!(status(&db.state, &robert, &at).await, "ready_to_pay");
     let p = progress(&db, &over).await;
     assert_eq!(p["status"], "awaiting_release");
-    assert_eq!(p["reason"], "Over the $5,000.00 auto-pay limit");
+    assert_eq!(p["reason"], "Over the company's $5,000.00 auto-pay limit");
 
     // It is in the inbox as a release, with the reason.
     let inbox = commit(&db.state, &robert, "inbox.get", json!({}))
@@ -193,7 +193,7 @@ async fn a_bill_over_the_default_limit_waits_for_a_person_and_says_why() {
     assert_eq!(item["action"], "release");
     assert_eq!(
         item["progress"]["reason"],
-        "Over the $5,000.00 auto-pay limit"
+        "Over the company's $5,000.00 auto-pay limit"
     );
 
     // The worker pays only the bill at the limit.
@@ -210,7 +210,10 @@ async fn a_bill_over_the_default_limit_waits_for_a_person_and_says_why() {
     .await
     .unwrap_err();
     assert!(matches!(e, CommandError::Conflict(_)), "{e}");
-    assert!(e.to_string().contains("$5,000.00 auto-pay limit"), "{e}");
+    assert!(
+        e.to_string().contains("company's $5,000.00 auto-pay limit"),
+        "{e}"
+    );
     assert_eq!(fake.posts.lock().unwrap().len(), 1);
 
     // A person releases it, and that payment goes.
@@ -323,7 +326,7 @@ async fn only_a_person_changes_the_limit_and_raising_it_is_confirmed() {
         big
     );
     let p = progress(&db, &big).await;
-    assert_eq!(p["reason"], "Over the $2,500.00 auto-pay limit");
+    assert_eq!(p["reason"], "Over the company's $2,500.00 auto-pay limit");
     assert_eq!(payment_worker::auto_pay(&db.state).await.unwrap(), 0);
     assert!(fake.posts.lock().unwrap().is_empty());
 
@@ -349,33 +352,24 @@ async fn only_a_person_changes_the_limit_and_raising_it_is_confirmed() {
 }
 
 #[tokio::test]
-async fn a_vendor_limit_is_below_the_company_limit_and_wins() {
+async fn a_vendor_limit_overrides_the_company_limit_either_way() {
     let Some((db, fake)) = db().await else { return };
     let robert = person("robert");
     let king = auto_vendor(&db, "King Environmental").await;
     let other = auto_vendor(&db, "Other Hauler").await;
 
-    // A vendor can't be allowed more than the company.
+    // A vendor without its own limit has nothing to remove.
     let e = commit(
         &db.state,
         &robert,
         "auto_pay.lower_limit",
-        json!({ "vendor_id": king, "limit_cents": 500_000 }),
-    )
-    .await
-    .unwrap_err();
-    assert!(matches!(e, CommandError::Invalid(_)), "{e}");
-    // A vendor without its own limit has nothing to raise.
-    let e = confirm(
-        &db.state,
-        &robert,
-        "auto_pay.raise_limit",
-        json!({ "vendor_id": king, "limit_cents": 20_000 }),
+        json!({ "vendor_id": king, "limit_cents": null }),
     )
     .await
     .unwrap_err();
     assert!(matches!(e, CommandError::Conflict(_)), "{e}");
 
+    // Lower than the company's: routine, and holds this vendor's bills only.
     commit(
         &db.state,
         &robert,
@@ -390,6 +384,52 @@ async fn a_vendor_limit_is_below_the_company_limit_and_wins() {
     assert_eq!(p["status"], "awaiting_release");
     assert_eq!(p["reason"], "Over this vendor's $100.00 auto-pay limit");
     assert_eq!(status(&db.state, &robert, &free).await, "ready_to_pay");
+
+    // Raising an override, even above the company's, needs a confirmation.
+    let raise = json!({ "vendor_id": king, "limit_cents": 2_000_000 });
+    let e = commit(&db.state, &robert, "auto_pay.raise_limit", raise.clone())
+        .await
+        .unwrap_err();
+    assert!(matches!(e, CommandError::NeedsConfirmation(_)), "{e}");
+    let e = commit(&db.state, &robert, "auto_pay.lower_limit", raise.clone())
+        .await
+        .unwrap_err();
+    assert!(matches!(e, CommandError::Conflict(_)), "{e}");
+    let preview = commands::run(
+        &db.state,
+        &robert,
+        "auto_pay.raise_limit",
+        raise.clone(),
+        Mode::Preview,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        preview["result"]["change"]["now_pays_automatically"][0]["bill_id"],
+        held
+    );
+    let e = confirm(
+        &db.state,
+        &robert,
+        "auto_pay.raise_limit",
+        json!({ "vendor_id": king, "limit_cents": 100_000_000_001_i64 }),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(e, CommandError::Invalid(_)), "{e}");
+    confirm(&db.state, &robert, "auto_pay.raise_limit", raise)
+        .await
+        .unwrap();
+
+    // Above the company's $5,000.00: this vendor's big bill pays itself,
+    // another vendor's waits, naming the company's limit.
+    let big_king = bill(&db, &king, "k-big", 1_500_000).await;
+    let big_other = bill(&db, &other, "o-big", 1_500_000).await;
+    assert_eq!(status(&db.state, &robert, &big_king).await, "ready_to_pay");
+    assert_eq!(
+        progress(&db, &big_other).await["reason"],
+        "Over the company's $5,000.00 auto-pay limit"
+    );
     let got = commit(
         &db.state,
         &robert,
@@ -398,33 +438,75 @@ async fn a_vendor_limit_is_below_the_company_limit_and_wins() {
     )
     .await
     .unwrap();
-    assert_eq!(got["result"]["auto_pay_limit"]["own_cents"], 10_000);
+    assert_eq!(got["result"]["auto_pay_limit"]["own_cents"], 2_000_000);
     assert_eq!(
         got["result"]["auto_pay_limit"]["in_force"]["source"],
         "vendor"
     );
 
-    // Raising it stays below the company's; removing it follows the company.
-    let e = confirm(
+    // Lowering the company's limit leaves the override alone.
+    let lowered = commit(
         &db.state,
         &robert,
-        "auto_pay.raise_limit",
-        json!({ "vendor_id": king, "limit_cents": 600_000 }),
+        "auto_pay.lower_limit",
+        json!({ "limit_cents": 100_000 }),
     )
     .await
-    .unwrap_err();
-    assert!(matches!(e, CommandError::Invalid(_)), "{e}");
-    let removed = confirm(
+    .unwrap();
+    assert_eq!(lowered["result"]["vendors"][0]["limit_cents"], 2_000_000);
+    assert_eq!(status(&db.state, &robert, &big_king).await, "ready_to_pay");
+    assert_eq!(status(&db.state, &robert, &held).await, "ready_to_pay");
+    // Raising the company's limit counts only vendors without an override.
+    let preview = commands::run(
         &db.state,
         &robert,
         "auto_pay.raise_limit",
+        json!({ "limit_cents": 2_000_000 }),
+        Mode::Preview,
+    )
+    .await
+    .unwrap();
+    let started: Vec<&Value> = preview["result"]["change"]["now_pays_automatically"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| &b["bill_id"])
+        .collect();
+    assert_eq!(started, [&json!(big_other)]);
+
+    // Removing an override above the company's lowers what applies: routine.
+    commit(
+        &db.state,
+        &robert,
+        "auto_pay.lower_limit",
         json!({ "vendor_id": king, "limit_cents": null }),
     )
     .await
     .unwrap();
+    assert_eq!(
+        progress(&db, &big_king).await["reason"],
+        "Over the company's $1,000.00 auto-pay limit"
+    );
+    // Removing one below the company's raises it: confirmed.
+    commit(
+        &db.state,
+        &robert,
+        "auto_pay.lower_limit",
+        json!({ "vendor_id": other, "limit_cents": 10_000 }),
+    )
+    .await
+    .unwrap();
+    let remove = json!({ "vendor_id": other, "limit_cents": null });
+    let e = commit(&db.state, &robert, "auto_pay.lower_limit", remove.clone())
+        .await
+        .unwrap_err();
+    assert!(matches!(e, CommandError::Conflict(_)), "{e}");
+    let removed = confirm(&db.state, &robert, "auto_pay.raise_limit", remove)
+        .await
+        .unwrap();
     assert_eq!(removed["result"]["vendors"], json!([]));
-    assert_eq!(status(&db.state, &robert, &held).await, "ready_to_pay");
-    // The change shows in the vendor's history.
+
+    // Every change shows in the vendor's history.
     let history = commit(
         &db.state,
         &robert,
@@ -436,6 +518,7 @@ async fn a_vendor_limit_is_below_the_company_limit_and_wins() {
     assert!(history.to_string().contains("auto_pay.limit_raised"));
     assert!(history.to_string().contains("auto_pay.limit_lowered"));
 
+    // $1,000.00 company limit: the two $459 bills pay, the big ones wait.
     assert_eq!(payment_worker::auto_pay(&db.state).await.unwrap(), 2);
     assert_eq!(fake.posts.lock().unwrap().len(), 2);
     db.drop().await;

@@ -328,8 +328,9 @@ pub enum LimitSource {
     Vendor,
 }
 
-/// The ceiling on what one bill may pay automatically: the lower of the
-/// company's limit (or the default) and the vendor's own, if it has one.
+/// The ceiling on what one bill may pay automatically: the vendor's own
+/// limit if it has one (an override, higher or lower), else the company's
+/// (or the default).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct AutoPayLimit {
     pub cents: Cents,
@@ -349,11 +350,11 @@ impl AutoPayLimit {
             },
         };
         match vendor {
-            Some(cents) if cents < company.cents => AutoPayLimit {
+            Some(cents) => AutoPayLimit {
                 cents,
                 source: LimitSource::Vendor,
             },
-            _ => company,
+            None => company,
         }
     }
 
@@ -370,7 +371,7 @@ impl AutoPayLimit {
                 format!("Over this vendor's {} auto-pay limit", dollars(self.cents))
             }
             LimitSource::Default | LimitSource::Company => {
-                format!("Over the {} auto-pay limit", dollars(self.cents))
+                format!("Over the company's {} auto-pay limit", dollars(self.cents))
             }
         }
     }
@@ -829,10 +830,10 @@ mod tests {
             evaluate(&w, &over).status,
             Status::AwaitingRelease {
                 by: vec![],
-                reason: Some("Over the $5,000.00 auto-pay limit".into())
+                reason: Some("Over the company's $5,000.00 auto-pay limit".into())
             }
         );
-        // A vendor's own, lower limit wins; a higher one never does.
+        // A vendor's own limit overrides the company's, lower or higher.
         let vendor = Facts {
             auto_pay_limit: AutoPayLimit::effective(Some(1_000_000), Some(10_000)),
             ..facts(10_001, &[], &[], 0)
@@ -844,8 +845,13 @@ mod tests {
                 reason: Some("Over this vendor's $100.00 auto-pay limit".into())
             }
         );
+        let higher = Facts {
+            auto_pay_limit: AutoPayLimit::effective(Some(10_000), Some(2_000_000)),
+            ..facts(1_500_000, &[], &[], 0)
+        };
+        assert_eq!(evaluate(&w, &higher).status, Status::ReadyToPay);
         assert_eq!(
-            AutoPayLimit::effective(Some(10_000), Some(50_000)),
+            AutoPayLimit::effective(Some(10_000), None),
             AutoPayLimit {
                 cents: 10_000,
                 source: LimitSource::Company
