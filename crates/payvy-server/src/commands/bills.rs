@@ -502,6 +502,16 @@ pub async fn list(cx: &mut Cx<'_>, input: List) -> Result<Value, CommandError> {
             approval = turn(cx, &d, bill, wf, &p, &a);
             p
         });
+        // The separation-of-duties rule in the lists: whoever permitted a
+        // PO exception can't release that bill, so it never waits on them.
+        let overridden_by = match &progress {
+            Some(p) if matches!(p.status, Status::AwaitingRelease { .. }) => {
+                super::purchase_orders::overridden_by(cx, bill).await?
+            }
+            _ => None,
+        };
+        let release_blocked =
+            duties::release_refusal(overridden_by.as_deref(), &cx.actor.name).is_some();
         if let Some(want) = &input.status
             && progress.as_ref().map(status_name) != Some(want.as_str())
         {
@@ -533,7 +543,15 @@ pub async fn list(cx: &mut Cx<'_>, input: List) -> Result<Value, CommandError> {
         {
             continue;
         }
-        let mut item = json!({ "bill": bill, "progress": progress.map(|p| p.status) });
+        if input.mine && !input.include_blocked && release_blocked {
+            continue;
+        }
+        let releaseable = !release_blocked
+            && progress
+                .as_ref()
+                .is_some_and(|p| can_release(cx, &p.status));
+        let mut item = json!({ "bill": bill, "progress": progress.map(|p| p.status),
+            "can_release": releaseable, "overridden_by": overridden_by });
         if let Some(t) = approval {
             item["approval"] = json!(t);
         }
