@@ -43,6 +43,15 @@ async fn signed_lines_are_saved_replayed_and_pinned_to_the_bill() {
         return;
     };
     let who = agent("preparer");
+    common::set_workflow(
+        &db.state,
+        &person("reviewer"),
+        Some(&v),
+        json!([
+            {"id":"ok","type":"approve"},{"id":"pay","type":"pay","release":"manual"}
+        ]),
+    )
+    .await;
     let input = save(&doc, &v);
     let preview = payvy_server::commands::run(
         &db.state,
@@ -101,7 +110,15 @@ async fn signed_lines_are_saved_replayed_and_pinned_to_the_bill() {
         r["result"]["review"]["id"]
     );
     assert!(b["result"]["approvals"].as_array().unwrap().is_empty());
-    let err = commit(
+    assert_eq!(b["result"]["invoice_review_pages_changed"], false);
+    let mut tx = db.state.store.begin(who.org_id).await.unwrap();
+    sqlx::query("UPDATE documents SET page_count=1 WHERE id=$1")
+        .bind(doc.parse::<Uuid>().unwrap())
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    commit(
         &db.state,
         &who,
         "document.arrange",
@@ -110,10 +127,49 @@ async fn signed_lines_are_saved_replayed_and_pinned_to_the_bill() {
         }),
     )
     .await
+    .unwrap();
+    let changed = commit(
+        &db.state,
+        &who,
+        "bill.get",
+        json!({"bill_id":b["result"]["bill"]["id"]}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(changed["result"]["invoice_review_pages_changed"], true);
+    assert_eq!(changed["result"]["lines"], b["result"]["lines"]);
+    assert_eq!(
+        changed["result"]["invoice_review"],
+        b["result"]["invoice_review"]
+    );
+    assert_eq!(changed["result"]["arrangement"]["version"], 1);
+    assert!(
+        changed["result"]["history"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|h| h["kind"] == "bill.pages_arranged" && h["payload"]["version"] == 1)
+    );
+    commit(
+        &db.state,
+        &person("approver"),
+        "bill.approve",
+        json!({"bill_id":b["result"]["bill"]["id"]}),
+    )
+    .await
+    .unwrap();
+    let err = commit(
+        &db.state,
+        &who,
+        "document.arrange",
+        json!({
+            "document_id":doc,"expected_version":1,"pages":[{"page":1,"rotation":180}]
+        }),
+    )
+    .await
     .unwrap_err();
     assert!(
-        err.to_string()
-            .contains("Pages are pinned to the saved invoice review"),
+        err.to_string().contains("Pages are locked after approval"),
         "{err}"
     );
     let mut after = input;
@@ -405,7 +461,7 @@ async fn split_and_undo_cannot_unenroll_previously_reviewed_pages() {
 }
 
 #[tokio::test]
-async fn unreviewed_lines_stay_positive_and_manual_bills_do_not_take_the_enrollment_lock() {
+async fn all_bills_accept_signed_lines_and_manual_bills_do_not_take_the_enrollment_lock() {
     let Some((db, v, doc)) = setup().await else {
         return;
     };
@@ -421,24 +477,28 @@ async fn unreviewed_lines_stay_positive_and_manual_bills_do_not_take_the_enrollm
     for actor in [human.clone(), agent("preparer")] {
         for document_id in [None, Some(&doc)] {
             for adjustment in [-1000, 0] {
-                let e = commit(
+                let document_id = if document_id.is_some() {
+                    let d = commit(&db.state, &actor, "document.upload", json!({"filename":"unreviewed.pdf",
+                        "content_base64":base64::engine::general_purpose::STANDARD.encode(format!("%PDF-1.4\n{}\n%%EOF",Uuid::new_v4()))})).await.unwrap();
+                    Some(d["result"]["id"].as_str().unwrap().to_owned())
+                } else {
+                    None
+                };
+                let created = commit(
                     &db.state,
                     &actor,
                     "bill.create",
                     json!({
-                        "document_id":document_id,"vendor_id":v,"invoice_number":"LEGACY",
+                        "document_id":document_id,"vendor_id":v,"invoice_number":Uuid::new_v4().to_string(),
                         "invoice_date":"2026-11-11","amount_cents":9000,
                         "lines":[{"description":"Service","amount_cents":9000-adjustment},
                                  {"description":"Adjustment","amount_cents":adjustment}]
                     }),
                 )
                 .await
-                .unwrap_err();
-                assert!(
-                    e.to_string()
-                        .contains("line amounts must be more than zero"),
-                    "{e}"
-                );
+                .unwrap();
+                assert_eq!(created["result"]["lines"][1]["amount_cents"], adjustment);
+                assert_eq!(created["result"]["bill"]["amount_cents"], 9000);
             }
         }
     }

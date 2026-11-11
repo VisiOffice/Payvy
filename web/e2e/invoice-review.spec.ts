@@ -58,6 +58,18 @@ test('discount lines can be corrected, saved, reloaded and carried to the bill',
     const billId = page.url().split('/').pop()!;
     const saved=await agent<{bill:{vendor_id:string;amount_cents:number};lines:{amount_cents:number}[]}>('bill.get',{bill_id:billId});
     expect(saved.bill.vendor_id).toBe(id); expect(saved.bill.amount_cents).toBe(34163); expect(saved.lines.map(l=>l.amount_cents)).toEqual([23800,11250,-3505,2618]);
+    await expect(page.getByText('Pages changed after line review',{exact:true})).toHaveCount(0);
+    await agent('document.arrange',{document_id:doc.id,expected_version:0,pages:[{page:1,rotation:90}]});
+    await page.reload();
+    await expect(page.getByText('Pages changed after line review',{exact:true})).toBeVisible();
+    await expect(page.getByText('Pages rearranged: rotated page 1 to 90°')).toBeVisible();
+    await expect(page.getByText('Cable for workshop',{exact:true})).toBeVisible();
+    await expect(page.getByText('-$35.05',{exact:true})).toBeVisible();
+    const changed=await agent<{invoice_review_pages_changed:boolean;lines:{amount_cents:number}[]}>('bill.get',{bill_id:billId});
+    expect(changed.invoice_review_pages_changed).toBe(true);
+    expect(changed.lines).toEqual(saved.lines);
+    await page.getByText('Pages changed after line review',{exact:true}).scrollIntoViewIfNeeded();
+    await page.screenshot({path:'/tmp/payvy-pages-after-review.png'});
   }
 });
 

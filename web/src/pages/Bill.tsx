@@ -38,6 +38,7 @@ interface Step {
 }
 
 interface Detail {
+  invoice_review_pages_changed: boolean;
   invoice_review?: { id:string; version:number; document_id:string; created_by:string; summary_reason:string | null; payload:{ rows: {id:string; description:string; amount:string; excluded_reason:string|null}[] } } | null;
   bill: BillT & { created_by: string; created_at: string };
   lines: { description: string; amount_cents: number }[];
@@ -159,6 +160,8 @@ export function BillPage() {
       {typeof p === 'object' && typeof p?.reason === 'string' && (
         <Banner status="info" title={p.reason} description="Its workflow pays automatically, but a person releases bills over the limit." />
       )}
+
+      {detail.invoice_review_pages_changed && <Banner status="warning" title="Pages changed after line review" description="The source pages changed after this review was saved. The reviewed lines and bill amounts are unchanged. Check the current pages and page-change history before approving." />}
 
       {isOpen && (
         <HStack gap={2}>

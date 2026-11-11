@@ -5,8 +5,9 @@ It is off by default. An Admin enables it in Settings → Company → Invoice li
 using `invoice_review.configure`. Turning it off stops enrollment of new documents;
 previously reviewed originals and every split view of those files remain subject to review,
 including pages returned by Undo split.
-Manual bills and document-backed bills without a saved review retain positive-only lines.
-Negative and zero lines are accepted only when the server derives them from a validated review.
+All bills accept negative adjustments and zero rows, including manual and agent-created bills.
+A nonempty breakdown must reconcile exactly to a positive bill total, with overflow rejected.
+Future accounting exports and line-level PO matching must support signed line amounts.
 Only document-backed bill creation takes the company enrollment lock; manual entry does not.
 
 ## Review a document
@@ -32,11 +33,13 @@ bypasses any workflow, duties, payment or PO gate. A change invalidates the exce
 
 This first pilot reviews one whole document at a time. Split a multi-invoice file first;
 it does not create a reviewed bill from a subset of the document's pages. Saved reviews
-pin their page-arrangement version, and reviewed bills pin their source pages at creation.
-This is an intentional pilot exception to the Document Pages Spec’s approval-time lock:
-the saved review certifies this page set, so a clerk must correct its pages before creating
-the bill. Legacy bills still lock their pages at approval. Review history remains
-available on filed documents; bill detail identifies the exact accepted revision.
+retain the page-arrangement version they checked. Before approval, page edits, splits and
+Undo update the bill's page arrangement and append the existing `bill.pages_arranged` event.
+The saved review and bill lines stay unchanged. Bill detail exposes
+`invoice_review_pages_changed` and warns the approver that pages changed after line review;
+the page-change history explains what changed and who did it. Restoring the original order
+still leaves a record that pages changed. Pages lock at first approval (or release/closure),
+following the Document Pages Spec. Review history stays available on filed documents.
 
 ## Command contract
 
@@ -64,9 +67,8 @@ clients can also reload the current review instead of blindly repeating a mutati
 Rows retain stable IDs and source indices within an extraction lineage. Reviews bind to
 one extraction, document and arrangement. The migration adds composite company foreign keys,
 forced RLS, and a unique bill-to-review association. Existing bill lines are not rewritten.
-The bill total remains strictly positive; reviewed lines may be negative or zero and must
-sum exactly to the bill total. Unreviewed lines remain strictly positive. Arithmetic overflow
-is rejected. Existing payment code sends the whole bill amount; this introduces neither partial payment nor vendor credit application.
+The bill total remains strictly positive; all bill lines may be negative or zero and a
+nonempty breakdown must sum exactly to the total. Arithmetic overflow is rejected. Existing payment code sends the whole bill amount; this introduces neither partial payment nor vendor credit application.
 
 ## Verification and remaining spec work
 
@@ -93,16 +95,17 @@ newly queued migrations before landing.
 
 
 Validation on 2026-11-11, with main `436b640` included:
-- All 244 Rust tests passed with PostgreSQL and document storage configured.
-- Clippy, formatting, generated command types, workspace type checks and the web build passed.
-- The full browser run passed 54 tests and skipped the three optional edge tests. Its one
-  failure exposed first-read page selection; after fixing that path, all 11 affected document
-  browser scenarios passed, including the failed case. Desktop and phone screenshots were checked.
+- All 245 Rust tests passed with PostgreSQL and document storage configured.
+- Clippy, formatting, workspace type checks and the web build passed. Command inputs are unchanged.
+- All 8 focused browser scenarios passed for line review, page editing and splitting. They
+  verify that the page-change warning and history remain visible while bill lines stay unchanged.
+- The warning was visually checked above the bill's approval/payment controls. PR CI runs the
+  complete suite, including the Cloudflare Worker tests.
 
 This is the first review implementation on `feat/invoice-line-review`, not a deployed pilot
 or completion of the extraction/evidence stage of the vault spec.
 
-Review follow-up: signed/zero lines are limited to resolved saved reviews; both person and
-agent callers without a review retain positive-only lines, including with the pilot off.
-A held enrollment-lock test proves manual bill creation does not wait for that lock.
-Another regression check verifies that a reviewed bill’s pages lock before any approval.
+Review decisions: signed and zero lines are allowed on all bills, including unreviewed
+person/agent entry. Manual bills still avoid the review-enrollment lock. Reviewed pages
+follow the existing approval-time lock; pre-approval changes appear in bill history and
+show a warning without changing the saved review or bill lines.

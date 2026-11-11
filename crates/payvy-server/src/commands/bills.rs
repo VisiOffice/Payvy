@@ -189,9 +189,18 @@ async fn detail(cx: &mut Cx<'_>, bill_id: Uuid) -> Result<Value, CommandError> {
     };
     let payments = store::bill_payments(&mut cx.tx, bill.id).await?;
     let invoice_review = store::bill_invoice_review(&mut cx.tx, bill.id).await?;
+    // Versions keep this notice true even if pages were later restored to the
+    // same order. The original review and posted lines are never rewritten.
+    let invoice_review_pages_changed = invoice_review.as_ref().is_some_and(|r| {
+        arrangement
+            .as_ref()
+            .and_then(|a| a["version"].as_i64())
+            .is_some_and(|version| version != i64::from(r.arrangement_version))
+    });
     Ok(json!({
         "payments": payments,
         "invoice_review": invoice_review,
+        "invoice_review_pages_changed": invoice_review_pages_changed,
         "bill": bill,
         "lines": lines,
         "progress": progress,
@@ -308,12 +317,7 @@ pub async fn create(cx: &mut Cx<'_>, mut input: Create) -> Result<Value, Command
             .terms_days
             .map(|d| input.invoice_date + Duration::days(i64::from(d)))
     });
-    let validate = if review.is_some() {
-        rules::validate_reviewed
-    } else {
-        rules::validate
-    };
-    validate(
+    rules::validate(
         input.amount_cents,
         &invoice_number,
         &input.lines,
