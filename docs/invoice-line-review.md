@@ -19,7 +19,7 @@ line. A matching sum is not evidence that the model read the invoice correctly.
 Save review keeps incomplete data and all prior revisions. Check the invoice details,
 currency and pages against the original. Saving complete data enables Create bill. A
 re-read preserves the review; choosing the newer reading starts an explicit new revision
-lineage. The old revisions and model output stay available. Clicking Find original line
+lineage. The old revisions and model output stay available. Clicking Source line
 searches the PDF text; this is a viewing aid, not verified field-level grounding.
 
 If a breakdown cannot be established, an authorized person with the Prepare permission
@@ -80,9 +80,20 @@ and the human-labeled real-invoice evaluation corpus (50 invoices / 10 layouts, 
 No production accuracy claim or broad rollout is justified by this implementation alone.
 
 There is no line-data-required workflow setting on the current main branch. When such a policy
-is added, summary-only acceptance and bill creation must recheck it. The separate PO branch
-must be integration-tested after merging; this feature does not edit that branch.
+is added, summary-only acceptance and bill creation must recheck it. The PO feature is included
+from main; an integration test verifies that a person-accepted
+summary-only bill still cannot be released when a required PO is missing.
 
-Migration number 0022 follows the concurrent PO branch's 0020/0021 in this checkout; verify the
-number against current main and any queued migrations before landing. Do not deploy either
-branch out of order without checking the combined migration history.
+Migration 0022 follows the merged PO migrations 0020/0021. Verify the number against any
+newly queued migrations before landing.
+
+
+Validation on 2026-11-11, with main `436b640` included:
+- All 243 Rust tests passed with PostgreSQL and document storage configured.
+- Clippy, formatting, generated command types, workspace type checks and the web build passed.
+- The full browser run passed 54 tests and skipped the three optional edge tests. Its one
+  failure exposed first-read page selection; after fixing that path, all 11 affected document
+  browser scenarios passed, including the failed case. Desktop and phone screenshots were checked.
+
+This is the first review implementation on `feat/invoice-line-review`, not a deployed pilot
+or completion of the extraction/evidence stage of the vault spec.

@@ -34,7 +34,7 @@ fn row(r: PgRow) -> anyhow::Result<InvoiceReview> {
         request_payload: r.get("request_payload"),
     })
 }
-/// Serialize enrollment/configuration with bill creation; released before any HTTP.
+/// Serialize enrollment/configuration with review saves and bill creation.
 pub async fn lock_invoice_settings(tx: &mut Tx, org: Uuid) -> anyhow::Result<()> {
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 722))")
         .bind(org.to_string())

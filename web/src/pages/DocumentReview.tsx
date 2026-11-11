@@ -338,9 +338,11 @@ export function DocumentReview() {
   async function readAgain() {
     setReading(true);
     try {
-      if (activeReview && reviewDirty) await saveReview();
+      const firstRead = activeReview && !reviewDetail?.review && !reviewExtraction
+        && JSON.stringify(currentReview) === JSON.stringify(reviewDetail?.initial);
+      if (activeReview && reviewDirty && !firstRead) await saveReview();
       await run('document.extract', { document_id: doc.id, again: true });
-      if (activeReview) {
+      if (activeReview && !firstRead) {
         await refresh();
         const r = await run<ReviewDetail>('document.review_get', { document_id: doc.id });
         setReviewDetail(r.result);

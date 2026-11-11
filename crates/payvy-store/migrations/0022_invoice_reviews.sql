@@ -35,8 +35,7 @@ CREATE TABLE bill_invoice_reviews (
     review_id uuid NOT NULL UNIQUE,
     FOREIGN KEY (org_id, review_id) REFERENCES invoice_reviews(org_id, id)
 );
--- bills has no composite key on current main; enforce the link at the database too.
-ALTER TABLE bills ADD CONSTRAINT bills_org_review_id UNIQUE (org_id, id);
+-- Reuse the company-scoped bill key introduced with purchase orders.
 ALTER TABLE bill_invoice_reviews ADD FOREIGN KEY (org_id, bill_id) REFERENCES bills(org_id, id);
 ALTER TABLE invoice_review_settings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE invoice_review_settings FORCE ROW LEVEL SECURITY;

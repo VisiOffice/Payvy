@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { agent, vendor } from './api';
-import { pdf } from './pdf';
+import { pdf, pdfPages } from './pdf';
 
 async function enabled(page: import('@playwright/test').Page, on: boolean) {
   await page.goto('/settings/company');
@@ -85,4 +85,24 @@ test('summary-only is an explicit person decision and editing invalidates it', a
     await page.reload();
     await expect(page.getByRole('button',{name:'Create bill',exact:true})).toBeDisabled();
   }
+});
+
+
+test('multi-invoice review splits the selected pages before creating a bill', async ({page}) => {
+  await enabled(page,true);
+  const doc=await agent<{id:string}>('document.upload',{filename:'review-split.pdf',content_base64:pdfPages([
+    ['American Reclamation','Invoice 85273','Continued on next page','review-split'],
+    ['American Reclamation','Invoice 85273 continued','Total $8,034.89','review-split'],
+    ['American Reclamation','Invoice 85274','Total $1,200.00','review-split'],
+    ['American Reclamation','Account balance $26,923.52','review-split'],
+  ]).toString('base64')});
+  await page.goto(`/documents/${doc.id}`);
+  await page.getByRole('button',{name:'Read it',exact:true}).click();
+  await expect(page.getByText('This file has 2 invoices')).toBeVisible();
+  await expect(page.getByRole('button',{name:/^Create bill/})).toBeDisabled();
+  await page.getByRole('button',{name:'Split selected pages',exact:true}).click();
+  await expect(page).not.toHaveURL(new RegExp(doc.id));
+  await expect(page.getByRole('region',{name:'Pages'}).getByText('2 pages')).toBeVisible();
+  await expect(page.getByRole('region',{name:'Line item review'})).toBeVisible();
+  await expect(page.getByRole('button',{name:/^Create bill/})).toBeDisabled();
 });

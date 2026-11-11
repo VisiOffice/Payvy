@@ -172,11 +172,40 @@ async fn unresolved_rows_require_a_persons_scoped_summary_and_edits_invalidate_i
     bypass.as_object_mut().unwrap().remove("review_id");
     assert!(commit(&db.state, &ap, "bill.create", bypass).await.is_err());
     let accepted=commit(&db.state,&human,"document.review_accept_summary",json!({"document_id":doc,"expected_version":3,"arrangement_version":0,"request_id":Uuid::new_v4(),"reason":"Confirmed header-only after the edit"})).await.unwrap();
+    // A summary decision settles extraction only. It cannot waive live PO controls.
+    commit(&db.state, &human, "po.configure", json!({"enabled":true}))
+        .await
+        .unwrap();
+    common::set_workflow(
+        &db.state,
+        &human,
+        Some(&v),
+        json!([{"id":"pay","type":"pay","release":"manual"}]),
+    )
+    .await;
+    commit(
+        &db.state,
+        &human,
+        "po.set_vendor_settings",
+        json!({"vendor_id":v,"require_po":true}),
+    )
+    .await
+    .unwrap();
     let mut create = bill(&doc, &v, &accepted);
     create["memo"] = json!("Changed");
     let b = commit(&db.state, &ap, "bill.create", create).await.unwrap();
     assert!(b["result"]["lines"].as_array().unwrap().is_empty());
     assert!(b["result"]["invoice_review"]["summary_reason"].is_string());
+    assert_eq!(b["result"]["purchase_orders"]["exception"]["kind"], "no_po");
+    let err = common::confirm(
+        &db.state,
+        &human,
+        "bill.release",
+        json!({"bill_id":b["result"]["bill"]["id"]}),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("no_po"), "{err}");
     db.drop().await;
 }
 
