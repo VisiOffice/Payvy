@@ -2,6 +2,8 @@
 //! the agent `extractor`, through the same `document.extract` command an
 //! agent or person would call. A failed read is recorded on the document and
 //! retried later, up to three times; after that it waits for a person.
+//! A file the reader finds several invoices in is split, one document per
+//! invoice (`document.extract`), and each part is read straight after.
 
 use std::time::Duration;
 
@@ -42,7 +44,8 @@ pub async fn tick(state: &AppState) -> anyhow::Result<usize> {
         )
         .await?;
         tx.rollback().await?;
-        for id in ids {
+        let mut queue: std::collections::VecDeque<uuid::Uuid> = ids.into();
+        while let Some(id) = queue.pop_front() {
             let actor = Actor::agent(org, ACTOR);
             let mode = Mode::Commit {
                 confirm_token: None,
@@ -56,7 +59,17 @@ pub async fn tick(state: &AppState) -> anyhow::Result<usize> {
             )
             .await
             {
-                Ok(_) => done += 1,
+                Ok(out) => {
+                    done += 1;
+                    // A file of several invoices was split: read each part
+                    // now. Parts are never split again, so this ends.
+                    let parts = out["result"]["split"]["to_read"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|v| v.as_str()?.parse::<uuid::Uuid>().ok());
+                    queue.extend(parts);
+                }
                 // Read meanwhile by someone else, or filed or trashed.
                 Err(CommandError::Conflict(_)) => {}
                 Err(e) => tracing::warn!(document = %id, "document reader: {e}"),

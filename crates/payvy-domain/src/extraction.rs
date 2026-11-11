@@ -26,7 +26,10 @@ discounts that are printed as their own lines are lines (a discount's amount is 
 balance; a credit memo reduces what is owed; a receipt shows something already paid. \
 If anything would make a careful bookkeeper hesitate (a past-due notice, a changed bank \
 account, handwriting, two invoices in one file, a total that doesn't match the lines), say so \
-in `notes`.";
+in `notes`. \
+If the file holds more than one invoice, fill in the fields from the first one and list every \
+invoice in `invoices`: the page numbers of the file it is printed on (the first page is 1), and \
+its invoice number and total as printed. For a single invoice, leave `invoices` empty.";
 
 /// The model's answer, as printed on the document.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -52,6 +55,108 @@ pub struct Read {
     #[serde(default)]
     pub lines: Vec<ReadLine>,
     pub notes: Option<String>,
+    /// When the file holds several invoices: where each one is. Absent or
+    /// empty for one invoice (older answers don't have it).
+    #[serde(default)]
+    pub invoices: Option<Vec<ReadInvoice>>,
+}
+
+/// One invoice of several in a file, as the model saw it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadInvoice {
+    /// Page numbers of the file, from 1. Signed so a wild answer is
+    /// refused by the check rather than failing the whole reading.
+    pub pages: Vec<i64>,
+    pub invoice_number: Option<String>,
+    pub total: Option<String>,
+}
+
+/// An invoice boundary Payvy accepted from a reading: distinct pages that
+/// exist in the document, ready to split on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Suggested {
+    /// Page numbers of the original, in the document's order.
+    pub pages: Vec<u32>,
+    pub invoice_number: Option<String>,
+    /// As printed.
+    pub total: Option<String>,
+    pub total_cents: Option<Cents>,
+}
+
+/// The invoices a reading says the file holds, checked against the
+/// document's pages (`pages`: the original's page numbers, in the order the
+/// document shows them). Empty for one invoice or none. Refused, with the
+/// reason, unless every group is non-empty, names only the document's
+/// pages, and no page is in two groups.
+pub fn invoices(read: &Read, pages: &[u32]) -> Result<Vec<Suggested>, String> {
+    let groups = read.invoices.as_deref().unwrap_or_default();
+    if groups.len() < 2 {
+        return Ok(Vec::new());
+    }
+    let mut seen: Vec<u32> = Vec::new();
+    let mut out = Vec::with_capacity(groups.len());
+    for (i, g) in groups.iter().enumerate() {
+        if g.pages.is_empty() {
+            return Err(format!("invoice {} has no pages", i + 1));
+        }
+        let mut mine: Vec<u32> = Vec::with_capacity(g.pages.len());
+        for &p in &g.pages {
+            let page = u32::try_from(p)
+                .ok()
+                .filter(|p| pages.contains(p))
+                .ok_or_else(|| format!("page {p} isn't one of this document's pages"))?;
+            if seen.contains(&page) {
+                return Err(format!("page {page} is in more than one invoice"));
+            }
+            seen.push(page);
+            mine.push(page);
+        }
+        // In the document's order, whatever order the model listed them.
+        mine.sort_by_key(|p| pages.iter().position(|q| q == p));
+        out.push(Suggested {
+            pages: mine,
+            invoice_number: clean(&g.invoice_number),
+            total: clean(&g.total),
+            total_cents: clean(&g.total).and_then(|t| parse_money(&t).ok()),
+        });
+    }
+    Ok(out)
+}
+
+/// The check a reading of several invoices gets: it can't become one bill
+/// as it stands. None for a single invoice.
+pub fn invoices_check(found: &Result<Vec<Suggested>, String>) -> Option<Check> {
+    match found {
+        Ok(list) if list.is_empty() => None,
+        Ok(list) => {
+            let each: Vec<String> = list
+                .iter()
+                .map(|s| {
+                    let number = s
+                        .invoice_number
+                        .as_deref()
+                        .map_or_else(|| "an invoice".to_owned(), |n| format!("invoice {n}"));
+                    format!("{number} on {}", crate::pages::describe_pages(&s.pages))
+                })
+                .collect();
+            Some(Check {
+                check: "one_invoice".into(),
+                ok: false,
+                detail: format!(
+                    "this file holds {} invoices: {}",
+                    list.len(),
+                    each.join("; ")
+                ),
+            })
+        }
+        Err(e) => Some(Check {
+            check: "one_invoice".into(),
+            ok: false,
+            detail: format!(
+                "the reader saw more than one invoice, but its pages don't add up ({e})"
+            ),
+        }),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -125,6 +230,23 @@ pub fn schema() -> Value {
                     "amount": { "type": "string", "description": "The line's total, exactly as printed; negative for a discount" }
                 },
                 "required": ["description", "amount"],
+                "additionalProperties": false
+            }
+        }),
+    );
+    properties.insert(
+        "invoices".into(),
+        json!({
+            "type": "array",
+            "description": "Only when the file holds more than one invoice: each one, with its pages. Empty otherwise",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "pages": { "type": "array", "items": { "type": "integer" }, "description": "Page numbers of the file, the first page is 1" },
+                    "invoice_number": { "anyOf": [{ "type": "string" }, { "type": "null" }] },
+                    "total": { "anyOf": [{ "type": "string" }, { "type": "null" }], "description": "Exactly as printed" }
+                },
+                "required": ["pages", "invoice_number", "total"],
                 "additionalProperties": false
             }
         }),
@@ -732,6 +854,81 @@ mod tests {
     }
 
     #[test]
+    fn several_invoices_are_accepted_only_on_distinct_existing_pages() {
+        let inv = |pages: &[i64], n: &str, t: &str| ReadInvoice {
+            pages: pages.to_vec(),
+            invoice_number: s(n),
+            total: s(t),
+        };
+        let mut r = invoice();
+        // One invoice, or none listed: nothing to split.
+        assert_eq!(invoices(&r, &[1, 2, 3]), Ok(vec![]));
+        r.invoices = Some(vec![inv(&[1, 2, 3], "85273", "8,034.89")]);
+        assert_eq!(invoices(&r, &[1, 2, 3]), Ok(vec![]));
+        assert_eq!(invoices_check(&invoices(&r, &[1, 2, 3])), None);
+
+        r.invoices = Some(vec![
+            inv(&[3, 1, 2], "85273", "8,034.89"),
+            inv(&[4, 5], "85274", "1,200.00"),
+        ]);
+        let found = invoices(&r, &[1, 2, 3, 4, 5, 6]).unwrap();
+        assert_eq!(found[0].pages, [1, 2, 3], "in the document's order");
+        assert_eq!(found[0].total_cents, Some(803_489));
+        assert_eq!(found[1].invoice_number.as_deref(), Some("85274"));
+        let c = invoices_check(&Ok(found)).unwrap();
+        assert!(!c.ok);
+        assert_eq!(
+            c.detail,
+            "this file holds 2 invoices: invoice 85273 on pages 1–3; invoice 85274 on pages 4–5"
+        );
+        // The document's own order, after it was rearranged.
+        let found = invoices(&r, &[5, 4, 3, 2, 1]).unwrap();
+        assert_eq!(found[1].pages, [5, 4]);
+
+        for (groups, why) in [
+            (
+                vec![inv(&[1, 2], "a", "1"), inv(&[2, 3], "b", "1")],
+                "page 2 is in more than one",
+            ),
+            (
+                vec![inv(&[1], "a", "1"), inv(&[9], "b", "1")],
+                "page 9 isn't",
+            ),
+            (
+                vec![inv(&[1], "a", "1"), inv(&[-1], "b", "1")],
+                "page -1 isn't",
+            ),
+            (
+                vec![inv(&[1], "a", "1"), inv(&[], "b", "1")],
+                "invoice 2 has no pages",
+            ),
+        ] {
+            r.invoices = Some(groups);
+            let e = invoices(&r, &[1, 2, 3]).unwrap_err();
+            assert!(e.contains(why), "{why}: {e}");
+            assert!(!invoices_check(&Err(e)).unwrap().ok);
+        }
+        // A page split off into another document isn't this one's.
+        r.invoices = Some(vec![inv(&[1], "a", "1"), inv(&[2], "b", "1")]);
+        assert!(invoices(&r, &[1, 3]).is_err());
+    }
+
+    #[test]
+    fn answers_without_invoices_still_parse() {
+        let r: Read =
+            serde_json::from_value(json!({ "kind": "invoice", "total": "1.00" })).unwrap();
+        assert_eq!(r.invoices, None);
+        let r: Read =
+            serde_json::from_value(json!({ "kind": "invoice", "invoices": null })).unwrap();
+        assert_eq!(r.invoices, None);
+        let r: Read = serde_json::from_value(
+            json!({ "kind": "invoice", "invoices": [{ "pages": [1], "invoice_number": null, "total": null }] }),
+        )
+        .unwrap();
+        assert_eq!(r.invoices.unwrap()[0].pages, [1]);
+    }
+
+    #[test]
     fn the_schema_is_strict_everywhere() {
         let v = schema();
         let props = v["properties"].as_object().unwrap();
@@ -740,6 +937,12 @@ mod tests {
         assert_eq!(
             v["properties"]["lines"]["items"]["additionalProperties"],
             false
+        );
+        let invoice = &v["properties"]["invoices"]["items"];
+        assert_eq!(invoice["additionalProperties"], false);
+        assert_eq!(
+            invoice["required"].as_array().unwrap().len(),
+            invoice["properties"].as_object().unwrap().len()
         );
         // Every field of Read is in the schema, and a full answer parses.
         let filled: serde_json::Map<String, Value> = props

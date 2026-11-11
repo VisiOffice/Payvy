@@ -28,6 +28,24 @@ pub const DEFAULT_CLAUDE_MODEL: &str = "claude-opus-5-5";
 const MAX_ENCODED: usize = 30 * 1024 * 1024;
 const PROMPT: &str = "Read this document.";
 
+/// What the model is asked, with the pages to read when the document is
+/// only some of the file's pages (split from it, or with pages hidden). The
+/// file sent is always the whole original; page numbers are the file's.
+pub fn prompt(pages: Option<&[u32]>) -> String {
+    match pages {
+        None => PROMPT.to_owned(),
+        Some(pages) => {
+            let list: Vec<String> = pages.iter().map(u32::to_string).collect();
+            let word = if pages.len() == 1 { "page" } else { "pages" };
+            format!(
+                "{PROMPT} Read only {word} {} of this file, in that order; the other pages belong \
+                 to other documents. Give page numbers as pages of the whole file.",
+                list.join(", ")
+            )
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Provider {
     Anthropic,
@@ -132,7 +150,18 @@ impl Extractor {
     }
 
     pub async fn read(&self, bytes: &[u8], kind: Kind) -> Result<Output, ExtractError> {
-        let body = request(&self.config, bytes, kind)?;
+        self.read_pages(bytes, kind, None).await
+    }
+
+    /// Reads only `pages` of the file (its own page numbers, in this order)
+    /// when given; the whole file otherwise.
+    pub async fn read_pages(
+        &self,
+        bytes: &[u8],
+        kind: Kind,
+        pages: Option<&[u32]>,
+    ) -> Result<Output, ExtractError> {
+        let body = request_pages(&self.config, bytes, kind, pages)?;
         let base = self.config.base_url.trim_end_matches('/');
         let req = match self.config.provider {
             Provider::Anthropic => {
@@ -193,6 +222,17 @@ fn claude_fallback(model: &str) -> bool {
 
 /// The request body for this provider.
 pub fn request(config: &Config, bytes: &[u8], kind: Kind) -> Result<Value, ExtractError> {
+    request_pages(config, bytes, kind, None)
+}
+
+/// The request body, asking for only `pages` of the file when given.
+pub fn request_pages(
+    config: &Config,
+    bytes: &[u8],
+    kind: Kind,
+    pages: Option<&[u32]>,
+) -> Result<Value, ExtractError> {
+    let prompt = prompt(pages);
     if kind == Kind::Tiff {
         return Err(ExtractError::Unsupported(
             "TIFF scans can't be read automatically yet; convert it to PDF".into(),
@@ -216,7 +256,7 @@ pub fn request(config: &Config, bytes: &[u8], kind: Kind) -> Result<Value, Extra
                 "model": config.model,
                 "max_tokens": 16000,
                 "system": extraction::INSTRUCTIONS,
-                "messages": [{ "role": "user", "content": [block, { "type": "text", "text": PROMPT }] }],
+                "messages": [{ "role": "user", "content": [block, { "type": "text", "text": prompt }] }],
                 "output_config": { "format": { "type": "json_schema", "schema": schema } },
             });
             if claude_fallback(&config.model) {
@@ -235,7 +275,7 @@ pub fn request(config: &Config, bytes: &[u8], kind: Kind) -> Result<Value, Extra
                 "model": config.model,
                 "messages": [
                     { "role": "system", "content": extraction::INSTRUCTIONS },
-                    { "role": "user", "content": [part, { "type": "text", "text": PROMPT }] },
+                    { "role": "user", "content": [part, { "type": "text", "text": prompt }] },
                 ],
                 "response_format": {
                     "type": "json_schema",
@@ -371,6 +411,39 @@ mod tests {
         )
         .unwrap();
         assert_eq!(body["messages"][1]["content"][0]["type"], "image_url");
+    }
+
+    #[test]
+    fn a_document_of_some_pages_asks_for_only_those() {
+        let body = request_pages(
+            &config(Provider::Anthropic, DEFAULT_CLAUDE_MODEL),
+            b"%PDF-1.7",
+            Kind::Pdf,
+            Some(&[4, 5]),
+        )
+        .unwrap();
+        let text = body["messages"][0]["content"][1]["text"].as_str().unwrap();
+        assert!(text.starts_with("Read this document."), "{text}");
+        assert!(text.contains("Read only pages 4, 5 of this file"), "{text}");
+        let body = request_pages(
+            &config(Provider::OpenAiCompatible, "gpt-5"),
+            b"%PDF-1.7",
+            Kind::Pdf,
+            Some(&[2]),
+        )
+        .unwrap();
+        assert!(
+            body["messages"][1]["content"][1]["text"]
+                .as_str()
+                .unwrap()
+                .contains("Read only page 2 of this file")
+        );
+        // The whole file: the prompt as it always was.
+        let body = request(&config(Provider::Anthropic, "m"), b"%PDF-1.7", Kind::Pdf).unwrap();
+        assert_eq!(
+            body["messages"][0]["content"][1]["text"],
+            "Read this document."
+        );
     }
 
     #[test]
