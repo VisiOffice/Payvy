@@ -8,12 +8,14 @@ your money, so it doesn't charge you to move it.
 
 Self-host it for free, or let us run it for one flat price per company.
 
-> **Status: early.** Working today: vendor workflows, bills, the document inbox on any
-> S3-compatible storage, email intake, reading bills with Claude or any OpenAI-compatible model,
-> paying through Mercury, the audit log, the REST API and the MCP server, and the start of the web
-> app (sign-in by email link, bills). Coming next: approving and releasing in the app, the invoice
-> viewer, the workflow builder, sync to VisiBooks, QuickBooks Online and Xero, and Ramp, Brex,
-> Wise and Airwallex.
+> **Status: early.** Working today: vendor workflows and the workflow builder, bills with approval
+> and payment release in the web app, company roles (admin, AP clerk, approver, payment releaser),
+> separation of duties, the document inbox on any S3-compatible storage, email intake, reading bills
+> with Claude or any OpenAI-compatible model, page tools (reorder, rotate, hide, and a bill from
+> selected pages of a multi-invoice PDF), paying through Mercury with an auto-pay limit, opt-in
+> email notices and reminders, the audit log, the REST API and the MCP server. Ramp connects and
+> maps vendors, but doesn't send payments yet. Coming next: merging documents and adding pages to a
+> bill, sync to VisiBooks, QuickBooks Online and Xero, and Brex, Wise and Airwallex.
 
 ## Why not Bill.com
 
