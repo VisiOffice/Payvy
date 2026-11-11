@@ -82,7 +82,7 @@ pub async fn invoice_review_replay(
 /// and an original restored by unsplit, even when new enrollment is off.
 pub async fn invoice_review_enrolled(tx: &mut Tx, doc: Uuid) -> anyhow::Result<bool> {
     let r = sqlx::query("SELECT EXISTS(SELECT 1 FROM documents d JOIN documents source ON source.org_id=d.org_id AND source.sha256=d.sha256 JOIN invoice_reviews r ON r.org_id=source.org_id AND r.document_id=source.id WHERE d.id=$1) AS enrolled").bind(doc).fetch_one(&mut **tx).await?;
-    Ok(r.get("enrolled"))
+    Ok(r.get::<bool, _>("enrolled") || extraction_v2_enrolled(tx, doc).await?)
 }
 pub struct NewInvoiceReview<'a> {
     pub document_id: Uuid,
@@ -120,4 +120,61 @@ pub async fn link_invoice_review(
 }
 pub async fn bill_invoice_review(tx: &mut Tx, bill: Uuid) -> anyhow::Result<Option<InvoiceReview>> {
     sqlx::query("SELECT r.* FROM invoice_reviews r JOIN bill_invoice_reviews b ON b.review_id=r.id AND b.org_id=r.org_id WHERE b.bill_id=$1").bind(bill).fetch_optional(&mut **tx).await?.map(row).transpose()
+}
+
+pub async fn extraction_v2_enabled(tx: &mut Tx) -> anyhow::Result<bool> {
+    Ok(sqlx::query(
+        "SELECT enabled AND extraction_v2_enabled AS enabled FROM invoice_review_settings",
+    )
+    .fetch_optional(&mut **tx)
+    .await?
+    .is_some_and(|r| r.get("enabled")))
+}
+pub async fn set_extraction_v2_enabled(
+    tx: &mut Tx,
+    org: Uuid,
+    enabled: bool,
+) -> anyhow::Result<()> {
+    sqlx::query("UPDATE invoice_review_settings SET extraction_v2_enabled=$2 WHERE org_id=$1")
+        .bind(org)
+        .bind(enabled)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+pub async fn extraction_v2_enrolled(tx: &mut Tx, doc: Uuid) -> anyhow::Result<bool> {
+    let r=sqlx::query("SELECT EXISTS(SELECT 1 FROM documents d JOIN documents source ON source.org_id=d.org_id AND source.sha256=d.sha256 WHERE d.id=$1 AND source.extraction_v2_enrolled) AS enrolled").bind(doc).fetch_one(&mut **tx).await?;
+    Ok(r.get("enrolled"))
+}
+
+pub async fn enroll_extraction_v2(tx: &mut Tx, doc: Uuid) -> anyhow::Result<bool> {
+    Ok(sqlx::query("UPDATE documents SET extraction_v2_enrolled=true WHERE id=$1 AND NOT extraction_v2_enrolled").bind(doc).execute(&mut **tx).await?.rows_affected() == 1)
+}
+
+pub async fn claim_extraction_read(
+    tx: &mut Tx,
+    doc: Uuid,
+    token: Uuid,
+    now: DateTime<Utc>,
+) -> anyhow::Result<bool> {
+    Ok(sqlx::query("UPDATE documents SET extraction_read_token=$2, extraction_read_started_at=$3 WHERE id=$1 AND (extraction_read_token IS NULL OR extraction_read_started_at <= $3 - interval '10 minutes')").bind(doc).bind(token).bind(now).execute(&mut **tx).await?.rows_affected() == 1)
+}
+pub async fn extraction_read_is_current(
+    tx: &mut Tx,
+    doc: Uuid,
+    token: Uuid,
+) -> anyhow::Result<bool> {
+    Ok(
+        sqlx::query("SELECT extraction_read_token=$2 AS current FROM documents WHERE id=$1")
+            .bind(doc)
+            .bind(token)
+            .fetch_one(&mut **tx)
+            .await?
+            .get::<Option<bool>, _>("current")
+            .unwrap_or(false),
+    )
+}
+pub async fn finish_extraction_read(tx: &mut Tx, doc: Uuid, token: Uuid) -> anyhow::Result<()> {
+    sqlx::query("UPDATE documents SET extraction_read_token=NULL, extraction_read_started_at=NULL WHERE id=$1 AND extraction_read_token=$2").bind(doc).bind(token).execute(&mut **tx).await?;
+    Ok(())
 }

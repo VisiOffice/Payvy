@@ -1550,6 +1550,7 @@ impl Store {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Extraction {
+    pub analysis: Option<serde_json::Value>,
     pub id: Uuid,
     pub document_id: Uuid,
     /// read or failed
@@ -1573,12 +1574,13 @@ pub struct Extraction {
 
 macro_rules! extraction_cols {
     () => {
-        "id, document_id, status, provider, model, answer, draft, checks, vendor_match, error, created_at, created_by, arrangement_version, invoices"
+        "id, document_id, status, provider, model, answer, draft, checks, vendor_match, error, created_at, created_by, arrangement_version, invoices, analysis"
     };
 }
 
 fn extraction(r: &PgRow) -> Extraction {
     Extraction {
+        analysis: r.get("analysis"),
         id: r.get("id"),
         document_id: r.get("document_id"),
         status: r.get("status"),
@@ -2916,5 +2918,19 @@ pub async fn lock_auto_pay_limits(tx: &mut Tx, org_id: Uuid) -> anyhow::Result<(
     .bind(org_id)
     .execute(&mut **tx)
     .await?;
+    Ok(())
+}
+
+/// Called only inside the transaction that inserts this extraction.
+pub async fn set_extraction_analysis(
+    tx: &mut Tx,
+    id: Uuid,
+    analysis: &serde_json::Value,
+) -> anyhow::Result<()> {
+    sqlx::query("UPDATE extractions SET analysis=$2 WHERE id=$1 AND analysis IS NULL")
+        .bind(id)
+        .bind(analysis)
+        .execute(&mut **tx)
+        .await?;
     Ok(())
 }

@@ -4,6 +4,10 @@ export interface InvoiceReviewSettingsInput {}
 
 export interface InvoiceReviewConfigureInput {
   enabled: boolean;
+  /**
+   * Opt in to richer extraction with source checks. Requires line review enabled. Off by default.
+   */
+  extraction_v2_enabled?: boolean;
 }
 
 export interface DocumentReviewGetInput {
@@ -36,7 +40,50 @@ export interface DocumentReviewSaveInput {
       amount: string;
       source_index: number | null;
       excluded_reason: string | null;
+      details?: {
+        quantity?: string | null;
+        unit?: string | null;
+        unit_price?: string | null;
+        tax_amount?: string | null;
+        tax_rate?: string | null;
+        item_code?: string | null;
+        service_start?: string | null;
+        service_end?: string | null;
+        states?: {
+          description?: "present" | "absent" | "unreadable" | "conflicting";
+          amount?: "present" | "absent" | "unreadable" | "conflicting";
+          quantity?: "present" | "absent" | "unreadable" | "conflicting";
+          unit?: "present" | "absent" | "unreadable" | "conflicting";
+          unit_price?: "present" | "absent" | "unreadable" | "conflicting";
+          tax_amount?: "present" | "absent" | "unreadable" | "conflicting";
+          tax_rate?: "present" | "absent" | "unreadable" | "conflicting";
+          item_code?: "present" | "absent" | "unreadable" | "conflicting";
+          service_start?: "present" | "absent" | "unreadable" | "conflicting";
+          service_end?: "present" | "absent" | "unreadable" | "conflicting";
+        };
+        /**
+         * @maxItems 30
+         */
+        evidence?: {
+          field:
+            | "description"
+            | "amount"
+            | "quantity"
+            | "unit"
+            | "unit_price"
+            | "tax_amount"
+            | "tax_rate"
+            | "item_code"
+            | "service_start"
+            | "service_end";
+          page: number;
+          quote: string;
+        }[];
+      } | null;
+      source_resolution?: string | null;
+      quantity_resolution?: string | null;
     }[];
+    coverage_resolution?: string | null;
   };
 }
 
@@ -66,7 +113,50 @@ export interface DocumentReviewPreviewInput {
       amount: string;
       source_index: number | null;
       excluded_reason: string | null;
+      details?: {
+        quantity?: string | null;
+        unit?: string | null;
+        unit_price?: string | null;
+        tax_amount?: string | null;
+        tax_rate?: string | null;
+        item_code?: string | null;
+        service_start?: string | null;
+        service_end?: string | null;
+        states?: {
+          description?: "present" | "absent" | "unreadable" | "conflicting";
+          amount?: "present" | "absent" | "unreadable" | "conflicting";
+          quantity?: "present" | "absent" | "unreadable" | "conflicting";
+          unit?: "present" | "absent" | "unreadable" | "conflicting";
+          unit_price?: "present" | "absent" | "unreadable" | "conflicting";
+          tax_amount?: "present" | "absent" | "unreadable" | "conflicting";
+          tax_rate?: "present" | "absent" | "unreadable" | "conflicting";
+          item_code?: "present" | "absent" | "unreadable" | "conflicting";
+          service_start?: "present" | "absent" | "unreadable" | "conflicting";
+          service_end?: "present" | "absent" | "unreadable" | "conflicting";
+        };
+        /**
+         * @maxItems 30
+         */
+        evidence?: {
+          field:
+            | "description"
+            | "amount"
+            | "quantity"
+            | "unit"
+            | "unit_price"
+            | "tax_amount"
+            | "tax_rate"
+            | "item_code"
+            | "service_start"
+            | "service_end";
+          page: number;
+          quote: string;
+        }[];
+      } | null;
+      source_resolution?: string | null;
+      quantity_resolution?: string | null;
     }[];
+    coverage_resolution?: string | null;
   };
 }
 

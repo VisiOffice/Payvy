@@ -7,6 +7,7 @@ pub mod documents;
 pub mod duties;
 pub mod email;
 pub mod extraction;
+pub mod invoice_evidence;
 pub mod invoice_review;
 pub mod pages;
 pub mod permissions;

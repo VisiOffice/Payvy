@@ -6,9 +6,11 @@
 use payvy_domain::bills::invoice_key;
 use payvy_domain::documents as doc_rules;
 use payvy_domain::extraction::{self as rules, Check, Draft, VendorMatch};
+use payvy_domain::invoice_evidence as evidence;
 use payvy_store::{self as store, ActorKind, Extraction, ExtractionRead, NewExtraction};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::{CommandError, Cx};
@@ -24,6 +26,7 @@ pub struct Extract {
 pub async fn extract(cx: &mut Cx<'_>, input: Extract) -> Result<Value, CommandError> {
     let extractor = cx.extractor()?;
     let storage = cx.storage()?;
+    store::lock_invoice_settings(&mut cx.tx, cx.org).await?;
     let doc = store::get_document(&mut cx.tx, input.document_id)
         .await?
         .ok_or(CommandError::NotFound("document"))?;
@@ -59,21 +62,79 @@ pub async fn extract(cx: &mut Cx<'_>, input: Extract) -> Result<Value, CommandEr
         );
     }
 
+    let read_token = Uuid::new_v4();
+    if !store::claim_extraction_read(&mut cx.tx, doc.id, read_token, cx.now).await? {
+        return Err(CommandError::Conflict("This document is already being read. If the reader stopped unexpectedly, retry after ten minutes.".into()));
+    }
+    cx.extraction_claim = Some((doc.id, read_token));
+    let v2 = store::extraction_v2_enabled(&mut cx.tx).await?
+        || store::extraction_v2_enrolled(&mut cx.tx, doc.id).await?;
+    if v2 && store::enroll_extraction_v2(&mut cx.tx, doc.id).await? {
+        cx.emit(
+            "document.extraction_v2_enrolled",
+            doc.id,
+            json!({"schema_version":2}),
+        )
+        .await?;
+    }
+    let started_at = (cx.clock)();
+    let timer = std::time::Instant::now();
+    // Release document/business locks before the provider or local OCR runs.
+    // The new transaction has no business locks. Re-authorize and re-read below.
+    let next = cx.store.begin(cx.org).await?;
+    let previous = std::mem::replace(&mut cx.tx, next);
+    previous.commit().await.map_err(anyhow::Error::from)?;
+    let mut source_pages = Vec::new();
     let read = async {
         let bytes = storage
             .get(&doc.storage_key)
             .await
             .map_err(|e| format!("couldn't fetch the file: {e:#}"))?;
         let kind = doc_rules::check(&bytes).map_err(|e| e.to_string())?;
-        extractor
-            .read_pages(&bytes, kind, hint.as_deref())
-            .await
-            .map_err(|e| e.to_string())
+        if v2 {
+            if doc_pages.is_empty() || doc_pages.len() > 24 {
+                return Err(
+                    "Extraction v2 supports at most 24 selected pages. Split only at verified invoice boundaries; keep a single longer invoice intact for manual review. Automatic page batching is not available yet.".into(),
+                );
+            }
+            let (read, pages) = tokio::join!(
+                extractor.read_pages_v2(&bytes, kind, &doc_pages),
+                crate::source_text::read(&bytes, kind, &doc_pages)
+            );
+            source_pages = pages;
+            read.map_err(|e| e.to_string())
+        } else {
+            extractor
+                .read_pages(&bytes, kind, hint.as_deref())
+                .await
+                .map_err(|e| e.to_string())
+        }
     }
     .await;
 
+    cx.roles = crate::permissions::roles(&mut cx.tx, cx.actor).await?;
+    if !cx.can("document.extract") {
+        return Err(CommandError::Forbidden(
+            "Document extraction permission changed while reading".into(),
+        ));
+    }
+    let current = store::get_document(&mut cx.tx, doc.id)
+        .await?
+        .ok_or(CommandError::NotFound("document"))?;
+    let current_version = super::documents::current_arrangement(cx, doc.id)
+        .await?
+        .map_or(0, |a| a.version);
+    let current_read = store::extraction_read_is_current(&mut cx.tx, doc.id, read_token).await?;
+    let stale =
+        !current_read || current_version != arrangement_version || current.status != "inbox";
+    store::finish_extraction_read(&mut cx.tx, doc.id, read_token).await?;
+    let mut analysis = json!({"schema_version":if v2 {2}else{1},"prompt_version":if v2 {evidence::PROMPT_VERSION}else{"invoice-v1"},
+        "prompt_hash":hex::encode(Sha256::digest(if v2 {evidence::INSTRUCTIONS}else{rules::INSTRUCTIONS})),
+        "schema_hash":hex::encode(Sha256::digest(serde_json::to_vec(&if v2 {rules::schema_v2()}else{rules::schema()}).unwrap())),
+        "source_sha256":doc.sha256,"selected_pages":doc_pages,"arrangement_version":arrangement_version,
+        "started_at":started_at,"completed_at":(cx.clock)(),"duration_ms":timer.elapsed().as_millis(),"stale":stale});
     let mut found = Vec::new();
-    let row = match read {
+    let mut row = match read {
         Err(error) => {
             let row = store::insert_extraction(
                 &mut cx.tx,
@@ -99,6 +160,54 @@ pub async fn extract(cx: &mut Cx<'_>, input: Extract) -> Result<Value, CommandEr
         }
         Ok(out) => {
             let (draft, mut checks) = rules::interpret(&out.read);
+            if stale {
+                checks.push(Check{check:"stale_review".into(),ok:false,detail:"Pages or document status changed while reading; this result is history only. Read the current pages again.".into()});
+            }
+            if v2 {
+                let coverage_ok = out.read.coverage.as_ref().is_some_and(|c| {
+                    let mut actual = c.pages_read.clone();
+                    actual.sort_unstable();
+                    let mut expected = doc_pages.clone();
+                    expected.sort_unstable();
+                    c.complete && actual == expected
+                });
+                checks.push(Check {
+                    check: "page_coverage_incomplete".into(),
+                    ok: coverage_ok,
+                    detail: if coverage_ok {
+                        "Reader reports all selected pages inspected"
+                    } else {
+                        "Reader did not inspect every selected page completely; check missing pages"
+                    }
+                    .into(),
+                });
+                let rows: Vec<_> = out
+                    .read
+                    .lines
+                    .iter()
+                    .map(|l| {
+                        let d = l.details.clone().unwrap_or_default();
+                        let mut fields = vec![
+                            ("description", Some(l.description.as_str())),
+                            ("amount", Some(l.amount.as_str())),
+                        ];
+                        fields.extend(d.fields());
+                        fields
+                            .into_iter()
+                            .filter_map(|(field, value)| {
+                                value.map(|v| {
+                                    evidence::ground(field, v, &l.description, &d, &source_pages)
+                                })
+                            })
+                            .flatten()
+                            .collect::<Vec<_>>()
+                    })
+                    .collect();
+                analysis["coverage"] = json!(out.read.coverage);
+                analysis["coverage_ok"] = json!(coverage_ok);
+                analysis["source_pages"] = json!(source_pages);
+                analysis["rows"] = json!(rows);
+            }
             let sender = match doc.email_id {
                 Some(id) => store::get_email(&mut cx.tx, id)
                     .await?
@@ -154,6 +263,8 @@ pub async fn extract(cx: &mut Cx<'_>, input: Extract) -> Result<Value, CommandEr
             row
         }
     };
+    store::set_extraction_analysis(&mut cx.tx, row.id, &analysis).await?;
+    row.analysis = Some(analysis);
     let mut out = summary(&row);
     // An agent's reading (the background reader's too) splits a file of
     // several invoices straight away, one document per invoice, under the
@@ -164,7 +275,7 @@ pub async fn extract(cx: &mut Cx<'_>, input: Extract) -> Result<Value, CommandEr
     // file claiming hundreds of invoices would become hundreds of documents,
     // each read again at a model call apiece. Past MAX_AUTO_SPLIT it stays
     // a suggestion for a person.
-    let automatic = cx.actor.kind != ActorKind::Person && doc.derived_from.is_none();
+    let automatic = !stale && cx.actor.kind != ActorKind::Person && doc.derived_from.is_none();
     if found.len() > MAX_AUTO_SPLIT && automatic {
         out["split"] = json!({ "error": format!(
             "the reader found {} invoices; more than {MAX_AUTO_SPLIT} are left for a person to split",
@@ -259,7 +370,11 @@ pub(super) fn summary(row: &Extraction) -> Value {
         .filter(|c| !c.ok)
         .map(|c| c.check.as_str())
         .collect();
-    let ready = row.status == "read" && failed.is_empty();
+    let review_required = row
+        .analysis
+        .as_ref()
+        .is_some_and(|a| a["schema_version"] == 2);
+    let ready = row.status == "read" && failed.is_empty() && !review_required;
     let bill_input = draft
         .as_ref()
         .and_then(|d| bill_input(row, d, matched.as_ref()));
@@ -273,6 +388,7 @@ pub(super) fn summary(row: &Extraction) -> Value {
         "extraction": row,
         "invoices": row.invoices.clone().unwrap_or_else(|| json!([])),
         "ready": ready,
+        "review_required": review_required,
         "failed_checks": failed,
         "bill_input": bill_input,
         "new_vendor": new_vendor,

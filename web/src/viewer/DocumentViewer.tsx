@@ -13,6 +13,8 @@ export interface Highlight {
   label: string;
   /** Ways the value may be printed; the first found wins. */
   candidates: string[];
+  /** Evidence citations refer to one original page, even when text repeats. */
+  page?: number;
 }
 
 /** One page of a document's arrangement: a page of the original, by number. */
@@ -370,7 +372,7 @@ export function DocumentViewer({
   const found = useMemo(
     () =>
       shown.map(({ page, ref }) =>
-        highlights.flatMap((h) =>
+        highlights.filter(h => h.page === undefined || h.page === ref.page).flatMap((h) =>
           find(page.items, h.candidates).map((r) => ({ ...turnRect(r, page, ref.rotation), key: h.key, label: h.label })),
         ),
       ),

@@ -1,0 +1,41 @@
+{
+  "schema_version": 2,
+  "pages": [
+    1
+  ],
+  "expected": {
+    "invoice_number": "V2-100",
+    "total": "30.86",
+    "currency": "USD",
+    "lines": [
+      {
+        "description": "Disposal",
+        "amount": "30.86",
+        "details": {
+          "quantity": "2.5",
+          "unit": "ton",
+          "unit_price": "12.345",
+          "tax_amount": null,
+          "tax_rate": null,
+          "item_code": null,
+          "service_start": null,
+          "service_end": null
+        }
+      },
+      {
+        "description": "Included visit",
+        "amount": "0.00",
+        "details": {
+          "quantity": "1",
+          "unit": "visit",
+          "unit_price": "0.00",
+          "tax_amount": null,
+          "tax_rate": null,
+          "item_code": null,
+          "service_start": null,
+          "service_end": null
+        }
+      }
+    ]
+  }
+}

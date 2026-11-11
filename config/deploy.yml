@@ -9,10 +9,10 @@ servers:
       - 5.78.94.150
     options:
       read-only: true
-      tmpfs: /tmp:size=16m,mode=1777
+      tmpfs: /tmp:size=128m,mode=1777
       cap-drop: ALL
       security-opt: no-new-privileges:true
-      memory: 512m
+      memory: 1g
       cpus: 1
       pids-limit: 128
 

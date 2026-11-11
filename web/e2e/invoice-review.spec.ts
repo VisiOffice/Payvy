@@ -118,3 +118,42 @@ test('multi-invoice review splits the selected pages before creating a bill', as
   await expect(page.getByRole('region',{name:'Line item review'})).toBeVisible();
   await expect(page.getByRole('button',{name:/^Create bill/})).toBeDisabled();
 });
+
+
+test('richer reader checks source and quantity and pins reviewed metadata', async ({page}) => {
+  await enabled(page,true);
+  await page.getByRole('button',{name:'Enable richer reader',exact:true}).click();
+  await expect(page.getByRole('button',{name:'Turn off richer reader',exact:true})).toBeVisible();
+  await vendor('Richer review vendor');
+  const doc=await agent<{id:string}>('document.upload',{filename:'richer.pdf',content_base64:pdf(['Richer review vendor','Invoice V2-UI','Date 2026-11-11','USD','Disposal 2.5 ton 12.345 30.86','Total 30.86']).toString('base64')});
+  await agent('document.extract',{document_id:doc.id});
+  await page.goto(`/documents/${doc.id}`);
+  await page.getByText('Details and source · line 1',{exact:true}).click();
+  await expect(page.getByLabel('Quantity 1',{exact:true})).toHaveValue('2.5');
+  await expect(page.getByLabel('Unit price 1',{exact:true})).toHaveValue('12.345');
+  await page.getByRole('button',{name:'Show quantity on page 1',exact:true}).click();
+  await page.getByLabel('Quantity 1',{exact:true}).fill('3');
+  await page.getByRole('checkbox',{name:'I checked the invoice details, currency and all included pages against the original'}).check();
+  await page.getByRole('button',{name:'Save review',exact:true}).click();
+  await expect(page.getByText('Saved · revision 1',{exact:true})).toBeVisible();
+  await expect(page.getByRole('button',{name:'Create bill',exact:true})).toBeDisabled();
+  await expect(page.getByText(/Quantity × rate differs/)).toBeVisible();
+  await page.getByLabel('Quantity 1',{exact:true}).fill('2.5');
+  await page.getByRole('button',{name:'Save review',exact:true}).click();
+  await expect(page.getByText('Saved · revision 2',{exact:true})).toBeVisible();
+  await expect(page.getByRole('button',{name:'Create bill',exact:true})).toBeEnabled();
+  await page.setViewportSize({width:390,height:844});
+  await page.getByRole('radio',{name:'Invoice details',exact:true}).click();
+  await page.getByLabel('Quantity 1',{exact:true}).scrollIntoViewIfNeeded();
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({path:'/tmp/payvy-extraction-v2-mobile.png'});
+  await page.setViewportSize({width:1440,height:900});
+  await page.getByLabel('Quantity 1',{exact:true}).scrollIntoViewIfNeeded();
+  await page.screenshot({path:'/tmp/payvy-extraction-v2-desktop.png'});
+  await page.getByRole('button',{name:'Create bill',exact:true}).click();
+  await expect(page).toHaveURL(/\/bills\//);
+  await expect(page.getByText(/unit price: 12.345/)).toBeVisible();
+  const bill=await agent<{invoice_review:{payload:{rows:{details:{quantity:string;unit_price:string}}[]}}}>('bill.get',{bill_id:page.url().split('/').pop()!});
+  expect(bill.invoice_review.payload.rows[0]!.details.quantity).toBe('2.5');
+  expect(bill.invoice_review.payload.rows[0]!.details.unit_price).toBe('12.345');
+});

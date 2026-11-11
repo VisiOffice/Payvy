@@ -14,6 +14,12 @@ pub struct Row {
     pub source_index: Option<usize>,
     /// Exclusion retains the row and requires a reason.
     pub excluded_reason: Option<String>,
+    #[serde(default)]
+    pub details: Option<crate::invoice_evidence::LineDetails>,
+    #[serde(default)]
+    pub quantity_resolution: Option<String>,
+    #[serde(default)]
+    pub source_resolution: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -39,6 +45,8 @@ pub struct Review {
     pub tax_basis: TaxBasis,
     /// A review of the original, not a model's accuracy claim.
     pub source_checked: bool,
+    #[serde(default)]
+    pub coverage_resolution: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -67,6 +75,9 @@ pub fn check_shape(r: &Review) -> Result<(), String> {
         || r.currency.len() > 10
         || r.total.len() > 100
         || r.tax.len() > 100
+        || r.coverage_resolution
+            .as_ref()
+            .is_some_and(|s| s.len() > 1000)
     {
         return Err("Review exceeds field or row limits".into());
     }
@@ -78,6 +89,15 @@ pub fn check_shape(r: &Review) -> Result<(), String> {
             || !ids.insert(&row.id)
             || row.description.len() > 4000
             || row.amount.len() > 100
+            || row.details.as_ref().is_some_and(|d| !d.bounded())
+            || row
+                .quantity_resolution
+                .as_ref()
+                .is_some_and(|s| s.len() > 1000)
+            || row
+                .source_resolution
+                .as_ref()
+                .is_some_and(|s| s.len() > 1000)
             || row
                 .excluded_reason
                 .as_ref()
@@ -143,6 +163,44 @@ pub fn validate(r: &Review) -> Validation {
     let mut lines = Vec::new();
     let mut sum = Some(0i64);
     for row in r.rows.iter().filter(|r| r.excluded_reason.is_none()) {
+        if let Some(details) = &row.details {
+            if let (Some(q), Some(rate)) = (&details.quantity, &details.unit_price) {
+                let calculated = crate::invoice_evidence::product_cents(q, rate);
+                let printed = parse_money(&row.amount).ok();
+                if (calculated.is_none() || calculated != printed)
+                    && row
+                        .quantity_resolution
+                        .as_ref()
+                        .is_none_or(|s| s.trim().is_empty())
+                {
+                    issues.push(Issue{code:"quantity_amount_mismatch",row_id:Some(row.id.clone()),detail:"Quantity × rate differs from the printed amount (USD rounded to cents, ties away from zero). Correct the fields or explain the printed discount, tax, bundle or rounding; the amount is never rewritten.".into()});
+                }
+            }
+            let mut values = vec![
+                ("description", Some(row.description.as_str())),
+                ("amount", Some(row.amount.as_str())),
+            ];
+            values.extend(details.fields());
+            for (field, value) in values {
+                use crate::invoice_evidence::FieldState;
+                let state = details.states.get(field);
+                let present = value.is_some_and(|v| !v.trim().is_empty());
+                let uncertain = matches!(
+                    state,
+                    Some(FieldState::Unreadable | FieldState::Conflicting)
+                ) || matches!(state, Some(FieldState::Present)) && !present
+                    || matches!(state, Some(FieldState::Absent)) && present;
+                if uncertain
+                    && row
+                        .source_resolution
+                        .as_ref()
+                        .is_none_or(|s| s.trim().is_empty())
+                {
+                    issues.push(Issue{code:"field_unresolved",row_id:Some(row.id.clone()),detail:format!("{field} is unreadable, conflicting or disagrees with its recorded state. Check it against the original and explain the resolution.")});
+                }
+            }
+        }
+
         if row.description.trim().is_empty() {
             issues.push(Issue {
                 code: "description_missing",
@@ -227,6 +285,7 @@ mod tests {
     use super::*;
     fn sample() -> Review {
         Review {
+            coverage_resolution: None,
             vendor_id: Some("vendor".into()),
             invoice_number: "A1".into(),
             invoice_date: NaiveDate::from_ymd_opt(2026, 11, 1),
@@ -236,6 +295,9 @@ mod tests {
             memo: String::new(),
             rows: vec![
                 Row {
+                    details: None,
+                    quantity_resolution: None,
+                    source_resolution: None,
                     id: "a".into(),
                     description: "Service".into(),
                     amount: "100.00".into(),
@@ -243,6 +305,9 @@ mod tests {
                     excluded_reason: None,
                 },
                 Row {
+                    details: None,
+                    quantity_resolution: None,
+                    source_resolution: None,
                     id: "b".into(),
                     description: "Discount".into(),
                     amount: "-10.00".into(),
@@ -259,6 +324,9 @@ mod tests {
     fn discounts_and_zero_rows_survive() {
         let mut r = sample();
         r.rows.push(Row {
+            details: None,
+            quantity_resolution: None,
+            source_resolution: None,
             id: "z".into(),
             description: "Included".into(),
             amount: "0".into(),

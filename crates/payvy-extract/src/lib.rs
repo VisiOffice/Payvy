@@ -161,7 +161,44 @@ impl Extractor {
         kind: Kind,
         pages: Option<&[u32]>,
     ) -> Result<Output, ExtractError> {
-        let body = request_pages(&self.config, bytes, kind, pages)?;
+        self.read_mode(bytes, kind, pages, false).await
+    }
+
+    pub async fn read_pages_v2(
+        &self,
+        bytes: &[u8],
+        kind: Kind,
+        pages: &[u32],
+    ) -> Result<Output, ExtractError> {
+        if pages.is_empty() || pages.len() > 24 {
+            return Err(ExtractError::Unsupported(
+                "Extraction v2 supports 1–24 selected pages. Split only at verified invoice boundaries; a single longer invoice needs manual review until page batching is available.".into(),
+            ));
+        }
+        self.read_mode(bytes, kind, Some(pages), true).await
+    }
+
+    async fn read_mode(
+        &self,
+        bytes: &[u8],
+        kind: Kind,
+        pages: Option<&[u32]>,
+        v2: bool,
+    ) -> Result<Output, ExtractError> {
+        let mut body = request_pages(&self.config, bytes, kind, pages)?;
+        if v2 {
+            match self.config.provider {
+                Provider::Anthropic => {
+                    body["system"] = json!(payvy_domain::invoice_evidence::INSTRUCTIONS);
+                    body["output_config"]["format"]["schema"] = extraction::schema_v2();
+                }
+                Provider::OpenAiCompatible => {
+                    body["messages"][0]["content"] =
+                        json!(payvy_domain::invoice_evidence::INSTRUCTIONS);
+                    body["response_format"]["json_schema"]["schema"] = extraction::schema_v2();
+                }
+            }
+        }
         let base = self.config.base_url.trim_end_matches('/');
         let req = match self.config.provider {
             Provider::Anthropic => {
@@ -185,30 +222,52 @@ impl Extractor {
                 }
             }
         };
-        let res = req
+        let mut res = req
             .json(&body)
             .send()
             .await
             .map_err(|e| ExtractError::Failed(format!("couldn't reach the model: {e}")))?;
         let status = res.status();
-        let text = res
-            .text()
+        let mut bytes = Vec::new();
+        while let Some(chunk) = res
+            .chunk()
             .await
-            .map_err(|e| ExtractError::Failed(format!("the model's answer was cut off: {e}")))?;
+            .map_err(|_| ExtractError::Failed("The model response was cut off".into()))?
+        {
+            if bytes.len() + chunk.len() > 4 * 1024 * 1024 {
+                return Err(ExtractError::Failed(
+                    "The model response exceeded the 4 MiB limit".into(),
+                ));
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        let text = String::from_utf8(bytes)
+            .map_err(|_| ExtractError::Failed("The model response was not UTF-8".into()))?;
         let value: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
         if !status.is_success() {
-            let message = value["error"]["message"]
-                .as_str()
-                .or_else(|| value["message"].as_str())
-                .unwrap_or("no detail");
             return Err(ExtractError::Failed(format!(
-                "the model's API answered {status}: {message}"
+                "the model's API answered {status}"
             )));
         }
-        match self.config.provider {
+        let out = match self.config.provider {
             Provider::Anthropic => parse_anthropic(&value, &self.config.model),
             Provider::OpenAiCompatible => parse_openai(&value, &self.config.model),
+        }?;
+        if v2
+            && (out.read.coverage.is_none()
+                || out.read.lines.len() > 1000
+                || out.read.lines.iter().any(|l| {
+                    l.details.as_ref().is_none_or(|d| {
+                        !d.bounded()
+                            || payvy_domain::invoice_evidence::FIELDS
+                                .iter()
+                                .any(|f| !d.states.contains_key(*f))
+                    })
+                }))
+        {
+            return Err(ExtractError::Failed("The model omitted v2 coverage/field states or exceeded row/evidence limits; review and read again".into()));
         }
+        Ok(out)
     }
 }
 

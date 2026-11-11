@@ -34,6 +34,8 @@ its invoice number and total as printed. For a single invoice, leave `invoices` 
 /// The model's answer, as printed on the document.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Read {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coverage: Option<crate::invoice_evidence::Coverage>,
     pub kind: Kind,
     pub vendor_name: Option<String>,
     pub vendor_email: Option<String>,
@@ -161,8 +163,36 @@ pub fn invoices_check(found: &Result<Vec<Suggested>, String>) -> Option<Check> {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadLine {
+    #[serde(default, deserialize_with = "nullable_text")]
     pub description: String,
+    #[serde(default, deserialize_with = "nullable_text")]
     pub amount: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<crate::invoice_evidence::LineDetails>,
+}
+
+fn nullable_text<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    Ok(Option::<String>::deserialize(d)?.unwrap_or_default())
+}
+
+pub fn schema_v2() -> Value {
+    let mut s = schema();
+    let line = &mut s["properties"]["lines"]["items"];
+    line["properties"]["description"] = json!({"type":["string","null"]});
+    line["properties"]["amount"] = json!({"type":["string","null"]});
+    line["properties"]["details"] = crate::invoice_evidence::schema();
+    line["required"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!("details"));
+    s["properties"]["coverage"] = json!({"type":"object","properties":{
+        "pages_read":{"type":"array","items":{"type":"integer"}},"complete":{"type":"boolean"},"reason":{"type":["string","null"]}
+    },"required":["pages_read","complete","reason"],"additionalProperties":false});
+    s["required"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!("coverage"));
+    s
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -758,10 +788,12 @@ mod tests {
             total: s("$459.00"),
             lines: vec![
                 ReadLine {
+                    details: None,
                     description: "30 yd roll-off haul".into(),
                     amount: "300.00".into(),
                 },
                 ReadLine {
+                    details: None,
                     description: "Disposal, 2.5 tons".into(),
                     amount: "125.00".into(),
                 },
@@ -845,6 +877,7 @@ mod tests {
         r.subtotal = None;
         r.total = s("400.00");
         r.lines.push(ReadLine {
+            details: None,
             description: "Loyalty discount".into(),
             amount: "-25.00".into(),
         });
@@ -956,6 +989,35 @@ mod tests {
         let read: Read = serde_json::from_value(Value::Object(filled)).unwrap();
         let back = serde_json::to_value(&read).unwrap();
         assert_eq!(back.as_object().unwrap().len(), props.len());
+    }
+
+    #[test]
+    fn v2_schema_is_strict_and_null_lines_remain_unreadable() {
+        fn strict(v: &Value) {
+            if v["type"] == "object" {
+                assert_eq!(v["additionalProperties"], false);
+                assert_eq!(
+                    v["required"].as_array().unwrap().len(),
+                    v["properties"].as_object().unwrap().len()
+                );
+            }
+            if let Some(map) = v.as_object() {
+                for value in map.values() {
+                    strict(value);
+                }
+            }
+            if let Some(items) = v.as_array() {
+                for item in items {
+                    strict(item);
+                }
+            }
+        }
+        strict(&schema_v2());
+        let row: ReadLine =
+            serde_json::from_value(json!({"description":null,"amount":null})).unwrap();
+        assert!(row.description.is_empty());
+        assert!(parse_money(&row.amount).is_err());
+        assert_eq!(parse_money("0.00"), Ok(0));
     }
 
     fn vendors() -> Vec<Candidate<u32>> {
