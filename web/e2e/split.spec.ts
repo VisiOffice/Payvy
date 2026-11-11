@@ -5,6 +5,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import { agent } from './api';
 import { pdfPages } from './pdf';
+import { shown } from './viewer';
 
 /**
  * Invoice 85273 on pages 1–2 ("Continued on next page"), invoice 85274 on
@@ -33,9 +34,6 @@ async function reclamationVendor(): Promise<void> {
   }
 }
 
-/** The original's page numbers in the order the viewer shows them. */
-const shown = (page: Page) =>
-  page.locator('.payvy-viewer-canvas [data-page]').evaluateAll((els) => els.map((e) => Number(e.getAttribute('data-page'))));
 
 const strip = (page: Page) => page.getByRole('region', { name: 'Pages' });
 const attach = (page: Page, n: number) => strip(page).getByRole('checkbox', { name: `Attach page ${n}` });

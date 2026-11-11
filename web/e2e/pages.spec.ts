@@ -4,6 +4,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import { agent, vendor } from './api';
 import { pdfPages } from './pdf';
+import { counter, shown } from './viewer';
 
 /** A three-page PDF no other test has. */
 async function threePages(tag: string): Promise<string> {
@@ -45,9 +46,6 @@ async function approvedVendor(page: Page, name: string): Promise<string> {
   return id;
 }
 
-/** The original's page numbers in the order the viewer shows them. */
-const shown = (page: Page) =>
-  page.locator('.payvy-viewer-canvas [data-page]').evaluateAll((els) => els.map((e) => Number(e.getAttribute('data-page'))));
 
 const strip = (page: Page) => page.getByRole('region', { name: 'Pages' });
 const history = (page: Page) => page.getByRole('list', { name: 'Page history' });
@@ -74,13 +72,15 @@ test('pages are reordered, rotated, hidden and restored, then lock once the bill
   await page.keyboard.press('Enter');
   await expect(history(page).getByText('Robert rotated page 1 to 90°')).toBeVisible();
   await expect(rotate).toBeFocused();
+  await strip(page).getByRole('button', { name: 'Show page 1' }).click();
   await expect(page.locator('.payvy-viewer-canvas [data-page="1"]')).toHaveAttribute('data-rotation', '90');
 
   // Hidden pages leave the view and show greyed with Restore.
   await strip(page).getByRole('button', { name: 'Hide page 2' }).click();
   await expect(history(page).getByText('Robert hid page 2')).toBeVisible();
   await expect.poll(() => shown(page)).toEqual([3, 1]);
-  await expect(page.getByText('2 pages · 1 hidden')).toBeVisible();
+  await expect(strip(page).getByText('3 pages · 1 hidden')).toBeVisible();
+  await expect(counter(page)).toHaveText(/^Page \d of 2$/);
   await expect(strip(page).getByRole('listitem', { name: 'Page 2, hidden' })).toBeVisible();
   await strip(page).getByRole('button', { name: 'Restore page 2' }).click();
   await expect(history(page).getByText('Robert restored page 2')).toBeVisible();
@@ -138,6 +138,7 @@ test('pages can be arranged on a phone, inside the original document tab', async
   await strip(page).getByRole('button', { name: 'Move page 2 earlier' }).click();
   await expect.poll(() => shown(page)).toEqual([2, 1, 3]);
   await strip(page).getByRole('button', { name: 'Rotate page 3' }).click();
+  await strip(page).getByRole('button', { name: 'Show page 3' }).click();
   await expect(page.locator('.payvy-viewer-canvas [data-page="3"]')).toHaveAttribute('data-rotation', '90');
   await strip(page).getByRole('button', { name: 'Hide page 1' }).click();
   await expect.poll(() => shown(page)).toEqual([2, 3]);

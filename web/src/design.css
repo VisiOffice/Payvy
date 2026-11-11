@@ -200,12 +200,17 @@ body { -webkit-font-smoothing: antialiased; }
 .payvy-document-row-placeholder { display: grid; grid-template-columns: 38px 1fr 80px; align-items: center; gap: 16px; padding: 18px 20px; border-top: 1px solid var(--color-border); }
 .payvy-skeleton { display: block; height: 12px; background: var(--color-background-muted); border-radius: 5px; }
 .payvy-document-review { height: 100%; min-height: 0; display: flex; flex-direction: column; background: var(--color-background-surface); }
-.payvy-review-header { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 20px 28px; border-bottom: 1px solid var(--color-border); }
-.payvy-review-header > div { min-width: 0; }
-.payvy-review-header a { font-size: 12px; }
-.payvy-review-header h1, .payvy-review-error h1 { margin-top: 8px; font-size: 23px; font-weight: 600; letter-spacing: -.7px; line-height: 1.25; }
-.payvy-review-filename { margin-top: 6px; font-size: 11px; color: var(--color-text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.payvy-review-workspace { display: grid; grid-template-columns: minmax(360px, 420px) minmax(0, 1fr); flex: 1; min-height: 0; }
+.payvy-review-header { display: flex; align-items: center; gap: 6px 14px; min-height: 44px; padding: 6px 20px; border-bottom: 1px solid var(--color-border); }
+.payvy-review-header a { font-size: 12px; white-space: nowrap; }
+.payvy-review-header h1 { font-size: 15px; font-weight: 600; letter-spacing: -.3px; line-height: 1.3; white-space: nowrap; }
+.payvy-review-error h1 { margin-top: 8px; font-size: 23px; font-weight: 600; letter-spacing: -.7px; line-height: 1.25; }
+.payvy-review-filename { flex: 1; min-width: 0; font-size: 12px; color: var(--color-text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* On a desktop the header sits over the details only, so the original starts at the top. */
+.payvy-document-review { display: grid; grid-template-columns: minmax(360px, 420px) minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+.payvy-review-header { grid-column: 1; grid-row: 1; border-right: 1px solid var(--color-border); }
+.payvy-review-workspace { display: contents; }
+.payvy-review-side { grid-column: 1; grid-row: 2; }
+.payvy-review-original { grid-column: 2; grid-row: 1 / span 2; }
 .payvy-review-side { display: flex; flex-direction: column; min-height: 0; min-width: 0; border-right: 1px solid var(--color-border); }
 .payvy-review-body { padding: 26px; overflow: auto; min-height: 0; flex: 1; }
 .payvy-invoice-summary { display: grid; gap: 8px; }
@@ -220,8 +225,12 @@ body { -webkit-font-smoothing: antialiased; }
 .payvy-review-secondary { display: flex; justify-content: center; gap: 12px; margin-top: 8px; }
 .payvy-review-original { min-width: 0; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
 .payvy-review-viewer { flex: 1; min-height: 0; }
-.payvy-pages { flex: none; border-bottom: 1px solid var(--color-border); background: var(--color-background-surface); padding: 12px 20px 10px; }
-.payvy-pages-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; font-size: 12px; margin-bottom: 10px; }
+.payvy-pages { flex: none; border-bottom: 1px solid var(--color-border); background: var(--color-background-surface); padding: 6px 12px 6px 20px; }
+.payvy-pages[data-open] { padding-bottom: 10px; }
+.payvy-pages-head { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 10px; min-height: 32px; font-size: 12px; }
+.payvy-pages[data-open] .payvy-pages-head { margin-bottom: 6px; }
+.payvy-pages-toggle { margin-left: auto; }
+.payvy-pages-pick + .payvy-pages-toggle { margin-left: 0; }
 .payvy-pages-head strong { font-weight: 550; }
 .payvy-pages-head > span { color: var(--color-text-secondary); font-size: 11px; }
 .payvy-pages-head .payvy-pages-locked { color: var(--color-text-warning); background: var(--color-warning-muted); border-radius: 5px; padding: 2px 8px; }
@@ -230,7 +239,10 @@ body { -webkit-font-smoothing: antialiased; }
 .payvy-page-thumb:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
 .payvy-page-thumb[draggable='true'] { cursor: grab; }
 .payvy-page-thumb[data-dragging] { opacity: .5; }
-.payvy-page-thumb-picture { width: 100%; height: 92px; display: flex; align-items: center; justify-content: center; }
+.payvy-page-thumb-picture { position: relative; width: 100%; height: 92px; display: flex; align-items: center; justify-content: center; }
+.payvy-page-thumb-go { position: absolute; inset: 0; padding: 0; border: 0; border-radius: 4px; background: transparent; cursor: pointer; }
+.payvy-page-thumb-go:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
+.payvy-page-thumb[data-current] { border-color: var(--color-accent); box-shadow: 0 0 0 1px var(--color-accent); background: var(--color-accent-muted); }
 .payvy-page-thumb-picture img, .payvy-page-thumb-blank { max-width: 88px; max-height: 92px; box-shadow: 0 1px 3px #0000002e; background: white; }
 .payvy-page-thumb-blank { display: block; width: 70px; height: 90px; }
 .payvy-page-thumb-number { font-size: 11px; color: var(--color-text-secondary); font-variant-numeric: tabular-nums; }
@@ -270,27 +282,39 @@ body { -webkit-font-smoothing: antialiased; }
 .payvy-viewer-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; }
 .payvy-viewer-control-group { display: flex; align-items: center; gap: 3px; }
 .payvy-viewer-scale { min-width: 38px; text-align: center; font-size: 11px; color: var(--color-text-secondary); font-variant-numeric: tabular-nums; }
+.payvy-viewer-toolbar[data-paged] { padding: 4px 12px; min-height: 40px; gap: 4px 12px; justify-content: flex-start; }
+.payvy-viewer-toolbar[data-paged] .payvy-viewer-controls { margin-left: auto; }
+.payvy-viewer-nav { display: flex; align-items: center; gap: 2px; }
+.payvy-viewer-counter { min-width: 86px; text-align: center; font-size: 12px; font-weight: 500; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.payvy-viewer-keys { display: inline-flex; align-items: center; gap: 3px; margin-left: 8px; font-size: 11px; color: var(--color-text-secondary); white-space: nowrap; }
+.payvy-viewer-keys > span { margin: 0 2px; }
+.payvy-viewer-attach { display: inline-flex; align-items: center; font-size: 12px; }
+.payvy-viewer-canvas[data-paged] { padding: 12px; }
+@media (pointer: coarse), (max-width: 1100px) { .payvy-viewer-keys { display: none; } }
 .payvy-viewer-hint { padding: 8px 20px; font-size: 11px; color: var(--color-text-secondary); border-bottom: 1px solid var(--color-border); }
 .payvy-viewer-canvas { flex: 1; min-height: 0; overflow: auto; padding: 24px; }
 @media (max-width: 1100px) and (min-width: 901px) {
-  .payvy-review-workspace { grid-template-columns: 350px minmax(0, 1fr); }
+  .payvy-document-review { grid-template-columns: 350px minmax(0, 1fr); }
   .payvy-review-body { padding: 20px; }
 }
 @media (max-width: 900px) {
   .payvy-document-review { height: auto; min-height: 100%; }
-  .payvy-review-header { padding: 18px 20px; }
-  .payvy-review-tabs { display: block; padding: 12px 20px; border-bottom: 1px solid var(--color-border); }
+  .payvy-review-header { padding: 6px 16px; }
+  .payvy-review-tabs { display: block; padding: 8px 16px; border-bottom: 1px solid var(--color-border); }
   .payvy-review-workspace { display: block; }
+  .payvy-document-review { display: flex; }
+  .payvy-review-header { border-right: 0; }
   .payvy-review-side { border: 0; }
   .payvy-review-body { padding: 24px 20px; overflow: visible; }
   .payvy-review-actions { position: sticky; bottom: 0; padding: 16px 20px 10px; z-index: 2; }
-  .payvy-review-original { height: calc(100dvh - 235px); min-height: 420px; }
+  .payvy-review-original { height: calc(100dvh - 165px); min-height: 420px; }
   .payvy-document-review[data-mobile-view='details'] .payvy-review-original { display: none; }
   .payvy-document-review[data-mobile-view='original'] .payvy-review-side { display: none; }
   .payvy-review-loading { display: grid; grid-template-columns: 1fr; }
   .payvy-review-loading .payvy-preview-placeholder { display: none; }
   .payvy-viewer-toolbar { padding: 12px; }
-  .payvy-pages { padding: 10px 12px 8px; }
+  .payvy-viewer-toolbar[data-paged] { padding: 4px 8px; }
+  .payvy-pages { padding: 4px 8px 4px 12px; }
   .payvy-page-thumb { width: 120px; padding: 8px 4px 6px; }
   .payvy-page-thumb-actions { gap: 0; }
   .payvy-page-thumb-picture { height: 72px; }
@@ -307,7 +331,12 @@ body { -webkit-font-smoothing: antialiased; }
   .payvy-documents-table td, .payvy-documents-table th { padding: 14px 12px; }
   .payvy-document-name { gap: 10px; }
   .payvy-file-glyph { width: 30px; height: 38px; font-size: 9px; }
-  .payvy-review-header { gap: 10px; }
-  .payvy-review-header h1 { font-size: 21px; }
-  .payvy-review-filename { max-width: 62vw; }
+  .payvy-review-header { flex-wrap: wrap; column-gap: 10px; }
+  .payvy-review-header .payvy-document-status { margin-left: auto; }
+  .payvy-review-filename { order: 1; flex-basis: 100%; }
+  .payvy-viewer-toolbar[data-paged] .payvy-viewer-scale { display: none; }
+  /* One slim row: the ticks say how many pages there are. */
+  .payvy-pages-head > strong { display: none; }
+  .payvy-pages-head .payvy-pages-pick { margin-left: 0; }
+  .payvy-pages-head:has(.payvy-pages-pick) .payvy-pages-count { display: none; }
 }

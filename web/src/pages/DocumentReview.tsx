@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps,
 import { useNavigate, useParams } from 'react-router';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
+import { CheckboxInput } from '@astryxdesign/core/CheckboxInput';
 import { Collapsible } from '@astryxdesign/core/Collapsible';
 import { DateInput } from '@astryxdesign/core/DateInput';
 import { Heading } from '@astryxdesign/core/Heading';
@@ -120,6 +121,30 @@ function invoicesHere(d: DocumentDetail): SuggestedInvoice[] {
   return found.filter((g) => g.pages.length > 0 && g.pages.every((p) => visible.includes(p)));
 }
 
+/** Where the choice to show or hide the page thumbnails is kept, per browser. */
+const THUMBNAILS_KEY = 'payvy.review.thumbnails';
+
+/** The thumbnails shown or hidden as last chosen; null when never chosen. */
+function thumbnailsChoice(): boolean | null {
+  try {
+    const v = window.localStorage.getItem(THUMBNAILS_KEY);
+    return v === 'shown' ? true : v === 'hidden' ? false : null;
+  } catch {
+    return null;
+  }
+}
+
+function keepThumbnailsChoice(open: boolean) {
+  try {
+    window.localStorage.setItem(THUMBNAILS_KEY, open ? 'shown' : 'hidden');
+  } catch {
+    // Private windows and blocked storage: it just isn't remembered.
+  }
+}
+
+/** Without a choice, thumbnails show for a few pages and stay out of the way for many. */
+const FEW_PAGES = 6;
+
 /** "Invoice 85273", or its place when no number was read. */
 const invoiceName = (g: SuggestedInvoice, i: number) => (g.invoice_number ? `Invoice ${g.invoice_number}` : `Invoice ${i + 1}`);
 
@@ -144,6 +169,9 @@ export function DocumentReview() {
   const [reading, setReading] = useState(false);
   /** Pages ticked for the bill: the original's page numbers. */
   const [selected, setSelected] = useState<Set<number>>(new Set());
+  /** The page the viewer shows: the original's page number. */
+  const [current, setCurrent] = useState<number | null>(null);
+  const [thumbnails, setThumbnails] = useState<boolean | null>(thumbnailsChoice);
   const request = useRef(0);
   const duplicateNotice = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -175,6 +203,7 @@ export function DocumentReview() {
   }, [id]);
   useEffect(() => {
     setDetail(null);
+    setCurrent(null);
     void load();
     return () => { request.current++; };
   }, [load]);
@@ -195,6 +224,11 @@ export function DocumentReview() {
     setDetail(d);
     const visible = visiblePages(d);
     setSelected((s) => new Set([...s].filter((p) => visible.includes(p))));
+  }, []);
+
+  const showThumbnails = useCallback((open: boolean) => {
+    setThumbnails(open);
+    keepThumbnailsChoice(open);
   }, []);
 
   const latest = detail?.extractions[0];
@@ -224,6 +258,16 @@ export function DocumentReview() {
     (visible.length <= 1 || picked.length > 0);
   const createLabel = partial ? `Create bill from ${picked.length} ${picked.length === 1 ? 'page' : 'pages'}` : 'Create bill';
   const set = (patch: Partial<Form>) => setForm((f) => ({ ...f, ...patch }));
+  const picking = doc.status === 'inbox' && !detail.pages.locked;
+  const thumbnailsOpen = thumbnails ?? (visible.length > 1 && visible.length <= FEW_PAGES);
+  function tick(page: number, on: boolean) {
+    setSelected((s) => {
+      const next = new Set(s);
+      if (on) next.add(page);
+      else next.delete(page);
+      return next;
+    });
+  }
 
   async function readAgain() {
     setReading(true);
@@ -325,7 +369,9 @@ export function DocumentReview() {
   return (
     <div className="payvy-document-review" data-mobile-view={mobileView}>
       <header className="payvy-review-header">
-        <div><Link href="/documents">← Documents</Link><h1>Review invoice</h1><p className="payvy-review-filename" title={doc.filename}>{doc.filename}</p></div>
+        <Link href="/documents">← Documents</Link>
+        <h1>Review invoice</h1>
+        <p className="payvy-review-filename" title={doc.filename}>{doc.filename}</p>
         <span className="payvy-document-status">
           {doc.status === 'filed'
             ? 'Filed'
@@ -633,7 +679,11 @@ export function DocumentReview() {
           pages={detail.pages}
           onChange={arranged}
           onStale={refresh}
-          {...(doc.status === 'inbox' && !detail.pages.locked ? { selected, onSelect: setSelected } : {})}
+          {...(picking ? { selected, onSelect: setSelected } : {})}
+          isOpen={thumbnailsOpen}
+          onOpenChange={showThumbnails}
+          current={current}
+          onPick={setCurrent}
         />
         <div className="payvy-review-viewer">
           <DocumentViewer
@@ -642,6 +692,21 @@ export function DocumentReview() {
             highlights={highlights}
             focus={focus}
             arrangement={detail.pages.arrangement}
+            paging={{
+              current,
+              onCurrentChange: setCurrent,
+              extra: (ref) =>
+                picking && visible.length > 1 ? (
+                  <span className="payvy-viewer-attach">
+                    <CheckboxInput
+                      label={`Attach page ${ref.page}`}
+                      size="sm"
+                      value={selected.has(ref.page)}
+                      onChange={(on) => tick(ref.page, on)}
+                    />
+                  </span>
+                ) : null,
+            }}
           />
         </div>
       </section>
