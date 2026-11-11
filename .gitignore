@@ -10,6 +10,5 @@ web/playwright-report/
 .wrangler/
 .dev.vars*
 
-# Private legacy invoice transfer bundles and Python bytecode.
-.legacy-import/
+# Python bytecode.
 __pycache__/
