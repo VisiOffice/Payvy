@@ -121,13 +121,18 @@ The server runs a Ramp checker independently of Mercury payment polling. Every
 `bank.maintain` as the bank agent. All writes and health events still go through
 the command registry. Maintenance can check an existing grant and renew its
 access token; it cannot authorize, activate, change an account, accept a payee,
-or send a payment. Retired grants are never renewed by this worker.
+or send a payment. Already-retired grants are skipped; an in-flight response is
+discarded if the connection was retired or changed meanwhile.
 
 The checker renews within five minutes of access expiry, otherwise checks the
 business every fifteen minutes. Requests are separated by at least one minute,
 including short-lived grants; a very short grant may expire before the next
-scheduled check. It serializes with other workers, manual checks, and connection
-changes. The original refresh token and its absolute expiry are retained. A
+scheduled check. A per-grant advisory lock serializes workers and manual checks.
+Provider calls hold neither the company bank lock nor the bank connection row lock,
+so payee decisions, disconnects and replacements can proceed while Ramp is slow.
+After HTTP, a short bank lock protects rechecking the original live connection and
+credential snapshot before saving; late responses cannot rewrite a retired grant.
+The original refresh token and its absolute expiry are retained. A
 successful refresh is sealed and committed even when the following business
 probe fails. Previews send no health probes or refresh requests.
 

@@ -28,6 +28,7 @@ struct Data {
     funding_changed: bool,
     inactive: bool,
     fail_token: bool,
+    pause: Option<(String, Arc<Gate>)>,
     writes: usize,
     token_status: Option<u16>,
     advance_on_token: Option<Arc<Mutex<chrono::DateTime<chrono::Utc>>>>,
@@ -42,6 +43,11 @@ struct Data {
     webhook_deletes: usize,
     fail_webhook_delete: bool,
     mercury_checks: usize,
+}
+#[derive(Default)]
+struct Gate {
+    entered: tokio::sync::Notify,
+    resume: tokio::sync::Notify,
 }
 struct Fake {
     url: String,
@@ -81,6 +87,21 @@ async fn respond(
 ) -> axum::response::Response {
     let (parts, body) = req.into_parts();
     let raw = axum::body::to_bytes(body, 10000).await.unwrap();
+    let gate = {
+        let mut d = data.lock().unwrap();
+        if d.pause
+            .as_ref()
+            .is_some_and(|(path, _)| path == parts.uri.path())
+        {
+            d.pause.take().map(|(_, gate)| gate)
+        } else {
+            None
+        }
+    };
+    if let Some(gate) = gate {
+        gate.entered.notify_one();
+        gate.resume.notified().await;
+    }
     let mut d = data.lock().unwrap();
     let path = parts.uri.path();
     if path.starts_with("/mercury/") {
@@ -1244,4 +1265,124 @@ async fn mapping_uses_one_vendor_and_stale_mappings_are_labeled() {
         false
     );
     db.drop().await;
+}
+
+/// Stall each HTTP phase, rather than rely on wall-clock sleeps. Bank writes
+/// must finish before the stalled response is released, and that response must
+/// not update the retired connection's credentials, health, or audit events.
+#[tokio::test]
+async fn slow_maintenance_does_not_block_payees_or_connection_changes() {
+    for path in ["/developer/v1/token", "/developer/v1/business"] {
+        let Some(mut db) = TestDb::new().await else {
+            return;
+        };
+        let fake = Fake::start().await;
+        db.state = db.state.clone().with_bank(fake.bank());
+        let id = connected(&db).await;
+        let v = vendor(&db.state, &agent("bot"), "Local supplier").await;
+        let list = commit(
+            &db.state,
+            &agent("bot"),
+            "bank.recipients",
+            json!({"recipient_id":ID}),
+        )
+        .await
+        .unwrap();
+        let fingerprint = list["result"]["destinations"][0]["fingerprint"].clone();
+        let before_health = health(&db).await;
+        let mut tx = db
+            .state
+            .store
+            .begin(payvy_store::DEFAULT_ORG)
+            .await
+            .unwrap();
+        let before_credentials = payvy_store::get_connection(&mut tx, id.parse().unwrap())
+            .await
+            .unwrap()
+            .unwrap()
+            .token_sealed;
+        tx.rollback().await.unwrap();
+        *db.clock.lock().unwrap() += chrono::Duration::minutes(56);
+        let gate = Arc::new(Gate::default());
+        fake.data.lock().unwrap().pause = Some((path.into(), gate.clone()));
+        let state = db.state.clone();
+        let original_id = id.clone();
+        let check = tokio::spawn(async move {
+            commit(
+                &state,
+                &agent("bank"),
+                "bank.maintain",
+                json!({"connection_id":original_id}),
+            )
+            .await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), gate.entered.notified())
+            .await
+            .expect("maintenance reached stalled Ramp request");
+        let replacement = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let proposal = commit(
+                &db.state,
+                &agent("bot"),
+                "vendor.propose_payee",
+                json!({
+                    "vendor_id":v,"connection_id":id,"recipient_id":ID,"method":"ach",
+                    "instrument_id":ID,"instrument_fingerprint":fingerprint
+                }),
+            )
+            .await
+            .unwrap();
+            commit(
+                &db.state,
+                &person("robert"),
+                "vendor.accept_payee",
+                json!({"proposal_id":proposal["result"]["proposal"]["id"]}),
+            )
+            .await
+            .unwrap();
+            commit(
+                &db.state,
+                &person("robert"),
+                "bank.disconnect",
+                json!({"provider":"ramp"}),
+            )
+            .await
+            .unwrap();
+            connected(&db).await
+        })
+        .await
+        .expect("bank operations must not wait for maintenance HTTP");
+        assert_ne!(replacement, id);
+        let replacement_health = health(&db).await;
+        gate.resume.notify_one();
+        let error = check.await.unwrap().unwrap_err();
+        assert!(
+            matches!(error, commands::CommandError::Conflict(_)),
+            "{error}"
+        );
+        assert_eq!(health(&db).await, replacement_health);
+        let mut tx = db
+            .state
+            .store
+            .begin(payvy_store::DEFAULT_ORG)
+            .await
+            .unwrap();
+        let original = payvy_store::get_connection(&mut tx, id.parse().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(original.retired_at.is_some());
+        assert_eq!(original.token_sealed, before_credentials);
+        let h = payvy_store::ramp::health(&mut tx, original.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(json!(h.checked_at), before_health["checked_at"]);
+        assert_eq!(h.health_status, "connected");
+        let events: i64 = sqlx::query_scalar("SELECT count(*) FROM events WHERE entity_id=$1 AND kind IN ('bank.credentials_renewed','bank.connection_checked')")
+            .bind(original.id).fetch_one(&mut *tx).await.unwrap();
+        assert_eq!(events, 0);
+        tx.rollback().await.unwrap();
+        assert_eq!(fake.data.lock().unwrap().writes, 0);
+        db.drop().await;
+    }
 }

@@ -66,6 +66,15 @@ pub async fn details(tx: &mut Tx, id: Uuid) -> anyhow::Result<Option<(String, Va
             .await?,
     )
 }
+/// Serialize only maintenance of this grant. Never take this lock while holding
+/// the company bank lock: maintenance takes that lock briefly after provider I/O.
+pub async fn lock_maintenance(tx: &mut Tx, org: Uuid, id: Uuid) -> anyhow::Result<()> {
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(format!("ramp-maintenance:{org}:{id}"))
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
 pub async fn lock_connection(tx: &mut Tx, id: Uuid) -> anyhow::Result<Option<BankConnection>> {
     let row = sqlx::query(concat!(
         "SELECT ",

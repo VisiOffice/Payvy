@@ -87,7 +87,9 @@ Conventions follow Visirent (`~/Code/visirent`).
   recipient or payee through it; tests use a fake Rho (`tests/rho.rs`), never a real one.
 - **Ramp is setup-only** (`mode: setup`): no payment submission or auto-pay. Its
   independent checker runs `bank.maintain` for an already-authorized grant.
-  Renewals serialize with connection changes, retain the original refresh expiry,
+  Renewals serialize per grant, then recheck under the bank lock after HTTP. Never
+  hold the company bank lock or connection row lock during maintenance HTTP. Discard
+  late results for changed/retired connections. Retain the original refresh expiry,
   and persist health/backoff even when the provider fails. Five transient failures
   pause automatic attempts; only person-only `bank.renew` resumes after cooldown.
   Rejected grants require reconnecting. Never clear a person-only gate to renew,

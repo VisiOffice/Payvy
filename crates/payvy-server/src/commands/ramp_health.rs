@@ -138,9 +138,11 @@ pub(super) async fn get(cx: &mut Cx<'_>, c: &store::BankConnection) -> Result<Va
 }
 
 pub async fn maintain(cx: &mut Cx<'_>, input: Renew, manual: bool) -> Result<Value, CommandError> {
-    store::lock_bank(&mut cx.tx, cx.org).await?;
+    // Across replicas and manual checks, only this grant's maintenance waits.
+    // No company bank lock or bank_connections row lock is held during HTTP.
+    db::lock_maintenance(&mut cx.tx, cx.org, input.connection_id).await?;
     cx.now = (cx.clock)();
-    let c = db::lock_connection(&mut cx.tx, input.connection_id)
+    let c = store::get_connection(&mut cx.tx, input.connection_id)
         .await?
         .filter(|c| c.provider == "ramp" && c.retired_at.is_none())
         .ok_or(CommandError::NotFound("live Ramp connection"))?;
@@ -176,6 +178,7 @@ pub async fn maintain(cx: &mut Cx<'_>, input: Renew, manual: bool) -> Result<Val
     let changed_config = config(cx).is_err()
         || config(cx)
             .is_ok_and(|conf| conf.client_id != app || conf.environment_name() != c.environment);
+    let mut renewed_credentials = None;
     let renewed = if changed_config {
         reconnect(&mut health, "configuration_changed");
         false
@@ -207,7 +210,7 @@ pub async fn maintain(cx: &mut Cx<'_>, input: Renew, manual: bool) -> Result<Val
                             next.refresh = credentials.refresh;
                             next.refresh_expires = credentials.refresh_expires;
                             let sealed = next.seal(cx, &bank_purpose(c.id))?;
-                            db::update_credentials(&mut cx.tx, c.id, &sealed).await?;
+                            renewed_credentials = Some(sealed);
                             health.access_expires_at = Some(next.access_expires);
                             credentials = next;
                             renewed = true;
@@ -242,6 +245,25 @@ pub async fn maintain(cx: &mut Cx<'_>, input: Renew, manual: bool) -> Result<Val
         reconnect(&mut health, "credentials_unreadable");
         false
     };
+    // Connection changes were free to proceed while Ramp was responding.
+    // Recheck under the same lock as replacement/retirement, before any writes.
+    store::lock_bank(&mut cx.tx, cx.org).await?;
+    let current = db::lock_connection(&mut cx.tx, c.id)
+        .await?
+        .filter(|current| {
+            current.retired_at.is_none()
+                && current.provider == c.provider
+                && current.environment == c.environment
+                && current.token_sealed == c.token_sealed
+        })
+        .ok_or_else(|| {
+            CommandError::Conflict(
+                "Ramp connection changed during the check; result discarded".into(),
+            )
+        })?;
+    if let Some(sealed) = renewed_credentials {
+        db::update_credentials(&mut cx.tx, current.id, &sealed).await?;
+    }
     health.checked_at = Some(cx.now);
     db::set_health(&mut cx.tx, c.id, &health).await?;
     if renewed {
