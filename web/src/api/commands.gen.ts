@@ -380,6 +380,141 @@ export interface AutoPayRaiseLimitInput {
   reason?: string;
 }
 
+export interface PoCreateInput {
+  vendor_id: string;
+  po_number: string;
+  owner?: string;
+  authorized_cents?: number;
+  service_address?: string;
+  period_start?: string;
+  period_end?: string;
+  external_source?: string;
+  external_id?: string;
+  lines?: {
+    description: string;
+    quantity?: number;
+    unit?: string;
+    unit_price_cents?: number;
+    amount_cents: number;
+    account?: string;
+  }[];
+}
+
+export interface PoUpdateInput {
+  po_id: string;
+  owner?: string | null;
+  authorized_cents?: number;
+  reason?: string;
+  service_address?: string | null;
+  period_start?: string | null;
+  period_end?: string | null;
+  lines?: {
+    description: string;
+    quantity?: number;
+    unit?: string;
+    unit_price_cents?: number;
+    amount_cents: number;
+    account?: string;
+  }[];
+}
+
+export interface PoActivateInput {
+  po_id: string;
+}
+
+export interface PoCloseInput {
+  po_id: string;
+  reason: string;
+}
+
+export interface PoCancelInput {
+  po_id: string;
+  reason: string;
+}
+
+export interface PoGetInput {
+  po_id: string;
+}
+
+export interface PoListInput {
+  vendor_id?: string;
+}
+
+export interface PoImportInput {
+  vendor_id: string;
+  po_number: string;
+  owner?: string;
+  authorized_cents?: number;
+  opening_consumed_cents?: number;
+  source_allocation_id?: string;
+  service_address?: string;
+  period_start?: string;
+  period_end?: string;
+  lines?: {
+    description: string;
+    quantity?: number;
+    unit?: string;
+    unit_price_cents?: number;
+    amount_cents: number;
+    account?: string;
+  }[];
+}
+
+export interface PoVendorSettingsInput {
+  vendor_id: string;
+}
+
+export interface PoSetVendorSettingsInput {
+  vendor_id: string;
+  require_po: boolean;
+  /**
+   * Explicitly enabled: an unsatisfied customer_funded signal blocks release and auto-pay
+   */
+  require_funding?: boolean;
+  overage_cents_cap?: number | null;
+  overage_percent_bp?: number | null;
+}
+
+export interface PoMatchPreviewInput {
+  bill_id: string;
+  /**
+   * A PO reference read from the invoice, verified against the vendor's POs
+   */
+  po_number?: string;
+}
+
+export interface PoMatchApplyInput {
+  bill_id: string;
+  /**
+   * @minItems 1
+   */
+  allocations: [
+    {
+      po_id: string;
+      amount_cents: number;
+    },
+    ...{
+      po_id: string;
+      amount_cents: number;
+    }[]
+  ];
+}
+
+export interface PoOverrideInput {
+  bill_id: string;
+  authorized_excess_cents: number;
+  reason: string;
+}
+
+export interface PoAllocationAcceptInput {
+  allocation_id: string;
+}
+
+export interface PoAllocationReverseInput {
+  allocation_id: string;
+  reason: string;
+}
+
 export interface InboxGetInput {}
 
 export interface ApprovalRulesGetInput {}
@@ -697,6 +832,21 @@ export interface CommandInputs {
   "auto_pay.limits": AutoPayLimitsInput;
   "auto_pay.lower_limit": AutoPayLowerLimitInput;
   "auto_pay.raise_limit": AutoPayRaiseLimitInput;
+  "po.create": PoCreateInput;
+  "po.update": PoUpdateInput;
+  "po.activate": PoActivateInput;
+  "po.close": PoCloseInput;
+  "po.cancel": PoCancelInput;
+  "po.get": PoGetInput;
+  "po.list": PoListInput;
+  "po.import": PoImportInput;
+  "po.vendor_settings": PoVendorSettingsInput;
+  "po.set_vendor_settings": PoSetVendorSettingsInput;
+  "po.match_preview": PoMatchPreviewInput;
+  "po.match_apply": PoMatchApplyInput;
+  "po.override": PoOverrideInput;
+  "po.allocation_accept": PoAllocationAcceptInput;
+  "po.allocation_reverse": PoAllocationReverseInput;
   "inbox.get": InboxGetInput;
   "approval_rules.get": ApprovalRulesGetInput;
   "approval_rules.set": ApprovalRulesSetInput;
@@ -775,6 +925,21 @@ export const COMMANDS: Record<CommandName, { tier: Tier; personOnly: boolean; su
   "auto_pay.limits": { tier: "read", personOnly: false, summary: "The ceiling on automatic payments: the company's limit (the $5,000.00 default until a person sets one) and each vendor's own limit, which overrides the company's in either direction. A bill over the limit in force (the vendor's if set, else the company's) never pays automatically: it waits for a person to release it, whatever its workflow says." },
   "auto_pay.lower_limit": { tier: "routine", personOnly: true, summary: "Lower the company's auto-pay limit, or with vendor_id set, lower or remove one vendor's own limit, as long as the limit in force for it doesn't go up (removing an override is allowed here when the company's limit is no higher). Lowering the company's limit doesn't change vendors with their own. Bills over the new limit wait for a person to release them. Only a person may change a limit. Anything that raises the limit in force needs auto_pay.raise_limit." },
   "auto_pay.raise_limit": { tier: "confirmed", personOnly: true, summary: "Raise the company's auto-pay limit (vendors with their own limit keep it), or with vendor_id set a vendor's own limit above what applies to it now (it may be above the company's), or remove a vendor's own limit when the company's is higher (limit_cents null). Only a person may change a limit. The preview lists the bills that would start paying automatically; commit with the returned token." },
+  "po.create": { tier: "routine", personOnly: false, summary: "Create a draft purchase order for a vendor. Nothing matches against it until a person activates it with po.activate." },
+  "po.update": { tier: "routine", personOnly: true, summary: "Change a purchase order (person only). Editing a draft sets it up; editing an active PO creates a new revision and never releases existing allocations. Vendor, number and currency cannot change." },
+  "po.activate": { tier: "routine", personOnly: true, summary: "Activate a draft purchase order (person only). Requires an owner and an authorized amount. Imported POs arrive as drafts and are activated this way; an import never activates." },
+  "po.close": { tier: "routine", personOnly: true, summary: "Close an active purchase order (person only), with a reason: fulfilled, expired, settled outside Payvy, or superseded. Refused while allocations are still reserved." },
+  "po.cancel": { tier: "routine", personOnly: true, summary: "Cancel a draft or active purchase order (person only), with a reason. Refused while allocations are still reserved." },
+  "po.get": { tier: "read", personOnly: false, summary: "A purchase order: lifecycle, billing progress, authorized/reserved/consumed/available, its current lines, revisions and allocation history." },
+  "po.list": { tier: "read", personOnly: false, summary: "Purchase orders, optionally for one vendor, each with authorized/reserved/consumed/available and billing progress." },
+  "po.import": { tier: "routine", personOnly: false, summary: "Import a purchase order from another system by external source/id (idempotent). Always lands as a draft: a person activates it with po.activate. opening_consumed_cents records amounts already billed in the source system and is not counted twice on a re-import." },
+  "po.vendor_settings": { tier: "read", personOnly: false, summary: "A vendor's purchase-order settings: whether its bills require a PO, and its overage caps (dollar and/or percentage in basis points). Caps are pinned onto each PO revision when it is made." },
+  "po.set_vendor_settings": { tier: "routine", personOnly: true, summary: "Set a vendor's purchase-order settings (person only): whether its bills require a PO, and overage caps. Zero overage is the default; an absent cap is not configured, a cap of 0 is zero. Existing PO revisions keep the allowance pinned on them." },
+  "po.match_preview": { tier: "read", personOnly: false, summary: "Which of a bill's vendor's active POs it could go against: available amounts, a proposed allocation and any exception (no PO, over available). Writes and reserves nothing." },
+  "po.match_apply": { tier: "routine", personOnly: false, summary: "Reserve bill amounts against purchase orders. Atomic across every PO in the call: all affected POs are locked in a consistent order, the whole set is validated (active, vendor, available plus the revision's pinned allowance, total not over the bill), then everything reserves together or nothing does. Reserving is preparation, not approval." },
+  "po.override": { tier: "routine", personOnly: true, summary: "Permit one bill's PO exception (person only, separate from vendor approval): bound to this bill, its current POs and allocations, the exception and an authorized excess amount, with a required reason. Relevant changes void it and need a new override. It does not create PO capacity or hide the excess." },
+  "po.allocation_accept": { tier: "routine", personOnly: false, summary: "Accept a reserved allocation as part of preparing a bill: the amount moves from reserved to consumed. This is not bill approval." },
+  "po.allocation_reverse": { tier: "routine", personOnly: false, summary: "Release a reserved or consumed allocation with a reason (match rejected, bill rejected, bill voided). Capacity returns by this reversal record; allocations are never deleted. A PO revision never releases an allocation." },
   "inbox.get": { tier: "read", personOnly: false, summary: "What is waiting on the caller: bills a step needs them to approve or release (action approve or release), and payee changes and workflow proposals a person must accept or decline. Agents see it too, to remind people." },
   "approval_rules.get": { tier: "read", personOnly: false, summary: "The company's approval rules. submitter_cannot_approve: whoever entered a bill or uploaded its document can't approve it (bills an agent entered are unaffected). One approval per person per bill always applies." },
   "approval_rules.set": { tier: "routine", personOnly: true, summary: "Turn submitter_cannot_approve on or off for the whole company. It applies to approvals from now on, including bills already waiting." },

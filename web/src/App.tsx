@@ -24,6 +24,7 @@ const AutoPaySettings = lazy(() => import('./pages/AutoPaySettings').then((m) =>
 const NotificationSettings = lazy(() => import('./pages/NotificationSettings').then(m => ({ default: m.NotificationSettings })));
 const ApprovalSettings = lazy(() => import('./pages/ApprovalSettings').then((m) => ({ default: m.ApprovalSettings })));
 const VendorPage = lazy(() => import('./pages/Vendor').then((m) => ({ default: m.VendorPage })));
+const PurchaseOrders = lazy(() => import('./pages/PurchaseOrders').then((m) => ({ default: m.PurchaseOrders })));
 const DocumentReview = lazy(() =>
   import('./pages/DocumentReview').then((m) => ({ default: m.DocumentReview })),
 );
@@ -123,6 +124,14 @@ export function App() {
           />
           <Route path="/workflows/:key" element={<OldWorkflowLink />} />
           <Route path="/vendors" element={<Vendors />} />
+          <Route
+            path="/purchase-orders"
+            element={
+              <Suspense fallback={<Spinner label="Loading" />}>
+                <PurchaseOrders />
+              </Suspense>
+            }
+          />
           <Route
             path="/vendors/:id"
             element={
