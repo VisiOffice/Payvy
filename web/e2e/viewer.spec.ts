@@ -90,30 +90,30 @@ test('one page at a time, turned with the buttons, arrows and J K', async ({ pag
   // Ticking pages while flipping through, without the thumbnails.
   await page.getByRole('button', { name: 'Next page' }).click();
   await expect(counter(page)).toHaveText('Page 2 of 8');
-  const attach2 = toolbar(page).getByRole('checkbox', { name: 'Attach page 2' });
+  const attach2 = toolbar(page).getByRole('checkbox', { name: 'Include page 2 in bill' });
   await expect(attach2).toBeChecked();
   await attach2.uncheck();
   await expect(strip(page).getByText('7 of 8 selected')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Create bill from 7 pages' })).toBeVisible();
   await page.keyboard.press('j');
-  await toolbar(page).getByRole('checkbox', { name: 'Attach page 3' }).uncheck();
+  await toolbar(page).getByRole('checkbox', { name: 'Include page 3 in bill' }).uncheck();
   await expect(strip(page).getByText('6 of 8 selected')).toBeVisible();
   await page.keyboard.press('k');
-  await expect(toolbar(page).getByRole('checkbox', { name: 'Attach page 2' })).not.toBeChecked();
+  await expect(toolbar(page).getByRole('checkbox', { name: 'Include page 2 in bill' })).not.toBeChecked();
 
   // Shown, the thumbnails agree, mark the page shown, and a click turns to a page.
   await show.click();
   await expect(strip(page).getByRole('button', { name: 'Hide thumbnails' })).toHaveAttribute('aria-expanded', 'true');
-  await expect(strip(page).getByRole('checkbox', { name: 'Attach page 2' })).not.toBeChecked();
-  await expect(strip(page).getByRole('checkbox', { name: 'Attach page 4' })).toBeChecked();
+  await expect(strip(page).getByRole('checkbox', { name: 'Include page 2 in bill' })).not.toBeChecked();
+  await expect(strip(page).getByRole('checkbox', { name: 'Include page 4 in bill' })).toBeChecked();
   await expect(strip(page).getByRole('button', { name: 'Show page 2' })).toHaveAttribute('aria-current', 'page');
   await strip(page).getByRole('button', { name: 'Show page 5' }).click();
   await expect(counter(page)).toHaveText('Page 5 of 8');
   await expect(strip(page).getByRole('button', { name: 'Show page 5' })).toHaveAttribute('aria-current', 'page');
   await expect(strip(page).getByRole('button', { name: 'Show page 2' })).not.toHaveAttribute('aria-current', 'page');
   // Ticking in the thumbnails shows in the viewer.
-  await strip(page).getByRole('checkbox', { name: 'Attach page 5' }).uncheck();
-  await expect(toolbar(page).getByRole('checkbox', { name: 'Attach page 5' })).not.toBeChecked();
+  await strip(page).getByRole('checkbox', { name: 'Include page 5 in bill' }).uncheck();
+  await expect(toolbar(page).getByRole('checkbox', { name: 'Include page 5 in bill' })).not.toBeChecked();
   await page.screenshot({ path: info.outputPath('viewer-desktop-thumbnails.png'), animations: 'disabled' });
 
   // The choice is remembered in this browser, both ways.
@@ -152,7 +152,7 @@ test('on a phone the original turns with Previous and Next, without side scroll'
   expect(await noSideScroll(page)).toBe(true);
   await page.screenshot({ path: info.outputPath('viewer-phone-thumbnails.png'), animations: 'disabled' });
   await strip(page).getByRole('button', { name: 'Hide thumbnails' }).click();
-  await toolbar(page).getByRole('checkbox', { name: 'Attach page 2' }).uncheck();
+  await toolbar(page).getByRole('checkbox', { name: 'Include page 2 in bill' }).uncheck();
   await expect(strip(page).getByText('4 of 5 selected')).toBeVisible();
   await page.getByRole('button', { name: 'Previous page' }).click();
   await expect(counter(page)).toHaveText('Page 1 of 5');
