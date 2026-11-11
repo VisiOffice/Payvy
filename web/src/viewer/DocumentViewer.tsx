@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type SVGProps } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode, type SVGProps } from 'react';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
 import { Icon } from '@astryxdesign/core/Icon';
@@ -6,6 +6,7 @@ import { Kbd } from '@astryxdesign/core/Kbd';
 import { Spinner } from '@astryxdesign/core/Spinner';
 import { VStack } from '@astryxdesign/core/VStack';
 import { find, type Item, type Rect } from './match';
+import { runs, type Run } from './runs';
 
 export interface Highlight {
   key: string;
@@ -191,6 +192,28 @@ export interface Paging {
 }
 
 /**
+ * Click-to-copy over a PDF's text: hovering a run of text highlights it, and
+ * a click or tap hands it on (Shift-click: just the word under the pointer).
+ * Only pages with a text layer have anything to click; photos and scans don't.
+ */
+export interface Copying {
+  onCopy: (text: string) => void;
+  /** Whether the document has text to copy, once it has loaded. */
+  onHasText?: (hasText: boolean) => void;
+}
+
+/** Each page's runs of text, worked out once per page. */
+const pageRuns = new WeakMap<Page, Run[]>();
+function runsOf(page: Page): Run[] {
+  let r = pageRuns.get(page);
+  if (!r) {
+    r = runs(page.items);
+    pageRuns.set(page, r);
+  }
+  return r;
+}
+
+/**
  * Where a key press belongs to something else: typing, a menu or list, a
  * radio group (arrows move its choice), or an open dialog.
  */
@@ -224,6 +247,7 @@ export function DocumentViewer({
   focus,
   arrangement,
   paging,
+  copy,
 }: {
   documentId: string;
   contentType: string;
@@ -231,6 +255,7 @@ export function DocumentViewer({
   focus?: string | null;
   arrangement?: PageRef[] | null;
   paging?: Paging;
+  copy?: Copying;
 }) {
   const [attempt, setAttempt] = useState(0);
   const loaded = useDocumentPages(documentId, contentType, attempt);
@@ -370,6 +395,10 @@ export function DocumentViewer({
   }, [focus, found, s, currentPage]);
 
   const hasText = ready && loaded.pages.some((p) => p.items.length > 0);
+  const onHasText = copy?.onHasText;
+  useEffect(() => {
+    if (ready) onHasText?.(hasText);
+  }, [ready, hasText, onHasText]);
   const missing = useMemo(() => {
     if (!hasText) return [];
     const seen = new Set(found.flat().map((r) => r.key));
@@ -478,6 +507,9 @@ export function DocumentViewer({
           {zoomControls}
         </div>
       )}
+      {copy && ready && !hasText && (
+        <div className="payvy-viewer-hint">Copying text from the page needs a PDF with text in it.</div>
+      )}
       {missing.length > 0 && (
         <div className="payvy-viewer-hint">Not found on the page: {missing.map((m) => m.label).join(', ')}</div>
       )}
@@ -535,6 +567,7 @@ export function DocumentViewer({
                 scale={s}
                 rects={found[offset + i] ?? []}
                 focus={focus ?? null}
+                onCopy={copy?.onCopy}
               />
             ))}
           </VStack>
@@ -569,6 +602,7 @@ function PageView({
   scale,
   rects,
   focus,
+  onCopy,
 }: {
   page: Page;
   pageNumber: number;
@@ -576,6 +610,7 @@ function PageView({
   scale: number;
   rects: (Rect & { key: string; label: string })[];
   focus: string | null;
+  onCopy?: (text: string) => void;
 }) {
   const canvas = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
@@ -618,6 +653,100 @@ function PageView({
           }}
         />
       ))}
+      {onCopy && <CopyLayer page={page} rotation={rotation} scale={scale} onCopy={onCopy} />}
+    </div>
+  );
+}
+
+/**
+ * The page's runs of text as boxes over it, turned with the page and scaled
+ * with the zoom. It is pointer sugar over the canvas: hidden from assistive
+ * technology, which has the form's own fields.
+ */
+function CopyLayer({
+  page,
+  rotation,
+  scale,
+  onCopy,
+}: {
+  page: Page;
+  rotation: number;
+  scale: number;
+  onCopy: (text: string) => void;
+}) {
+  const turned = useMemo(
+    () =>
+      runsOf(page).map((r) => ({
+        str: r.str,
+        box: turnRect(r, page, rotation),
+        words: r.words.map((w) => ({ str: w.str, box: turnRect(w, page, rotation) })),
+      })),
+    [page, rotation],
+  );
+  const [hover, setHover] = useState<number | null>(null);
+  useEffect(() => setHover(null), [turned]);
+  if (turned.length === 0) return null;
+  const size = turnedSize(page, rotation);
+  const pad = 1.5;
+  const hovered = hover !== null ? turned[hover] : undefined;
+  // The tip sits above the run, or below it near the top of the page.
+  const below = !!hovered && hovered.box.y * scale < 36;
+
+  /** The word under the pointer, in the turned page's own units. */
+  function wordAt(run: (typeof turned)[number], e: ReactMouseEvent<HTMLElement>): string {
+    const layer = e.currentTarget.parentElement!.getBoundingClientRect();
+    const x = (e.clientX - layer.left) / scale;
+    const y = (e.clientY - layer.top) / scale;
+    let best = run.words[0];
+    let bestDistance = Infinity;
+    for (const w of run.words) {
+      const dx = Math.max(w.box.x - x, 0, x - (w.box.x + w.box.w));
+      const dy = Math.max(w.box.y - y, 0, y - (w.box.y + w.box.h));
+      const d = dx * dx + dy * dy;
+      if (d < bestDistance) {
+        best = w;
+        bestDistance = d;
+      }
+    }
+    return best?.str ?? run.str;
+  }
+
+  return (
+    <div className="payvy-copy-layer" aria-hidden="true" onPointerLeave={() => setHover(null)}>
+      {turned.map((r, i) => (
+        <div
+          key={i}
+          className="payvy-copy-run"
+          data-run={r.str}
+          data-hover={hover === i ? '' : undefined}
+          style={{
+            left: r.box.x * scale - pad,
+            top: r.box.y * scale - pad,
+            width: r.box.w * scale + pad * 2,
+            height: r.box.h * scale + pad * 2,
+          }}
+          onPointerEnter={(e) => {
+            // A tap has no hover; the tip would stay behind on a touch screen.
+            if (e.pointerType !== 'touch') setHover(i);
+          }}
+          onClick={(e) => {
+            e.stopPropagation();
+            onCopy(e.shiftKey ? wordAt(r, e) : r.str);
+          }}
+        />
+      ))}
+      {hovered && (
+        <div
+          className="payvy-copy-tip"
+          data-below={below ? '' : undefined}
+          style={{
+            left: Math.min(Math.max(hovered.box.x * scale, 4), Math.max(size.width * scale - 240, 4)),
+            top: below ? (hovered.box.y + hovered.box.h) * scale + 6 : hovered.box.y * scale - 6,
+          }}
+        >
+          Click to copy: <strong>{hovered.str}</strong>
+        </div>
+      )}
     </div>
   );
 }

@@ -20,6 +20,8 @@ import { ApiError, run } from '../api/client';
 import { ReasonDialog } from '../inbox/ReasonDialog';
 import { cents, date, dollars, money } from '../money';
 import { DocumentViewer } from '../viewer/DocumentViewer';
+import { parseAmount, parseDate } from '../viewer/match';
+import { FIELD_LABEL, searchFor, searchSelector, short, useClickToCopy, type ClickToCopy, type FillKey, type Filled } from '../documents/clickToCopy';
 import {
   highlightsOf,
   type BillLine,
@@ -234,6 +236,41 @@ export function DocumentReview() {
   const latest = detail?.extractions[0];
   const highlights = useMemo(() => highlightsOf(latest?.extraction.answer), [latest]);
 
+  // Click-to-copy: text from the page into a field, read as that field reads it.
+  const editable = !!detail && detail.document.status === 'inbox' && can('bill.create');
+  const fill = (key: FillKey, text: string, field: HTMLElement | null): Filled => {
+    const t = text.trim();
+    const label = FIELD_LABEL[key];
+    const filled = { ok: true, message: `Filled ${label} with ${short(t)}` };
+    switch (key) {
+      case 'invoice_number':
+        setForm((f) => ({ ...f, invoice_number: t }));
+        return filled;
+      case 'po_number':
+        setForm((f) => ({ ...f, memo: t }));
+        return filled;
+      case 'total': {
+        // "$8,034.89" is 8034.89; anything else goes in as it is, and the field says what's wrong.
+        const amount = parseAmount(t) ?? t;
+        setForm((f) => ({ ...f, amount }));
+        return { ok: true, message: `Filled ${label} with ${short(amount)}` };
+      }
+      case 'invoice_date':
+      case 'due_date': {
+        const d = parseDate(t);
+        if (!d) return { ok: false, message: `“${short(t)}” isn't a date` };
+        setForm((f) => ({ ...f, [key]: d }));
+        return { ok: true, message: `Filled ${label} with ${date(d)}` };
+      }
+      case 'vendor_name': {
+        // Never chosen or created for them: the vendor list opens, searched for it.
+        if (field) void searchSelector(field, searchFor(t, vendors.map((v) => v.name)));
+        return { ok: true, message: `Searching vendors for ${short(t)}: choose one` };
+      }
+    }
+  };
+  const copying = useClickToCopy(editable, fill);
+
   if (error) return <div className="payvy-review-error"><Link href="/documents">← Documents</Link><h1>Review invoice</h1><Banner status="error" title="Couldn't load this document" description={error} /><Button label="Try again" variant="secondary" onClick={() => void load()} /></div>;
   if (!detail) return <DocumentLoading />;
 
@@ -386,7 +423,7 @@ export function DocumentReview() {
         <SegmentedControlItem value="details" label="Invoice details" /><SegmentedControlItem value="original" label="Original document" />
       </SegmentedControl></div>
       <div className="payvy-review-workspace">
-      <section className="payvy-review-side" aria-label="Invoice details">
+      <section className="payvy-review-side" aria-label="Invoice details" onFocusCapture={copying.onFormFocus}>
         <div className="payvy-review-body"><VStack gap={5}>
           <div className="payvy-invoice-summary">
             <span className="payvy-eyebrow">Invoice details</span>
@@ -518,12 +555,17 @@ export function DocumentReview() {
 
           {doc.status === 'inbox' && (
             <fieldset disabled={!can('bill.create')} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}><VStack gap={4}>
-              <Field focusKey="vendor_name" onFocus={setFocus}>
+              <Field focusKey="vendor_name" onFocus={setFocus} copying={copying}>
                 <Selector
                   label="Vendor"
                   isRequired
+                  hasSearch
+                  searchPlaceholder="Search vendors"
                   value={form.vendor_id || undefined}
-                  onChange={(v) => set({ vendor_id: v })}
+                  onChange={(v) => {
+                    if (v !== form.vendor_id) copying.chose('vendor_name');
+                    set({ vendor_id: v });
+                  }}
                   placeholder="Choose a vendor"
                   description={vendorNote}
                   options={vendors.map((v) => ({ value: v.id, label: v.name }))}
@@ -537,7 +579,7 @@ export function DocumentReview() {
                   clickAction={addVendor}
                 />
               )}
-              <Field focusKey="invoice_number" onFocus={setFocus}>
+              <Field focusKey="invoice_number" onFocus={setFocus} copying={copying}>
                 <TextInput
                   label="Invoice number"
                   isRequired
@@ -546,28 +588,34 @@ export function DocumentReview() {
                 />
               </Field>
               <div className="payvy-review-dates">
-                <Field focusKey="invoice_date" onFocus={setFocus}>
+                <Field focusKey="invoice_date" onFocus={setFocus} copying={copying}>
                   <DateInput
                     label="Invoice date"
                     isRequired
                     format="date"
                     value={iso(form.invoice_date)}
-                    onChange={(v) => set({ invoice_date: v ?? '' })}
+                    onChange={(v) => {
+                      if ((v ?? '') !== form.invoice_date) copying.chose('invoice_date');
+                      set({ invoice_date: v ?? '' });
+                    }}
                   />
                 </Field>
-                <Field focusKey="due_date" onFocus={setFocus}>
+                <Field focusKey="due_date" onFocus={setFocus} copying={copying}>
                   <DateInput
                     label="Due"
                     format="date"
                     value={iso(form.due_date)}
-                    onChange={(v) => set({ due_date: v ?? '' })}
+                    onChange={(v) => {
+                      if ((v ?? '') !== form.due_date) copying.chose('due_date');
+                      set({ due_date: v ?? '' });
+                    }}
                   />
                 </Field>
               </div>
               {!form.due_date && (
                 <Text type="supporting">No due date: the vendor's payment terms decide it.</Text>
               )}
-              <Field focusKey="total" onFocus={setFocus}>
+              <Field focusKey="total" onFocus={setFocus} copying={copying}>
                 <TextInput
                   label="Amount"
                   isRequired
@@ -577,7 +625,7 @@ export function DocumentReview() {
                   status={form.amount && amountCents === null ? { type: 'error', message: 'Like 1,234.56' } : undefined}
                 />
               </Field>
-              <Field focusKey="po_number" onFocus={setFocus}>
+              <Field focusKey="po_number" onFocus={setFocus} copying={copying}>
                 <TextInput label="Memo" value={form.memo} onChange={(v) => set({ memo: v })} />
               </Field>
 
@@ -692,6 +740,7 @@ export function DocumentReview() {
             highlights={highlights}
             focus={focus}
             arrangement={detail.pages.arrangement}
+            copy={{ onCopy: copying.onCopy, onHasText: copying.onHasText }}
             paging={{
               current,
               onCurrentChange: setCurrent,
@@ -711,6 +760,8 @@ export function DocumentReview() {
         </div>
       </section>
       </div>
+
+      {copying.ui}
 
       {trashing && (
         <ReasonDialog
@@ -739,19 +790,36 @@ function withInvoice(form: Form, g: SuggestedInvoice): Form {
   };
 }
 
-/** Focusing a form field finds the value it came from on the page. */
+/**
+ * Focusing a form field finds the value it came from on the page. It also
+ * takes text clicked on the page: pasted when something was copied, or, when
+ * it was focused last, the next text clicked.
+ */
 function Field({
   focusKey,
   onFocus,
+  copying,
   children,
 }: {
-  focusKey: string;
+  focusKey: FillKey;
   onFocus: (key: string) => void;
+  copying: ClickToCopy;
   children: ReactNode;
 }) {
+  const { onFocusCapture, ...props } = copying.field(focusKey);
   return (
-    <div style={{ flex: 1, minWidth: 0 }} onFocusCapture={() => onFocus(focusKey)}>
+    <div
+      style={{ flex: 1, minWidth: 0 }}
+      {...props}
+      onFocusCapture={() => {
+        onFocus(focusKey);
+        onFocusCapture();
+      }}
+    >
       {children}
+      {copying.receiving === focusKey && (
+        <span className="payvy-copy-hint" aria-hidden="true">Click text on the document to fill</span>
+      )}
     </div>
   );
 }
