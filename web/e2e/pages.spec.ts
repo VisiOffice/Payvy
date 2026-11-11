@@ -48,6 +48,8 @@ async function approvedVendor(page: Page, name: string): Promise<string> {
 
 
 const strip = (page: Page) => page.getByRole('region', { name: 'Pages' });
+/** The strip saves each change before the viewer shows it; wait it out. */
+const saved = (page: Page) => expect(strip(page)).not.toHaveAttribute('aria-busy', 'true');
 const history = (page: Page) => page.getByRole('list', { name: 'Page history' });
 
 test('pages are reordered, rotated, hidden and restored, then lock once the bill is approved', async ({ page }) => {
@@ -136,13 +138,18 @@ test('pages can be arranged on a phone, inside the original document tab', async
   await expect(page.locator('.payvy-viewer-canvas canvas').first()).toBeVisible();
 
   await strip(page).getByRole('button', { name: 'Move page 2 earlier' }).click();
+  await saved(page);
   await expect.poll(() => shown(page)).toEqual([2, 1, 3]);
   await strip(page).getByRole('button', { name: 'Rotate page 3' }).click();
+  await saved(page);
   await strip(page).getByRole('button', { name: 'Show page 3' }).click();
+  await saved(page);
   await expect(page.locator('.payvy-viewer-canvas [data-page="3"]')).toHaveAttribute('data-rotation', '90');
   await strip(page).getByRole('button', { name: 'Hide page 1' }).click();
+  await saved(page);
   await expect.poll(() => shown(page)).toEqual([2, 3]);
   await strip(page).getByRole('button', { name: 'Restore page 1' }).click();
+  await saved(page);
   await expect.poll(() => shown(page)).toEqual([2, 1, 3]);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: info.outputPath('pages-mobile-original.png'), animations: 'disabled' });
