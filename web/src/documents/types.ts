@@ -10,12 +10,39 @@ export interface Doc {
   content_type: string;
   size_bytes: number;
   source: string;
-  status: 'inbox' | 'filed' | 'trashed';
+  /** split: every page moved to other documents. */
+  status: 'inbox' | 'filed' | 'trashed' | 'split';
   bill_id: string | null;
   trashed_reason: string | null;
   received_at: string;
   created_by: string;
   page_count: number | null;
+  /** The document this one was split from; it shares that original file. */
+  derived_from: string | null;
+}
+
+/** Where a document came from, as document.get and document.list name it. */
+export interface SplitFrom {
+  id: string;
+  filename: string | null;
+}
+
+/** A document split from this one, with its pages (the original's numbers). */
+export interface SplitPart {
+  id: string;
+  filename: string;
+  status: Doc['status'];
+  bill_id: string | null;
+  pages: number[];
+}
+
+/** One of several invoices a reading found in the file. */
+export interface SuggestedInvoice {
+  /** Page numbers of the original, in the document's order. */
+  pages: number[];
+  invoice_number: string | null;
+  total: string | null;
+  total_cents: number | null;
 }
 
 /** What the model read, as printed on the document. */
@@ -83,6 +110,8 @@ export interface ExtractionSummary {
     error: string | null;
     created_at: string;
   };
+  /** Several invoices in one file: where each is. Empty for one. */
+  invoices: SuggestedInvoice[];
   ready: boolean;
   failed_checks: string[];
   bill_input: BillInput | null;
@@ -98,6 +127,9 @@ export interface DocumentDetail {
   extractions: ExtractionSummary[];
   /** Everything that happened to the document, newest first. */
   history: DocumentEvent[];
+  split_from: SplitFrom | null;
+  /** Documents split from this one, in page order. */
+  split_into: SplitPart[];
 }
 
 export const FIELDS: { key: keyof Read; label: string; isDate?: boolean; isAmount?: boolean }[] = [

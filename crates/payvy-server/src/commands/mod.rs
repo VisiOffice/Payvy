@@ -257,6 +257,8 @@ async fn execute(cx: &mut Cx<'_>, name: &str, input: &Value) -> Result<Value, Co
         "document.trash" => documents::trash(cx, parse(input)?).await,
         "document.extract" => extract::extract(cx, parse(input)?).await,
         "document.arrange" => documents::arrange(cx, parse(input)?).await,
+        "document.split" => documents::split(cx, parse(input)?).await,
+        "document.unsplit" => documents::unsplit(cx, parse(input)?).await,
         "email.address" => email::address(cx, parse(input)?).await,
         "email.new_address" => email::new_address(cx, parse(input)?).await,
         "email.import" => email::import(cx, parse(input)?).await,

@@ -64,6 +64,22 @@ export function describe(changes: Change[]): string {
   return `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
 }
 
+/** "page 3", "pages 5–6", "pages 1–3 and 7", as the server words them. */
+export function describePages(pages: number[]): string {
+  const runs: [number, number][] = [];
+  for (const p of pages) {
+    const last = runs[runs.length - 1];
+    if (last && p === last[1] + 1) last[1] = p;
+    else runs.push([p, p]);
+  }
+  const parts = runs.map(([a, b]) => (a === b ? `${a}` : `${a}–${b}`));
+  const list = parts.length <= 1 ? (parts[0] ?? '') : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
+  return `${pages.length === 1 ? 'page' : 'pages'} ${list}`;
+}
+
+/** Events that change which pages a document has, or how they're shown. */
+export const PAGE_EVENTS = ['document.arranged', 'document.split', 'document.split_from', 'document.unsplit'];
+
 /** Who did it and what, for the page history: "robert moved page 3 to first". */
 export function historyLine(e: DocumentEvent, nameOf: (actor: string) => string = (a) => a): string {
   const what = e.payload.changes ? describe(e.payload.changes) : (e.payload.summary ?? 'rearranged the pages');

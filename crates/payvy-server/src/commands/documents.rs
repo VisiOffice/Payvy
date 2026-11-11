@@ -103,6 +103,7 @@ fn already_here(existing: &store::Document) -> CommandError {
 pub(super) fn where_is(existing: &store::Document) -> String {
     let place = match (existing.status.as_str(), existing.bill_id) {
         ("filed", Some(bill)) => format!("filed with bill {bill}"),
+        ("split", _) => "split into other documents".to_owned(),
         (status, _) => format!("in {status}"),
     };
     format!("document {} ({}), {place}", existing.id, existing.filename)
@@ -117,13 +118,35 @@ pub struct List {
 
 pub async fn list(cx: &mut Cx<'_>, input: List) -> Result<Value, CommandError> {
     let status = input.status.unwrap_or_else(|| "inbox".into());
-    if !["inbox", "filed", "trashed"].contains(&status.as_str()) {
+    if !["inbox", "filed", "trashed", "split"].contains(&status.as_str()) {
         return Err(CommandError::Invalid(
-            "status is inbox, filed or trashed".into(),
+            "status is inbox, filed, trashed or split".into(),
         ));
     }
     let limit = input.limit.unwrap_or(100).clamp(1, 500);
-    Ok(json!({ "documents": store::list_documents(&mut cx.tx, &status, limit).await? }))
+    let docs = store::list_documents(&mut cx.tx, &status, limit).await?;
+    let sources: Vec<Uuid> = docs.iter().filter_map(|d| d.derived_from).collect();
+    let names = store::document_filenames(&mut cx.tx, &sources).await?;
+    let documents: Vec<Value> = docs
+        .iter()
+        .map(|d| {
+            let mut v = json!(d);
+            v["split_from"] = split_from(d, &names);
+            v
+        })
+        .collect();
+    Ok(json!({ "documents": documents }))
+}
+
+/// `{id, filename}` of the document this one was split from, or null.
+fn split_from(doc: &store::Document, names: &[(Uuid, String)]) -> Value {
+    match doc.derived_from {
+        Some(id) => json!({
+            "id": id,
+            "filename": names.iter().find(|(n, _)| *n == id).map(|(_, f)| f),
+        }),
+        None => Value::Null,
+    }
 }
 
 #[derive(Deserialize)]
@@ -156,6 +179,25 @@ async fn detail(cx: &mut Cx<'_>, doc: store::Document) -> Result<Value, CommandE
         })
         .collect();
     let history = store::list_events(&mut cx.tx, Some(doc.id), 200).await?;
+    let sources: Vec<Uuid> = doc.derived_from.into_iter().collect();
+    let names = store::document_filenames(&mut cx.tx, &sources).await?;
+    let mut split_into = Vec::new();
+    for part in store::derived_documents(&mut cx.tx, doc.id).await? {
+        let pages: Vec<u32> = current_arrangement(cx, part.id)
+            .await?
+            .map(|a| a.pages.iter().map(|p| p.page).collect())
+            .unwrap_or_default();
+        split_into.push((pages, part));
+    }
+    // In page order; a part given back (no pages) last.
+    split_into.sort_by_key(|(pages, _)| pages.first().copied().unwrap_or(u32::MAX));
+    let split_into: Vec<Value> = split_into
+        .into_iter()
+        .map(|(pages, part)| {
+            json!({ "id": part.id, "filename": part.filename, "status": part.status,
+                    "bill_id": part.bill_id, "pages": pages })
+        })
+        .collect();
     let pages = json!({
         "count": count,
         "version": version,
@@ -167,12 +209,15 @@ async fn detail(cx: &mut Cx<'_>, doc: store::Document) -> Result<Value, CommandE
     });
     Ok(
         json!({ "document": doc, "download_url": url, "download_url_expires_in_seconds": 900,
-               "pages": pages, "extractions": extractions, "history": history }),
+               "pages": pages, "extractions": extractions, "history": history,
+               "split_from": split_from(&doc, &names), "split_into": split_into }),
     )
 }
 
 /// The pages as an arrangement shows them; the original's when there is
 /// none. None when the page count isn't known.
+/// A document split from another always has an arrangement (its first
+/// version is its pages), so the fallback applies to originals only.
 pub(super) fn arranged(current: Option<&Arrangement>, count: Option<u32>) -> Option<Vec<PageRef>> {
     match current {
         Some(a) => Some(a.pages.clone()),
@@ -215,6 +260,11 @@ async fn lock(cx: &mut Cx<'_>, doc: &store::Document) -> Result<Option<String>, 
     if doc.status == "trashed" {
         return Ok(Some(
             "This document was set aside as not a bill, so its pages can't change".into(),
+        ));
+    }
+    if doc.status == "split" {
+        return Ok(Some(
+            "This document has no pages left: they were moved to other documents".into(),
         ));
     }
     let Some(bill_id) = doc.bill_id else {
@@ -270,8 +320,9 @@ pub async fn arrange(cx: &mut Cx<'_>, input: Arrange) -> Result<Value, CommandEr
             input.expected_version
         )));
     }
-    pages::validate(&input.pages, count).map_err(|e| CommandError::Invalid(e.to_string()))?;
     let old = arranged(current, Some(count)).unwrap_or_default();
+    pages::validate_within(&input.pages, &old, count)
+        .map_err(|e| CommandError::Invalid(e.to_string()))?;
     let changes = pages::changes(&old, &input.pages);
     if changes.is_empty() {
         return Err(CommandError::Conflict(
@@ -358,6 +409,59 @@ pub async fn trash(cx: &mut Cx<'_>, input: Trash) -> Result<Value, CommandError>
     Ok(json!(doc))
 }
 
+/// The document a new bill is filed with: `document_id` itself, or, when
+/// `pages` leaves out some of its visible pages, a new document of just
+/// those, split from it. Pages naming every visible page file the whole
+/// document. Returns the document and, after a split, where it came from.
+pub(super) async fn for_bill(
+    cx: &mut Cx<'_>,
+    document_id: Uuid,
+    pages: Option<&[u32]>,
+    expected_version: Option<i32>,
+) -> Result<(Uuid, Option<Uuid>), CommandError> {
+    let doc = store::get_document(&mut cx.tx, document_id)
+        .await?
+        .ok_or(CommandError::NotFound("document"))?;
+    if let Some(expected) = expected_version {
+        let version = current_arrangement(cx, doc.id)
+            .await?
+            .map_or(0, |a| a.version);
+        if version != expected {
+            return Err(CommandError::Conflict(format!(
+                "the pages changed since version {expected}: they are at version {version}. \
+                 Get the document again."
+            )));
+        }
+    }
+    let Some(pages) = pages else {
+        return Ok((doc.id, None));
+    };
+    if doc.status != "inbox" {
+        // file_with_bill says why, as it does for a whole document.
+        return Ok((doc.id, None));
+    }
+    let count = page_count(cx, &doc).await?;
+    let current = current_arrangement(cx, doc.id).await?;
+    let visible: Vec<u32> = arranged(current.as_ref(), count)
+        .unwrap_or_default()
+        .iter()
+        .filter(|p| !p.hidden)
+        .map(|p| p.page)
+        .collect();
+    if !visible.is_empty()
+        && visible.iter().all(|v| pages.contains(v))
+        && pages.len() == visible.len()
+    {
+        return Ok((doc.id, None));
+    }
+    let parts = split_pages(cx, &doc, expected_version, &[pages.to_vec()]).await?;
+    let part = parts
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("a split of one group made no document"))?;
+    Ok((part.id, Some(doc.id)))
+}
+
 /// Files an inbox document with a new bill. Called by `bill.create`.
 pub(super) async fn file_with_bill(
     cx: &mut Cx<'_>,
@@ -406,4 +510,303 @@ pub(super) async fn pinned(
         "count": count,
         "pages": arranged(row.as_ref(), count),
     }))
+}
+
+// ── Splitting ───────────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SplitInput {
+    document_id: Uuid,
+    expected_version: i32,
+    groups: Vec<Vec<u32>>,
+}
+
+/// Moves groups of pages into new documents of their own, each a view of
+/// the same original file. The rest stays with this document.
+pub async fn split(cx: &mut Cx<'_>, input: SplitInput) -> Result<Value, CommandError> {
+    let doc = store::get_document(&mut cx.tx, input.document_id)
+        .await?
+        .ok_or(CommandError::NotFound("document"))?;
+    let parts = split_pages(cx, &doc, Some(input.expected_version), &input.groups).await?;
+    let doc = store::get_document(&mut cx.tx, doc.id)
+        .await?
+        .ok_or(CommandError::NotFound("document"))?;
+    let mut out = detail(cx, doc).await?;
+    out["documents"] = json!(parts);
+    Ok(out)
+}
+
+/// The split itself, shared by `document.split`, `bill.create` with pages
+/// and the reader's split on the invoices it found. `doc` is locked by the
+/// caller. Returns the new documents, in the order of `groups`.
+pub(super) async fn split_pages(
+    cx: &mut Cx<'_>,
+    doc: &store::Document,
+    expected_version: Option<i32>,
+    groups: &[Vec<u32>],
+) -> Result<Vec<store::Document>, CommandError> {
+    if let Some(reason) = lock(cx, doc).await? {
+        return Err(CommandError::Conflict(reason));
+    }
+    let count = page_count(cx, doc).await?.ok_or_else(|| {
+        CommandError::Conflict(
+            "this file can't be read as a PDF, so its pages can't be split".into(),
+        )
+    })?;
+    let versions = store::document_arrangements(&mut cx.tx, doc.id).await?;
+    let current = versions.first();
+    let version = current.map_or(0, |a| a.version);
+    if let Some(expected) = expected_version
+        && expected != version
+    {
+        let by = current.map_or("", |a| a.created_by.as_str());
+        return Err(CommandError::Conflict(format!(
+            "the pages changed since version {expected}: {by} made version {version}. \
+             Get the document again and split that."
+        )));
+    }
+    let old = arranged(current, Some(count)).unwrap_or_default();
+    let split = pages::split(&old, groups).map_err(|e| CommandError::Invalid(e.to_string()))?;
+    let left_visible = split.remaining.iter().any(|p| !p.hidden);
+    if doc.bill_id.is_some() && !left_visible {
+        return Err(CommandError::Conflict(
+            "this document is filed with a bill, so it must keep a page to show".into(),
+        ));
+    }
+
+    let moved: Vec<Vec<u32>> = split
+        .parts
+        .iter()
+        .map(|part| part.iter().map(|p| p.page).collect())
+        .collect();
+    let summary = match moved.as_slice() {
+        [one] => format!("split {} into a new document", pages::describe_pages(one)),
+        many => {
+            let each: Vec<String> = many.iter().map(|m| pages::describe_pages(m)).collect();
+            format!(
+                "split {} into {} new documents",
+                join_words(&each),
+                many.len()
+            )
+        }
+    };
+    let row = store::insert_arrangement(
+        &mut cx.tx,
+        cx.org,
+        doc.id,
+        version + 1,
+        &split.remaining,
+        cx.now,
+        &cx.actor.name,
+    )
+    .await?;
+
+    let mut created = Vec::with_capacity(split.parts.len());
+    for (part, numbers) in split.parts.iter().zip(&moved) {
+        let filename = pages::part_filename(&doc.filename, numbers);
+        let new = store::insert_derived_document(
+            &mut cx.tx,
+            cx.org,
+            doc,
+            &filename,
+            &cx.actor.name,
+            Some(count as i32),
+        )
+        .await?;
+        let first =
+            store::insert_arrangement(&mut cx.tx, cx.org, new.id, 1, part, cx.now, &cx.actor.name)
+                .await?;
+        cx.emit(
+            "document.split_from",
+            new.id,
+            json!({ "document_id": new.id, "source_id": doc.id, "source_filename": doc.filename,
+                    "pages": numbers, "arrangement_id": first.id,
+                    "summary": format!("split this from {} ({})", doc.filename, pages::describe_pages(numbers)) }),
+        )
+        .await?;
+        created.push(new);
+    }
+    let parts: Vec<Value> = created
+        .iter()
+        .zip(&moved)
+        .map(|(d, m)| json!({ "document_id": d.id, "filename": d.filename, "pages": m }))
+        .collect();
+    cx.emit(
+        "document.split",
+        doc.id,
+        json!({ "document_id": doc.id, "arrangement_id": row.id, "version": row.version,
+                "previous_version": version, "parts": parts, "summary": summary }),
+    )
+    .await?;
+    if !left_visible {
+        store::set_split(&mut cx.tx, doc.id, true).await?;
+    }
+    // Not locked, so a bill this is filed with is open and unapproved: it
+    // moves to the pages that stay, on its own record.
+    if let Some(bill_id) = doc.bill_id {
+        store::pin_arrangement(&mut cx.tx, bill_id, row.id).await?;
+        cx.emit(
+            "bill.pages_arranged",
+            bill_id,
+            json!({ "bill_id": bill_id, "document_id": doc.id, "arrangement_id": row.id,
+                    "version": row.version, "summary": summary }),
+        )
+        .await?;
+    }
+    Ok(created)
+}
+
+/// "a, b and c"
+fn join_words(parts: &[String]) -> String {
+    match parts {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Unsplit {
+    document_id: Uuid,
+}
+
+/// Undoes a split: a document's pages go back to the document they were
+/// split from, which comes back to To review if it had none left. Refused
+/// once the split document is a bill or set aside, or when the pages it
+/// would go back to are locked.
+pub async fn unsplit(cx: &mut Cx<'_>, input: Unsplit) -> Result<Value, CommandError> {
+    let doc = store::get_document(&mut cx.tx, input.document_id)
+        .await?
+        .ok_or(CommandError::NotFound("document"))?;
+    let Some(source_id) = doc.derived_from else {
+        return Err(CommandError::Invalid(
+            "this document wasn't split from another, so there is nothing to undo".into(),
+        ));
+    };
+    match (doc.status.as_str(), doc.bill_id) {
+        (_, Some(bill)) => {
+            return Err(CommandError::Conflict(format!(
+                "this document is filed with bill {bill}, so its pages stay with it"
+            )));
+        }
+        ("trashed", _) => {
+            return Err(CommandError::Conflict(
+                "this document was set aside as not a bill, so its pages stay with it".into(),
+            ));
+        }
+        ("split", _) => {
+            return Err(CommandError::Conflict(
+                "this document has no pages left to give back".into(),
+            ));
+        }
+        _ => {}
+    }
+    let source = store::get_document(&mut cx.tx, source_id)
+        .await?
+        .ok_or(CommandError::NotFound("document"))?;
+    if source.status != "split"
+        && let Some(reason) = lock(cx, &source).await?
+    {
+        return Err(CommandError::Conflict(format!(
+            "{} can't take its pages back. {reason}",
+            source.filename
+        )));
+    }
+    let count = page_count(cx, &source).await?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "document {} was split but its pages can't be counted",
+            source.id
+        )
+    })?;
+    let mine = current_arrangement(cx, doc.id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("split document {} has no pages", doc.id))?;
+    let theirs = current_arrangement(cx, source.id).await?;
+    let source_version = theirs.as_ref().map_or(0, |a| a.version);
+    let old = arranged(theirs.as_ref(), Some(count)).unwrap_or_default();
+    let back = pages::rejoin(&old, &mine.pages);
+    let numbers: Vec<u32> = mine.pages.iter().map(|p| p.page).collect();
+    let described = pages::describe_pages(&numbers);
+
+    let row = store::insert_arrangement(
+        &mut cx.tx,
+        cx.org,
+        source.id,
+        source_version + 1,
+        &back,
+        cx.now,
+        &cx.actor.name,
+    )
+    .await?;
+    store::insert_arrangement(
+        &mut cx.tx,
+        cx.org,
+        doc.id,
+        mine.version + 1,
+        &[],
+        cx.now,
+        &cx.actor.name,
+    )
+    .await?;
+    store::set_split(&mut cx.tx, doc.id, true).await?;
+    if source.status == "split" {
+        store::set_split(&mut cx.tx, source.id, false).await?;
+    }
+    let summary = format!("took back {described} from {}", doc.filename);
+    cx.emit(
+        "document.unsplit",
+        source.id,
+        json!({ "document_id": source.id, "from_document_id": doc.id, "pages": numbers,
+                "arrangement_id": row.id, "version": row.version, "previous_version": source_version,
+                "summary": summary }),
+    )
+    .await?;
+    cx.emit(
+        "document.unsplit",
+        doc.id,
+        json!({ "document_id": doc.id, "to_document_id": source.id, "pages": numbers,
+                "summary": format!("gave {described} back to {}", source.filename) }),
+    )
+    .await?;
+    if let Some(bill_id) = source.bill_id {
+        store::pin_arrangement(&mut cx.tx, bill_id, row.id).await?;
+        cx.emit(
+            "bill.pages_arranged",
+            bill_id,
+            json!({ "bill_id": bill_id, "document_id": source.id, "arrangement_id": row.id,
+                    "version": row.version, "summary": summary }),
+        )
+        .await?;
+    }
+    let source = store::get_document(&mut cx.tx, source.id)
+        .await?
+        .ok_or(CommandError::NotFound("document"))?;
+    detail(cx, source).await
+}
+
+/// The visible pages of a document in its order, when the model should
+/// read only those: always for a split document, and for an original whose
+/// pages were hidden or reordered. None to read the whole file as it is.
+pub(super) async fn pages_to_read(
+    cx: &mut Cx<'_>,
+    doc: &store::Document,
+) -> Result<(Vec<u32>, Option<Vec<u32>>), CommandError> {
+    let count = page_count(cx, doc).await?;
+    let current = current_arrangement(cx, doc.id).await?;
+    let all: Vec<u32> = arranged(current.as_ref(), count)
+        .unwrap_or_default()
+        .iter()
+        .map(|p| p.page)
+        .collect();
+    let visible: Vec<u32> = arranged(current.as_ref(), count)
+        .unwrap_or_default()
+        .iter()
+        .filter(|p| !p.hidden)
+        .map(|p| p.page)
+        .collect();
+    let whole: Vec<u32> = count.map_or_else(Vec::new, |n| (1..=n).collect());
+    let hint = (count.is_some() && visible != whole).then_some(visible);
+    Ok((all, hint))
 }
