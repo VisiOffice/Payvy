@@ -21,6 +21,7 @@ import { Page } from '../Page';
 import { PayeeInvites, type PayeeInvite } from './PayeeInvites';
 import { RampPayee } from './RampPayee';
 import { VendorDialog } from './VendorDialog';
+import { VendorAutoPayLimit } from './AutoPaySettings';
 import { BillsTable, type Listed } from '../bills/BillsTable';
 import { METHOD } from '../inbox/types';
 import { date } from '../money';
@@ -32,6 +33,7 @@ interface VendorDetail {
   vendor: { id: string; name: string; email: string | null; terms_days: number | null };
   accounts: { id: string; account_number: string; location: string | null }[];
   workflow: Current;
+  auto_pay_limit: Parameters<typeof VendorAutoPayLimit>[0]['limit'];
   payee_invites: PayeeInvite[];
   payees: {
     id: string;
@@ -234,6 +236,7 @@ export function VendorPage() {
           </Card>
         </VStack>
       </HStack>
+      <VendorAutoPayLimit vendorId={vendor.id} limit={detail.auto_pay_limit} onSaved={() => void loadVendor()} />
       <section ref={workflowRef} id="workflow" className="payvy-vendor-workflow" style={{ scrollMarginTop: 16 }}>
         <div className="payvy-section-heading">
           <Heading level={2}>Workflow</Heading>

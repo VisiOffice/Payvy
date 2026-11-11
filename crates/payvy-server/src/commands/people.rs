@@ -1,7 +1,7 @@
 //! Who can sign in to the web app. A person signs in with a link sent to
 //! their email and acts as the actor of the same name.
 
-use payvy_store::{self as store, NewPerson};
+use payvy_store::{self as store, ActorKind, NewPerson};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -86,6 +86,20 @@ pub struct Remove {
 
 pub async fn remove(cx: &mut Cx<'_>, input: Remove) -> Result<Value, CommandError> {
     let actor = input.actor.trim().to_lowercase();
+    let people = store::lock_people(&mut cx.tx, cx.org).await?;
+    if !people.contains(&actor) {
+        return Err(CommandError::NotFound("person"));
+    }
+    if cx.actor.kind == ActorKind::Person && cx.actor.name == actor {
+        return Err(CommandError::Forbidden(
+            "you can't remove yourself; ask someone else who signs in here".into(),
+        ));
+    }
+    if people.len() <= 1 {
+        return Err(CommandError::Conflict(format!(
+            "{actor} is the last person who can sign in; add someone else first"
+        )));
+    }
     let id = store::remove_person(&mut cx.tx, cx.org, &actor, cx.now, &cx.actor.name)
         .await?
         .ok_or(CommandError::NotFound("person"))?;

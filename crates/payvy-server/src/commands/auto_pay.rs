@@ -1,0 +1,225 @@
+//! The ceiling on automatic payments. A workflow's `pay` step set to `auto`
+//! pays a bill without a person, but never above the limit in force: the
+//! vendor's own limit if it has one (higher or lower than the company's),
+//! else the company's (the default until a person sets one). A bill over it waits for a person to release it
+//! (`workflow::evaluate`), and the payment itself is checked again as it is
+//! sent (`payments::submit`).
+//!
+//! Only a person changes a limit, and every change is an event. A change
+//! that lowers (or keeps) the limit in force runs at once; one that raises
+//! it lets bigger bills go without a person, so it is confirmed: the preview
+//! lists the bills that would start paying automatically. That includes a
+//! vendor override above the company's, and removing an override below it.
+
+use payvy_domain::Cents;
+use payvy_domain::workflow::{
+    self, AutoPayLimit, DEFAULT_AUTO_PAY_LIMIT_CENTS, MAX_AUTO_PAY_LIMIT_CENTS, dollars,
+};
+use payvy_store as store;
+use serde::{Deserialize, Deserializer};
+use serde_json::{Value, json};
+use uuid::Uuid;
+
+use super::{CommandError, Cx, bills, parse, text};
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Limits {}
+
+/// The company's limit and every vendor's own.
+async fn snapshot(cx: &mut Cx<'_>) -> Result<Value, CommandError> {
+    let limits = store::auto_pay_limits(&mut cx.tx).await?;
+    let company = AutoPayLimit::effective(limits.company, None);
+    let mut vendors = Vec::new();
+    for (id, cents) in &limits.vendors {
+        let name = store::get_vendor(&mut cx.tx, *id)
+            .await?
+            .map(|v| v.name)
+            .unwrap_or_default();
+        vendors.push(json!({
+            "vendor_id": id, "vendor_name": name, "limit_cents": cents,
+            "above_company": *cents > company.cents,
+        }));
+    }
+    vendors.sort_by(|a, b| a["vendor_name"].as_str().cmp(&b["vendor_name"].as_str()));
+    Ok(json!({
+        "company": {
+            "limit_cents": company.cents,
+            "source": company.source,
+            "label": dollars(company.cents),
+        },
+        "default_cents": DEFAULT_AUTO_PAY_LIMIT_CENTS,
+        "max_cents": MAX_AUTO_PAY_LIMIT_CENTS,
+        "vendors": vendors,
+    }))
+}
+
+pub async fn limits(cx: &mut Cx<'_>, _: Limits) -> Result<Value, CommandError> {
+    snapshot(cx).await
+}
+
+/// `null` must be told apart from a missing field.
+fn some<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Option<Cents>>, D::Error> {
+    Option::<Cents>::deserialize(d).map(Some)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Set {
+    vendor_id: Option<Uuid>,
+    #[serde(default, deserialize_with = "some")]
+    limit_cents: Option<Option<Cents>>,
+    reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Way {
+    Lower,
+    Raise,
+}
+
+/// Bills that pay automatically right now.
+async fn ready_ids(cx: &mut Cx<'_>) -> Result<Vec<Value>, CommandError> {
+    let listed = bills::list(
+        cx,
+        parse(&json!({ "status": "ready_to_pay", "limit": 500 }))?,
+    )
+    .await?;
+    Ok(listed["bills"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|b| {
+            json!({ "bill_id": b["bill"]["id"], "vendor_name": b["bill"]["vendor_name"],
+                    "invoice_number": b["bill"]["invoice_number"],
+                    "amount_cents": b["bill"]["amount_cents"] })
+        })
+        .collect())
+}
+
+pub async fn set(cx: &mut Cx<'_>, input: Set, way: Way) -> Result<Value, CommandError> {
+    let Some(new) = input.limit_cents else {
+        return Err(CommandError::Invalid("limit_cents is required".into()));
+    };
+    if let Some(c) = new {
+        workflow::check_auto_pay_limit(c).map_err(CommandError::Invalid)?;
+    }
+    if new.is_none() && input.vendor_id.is_none() {
+        return Err(CommandError::Invalid(
+            "only a vendor's own limit can be removed (limit_cents null, with vendor_id); \
+             the company always has a limit"
+                .into(),
+        ));
+    }
+    // One change at a time, and none while an automatic payment is being sent.
+    store::lock_auto_pay_limits(&mut cx.tx, cx.org).await?;
+    let limits = store::auto_pay_limits(&mut cx.tx).await?;
+    let company = AutoPayLimit::effective(limits.company, None).cents;
+    let vendor = match input.vendor_id {
+        Some(id) => Some(
+            store::get_vendor(&mut cx.tx, id)
+                .await?
+                .ok_or(CommandError::NotFound("vendor"))?,
+        ),
+        None => None,
+    };
+    let own = input
+        .vendor_id
+        .and_then(|id| limits.vendors.get(&id).copied());
+    // What applies now, and what will. A vendor's own limit overrides the
+    // company's in either direction; without one, the company's applies.
+    let (from, to) = match &vendor {
+        None => (company, new.unwrap_or(company)),
+        Some(_) => (own.unwrap_or(company), new.unwrap_or(company)),
+    };
+    let label = match &vendor {
+        Some(v) => format!("{}'s auto-pay limit", v.name),
+        None => "the company's auto-pay limit".to_owned(),
+    };
+    if vendor.is_some() && new.is_none() && own.is_none() {
+        return Err(CommandError::Conflict(format!(
+            "{label} isn't set; this vendor already follows the company's {}",
+            dollars(company)
+        )));
+    }
+    if vendor.is_some() && new == own || vendor.is_none() && to == from {
+        return Err(CommandError::Conflict(format!(
+            "{label} is already {}",
+            dollars(from)
+        )));
+    }
+    // Anything that lets a bigger bill pay without a person is a raise, and
+    // confirmed; anything else (lower, or the same amount from another
+    // source) runs at once.
+    match way {
+        Way::Lower if to > from => {
+            return Err(CommandError::Conflict(format!(
+                "this raises {label} from {} to {}. Use auto_pay.raise_limit, which is confirmed",
+                dollars(from),
+                dollars(to)
+            )));
+        }
+        Way::Raise if to <= from => {
+            return Err(CommandError::Conflict(format!(
+                "this doesn't raise {label} ({} to {}). Use auto_pay.lower_limit",
+                dollars(from),
+                dollars(to)
+            )));
+        }
+        _ => {}
+    }
+
+    let before = ready_ids(cx).await?;
+    store::set_auto_pay_limit(
+        &mut cx.tx,
+        cx.org,
+        input.vendor_id,
+        new,
+        &cx.actor.name,
+        cx.now,
+    )
+    .await?;
+    let after = ready_ids(cx).await?;
+    let started: Vec<Value> = after
+        .iter()
+        .filter(|b| !before.iter().any(|x| x["bill_id"] == b["bill_id"]))
+        .cloned()
+        .collect();
+    let stopped: Vec<Value> = before
+        .iter()
+        .filter(|b| !after.iter().any(|x| x["bill_id"] == b["bill_id"]))
+        .cloned()
+        .collect();
+
+    let kind = match way {
+        Way::Lower => "auto_pay.limit_lowered",
+        Way::Raise => "auto_pay.limit_raised",
+    };
+    let reason = text(input.reason);
+    cx.emit(
+        kind,
+        input.vendor_id.unwrap_or(cx.org),
+        json!({
+            "vendor_id": input.vendor_id,
+            "scope": if vendor.is_some() { "vendor" } else { "company" },
+            "from_cents": match &vendor { Some(_) => own, None => Some(company) },
+            "to_cents": new,
+            "in_force_from_cents": from,
+            "in_force_to_cents": to,
+            "reason": reason,
+            "now_pays_automatically": started.iter().map(|b| &b["bill_id"]).collect::<Vec<_>>(),
+            "now_waits_for_a_person": stopped.iter().map(|b| &b["bill_id"]).collect::<Vec<_>>(),
+        }),
+    )
+    .await?;
+    let mut out = snapshot(cx).await?;
+    out["change"] = json!({
+        "what": label,
+        "from_cents": from,
+        "to_cents": to,
+        "now_pays_automatically": started,
+        "now_waits_for_a_person": stopped,
+    });
+    Ok(out)
+}

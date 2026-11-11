@@ -173,14 +173,14 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "bill.get",
-        summary: "A bill with its lines, its workflow progress step by step, approvals, signals and history.",
+        summary: "A bill with its lines, its workflow progress step by step, approvals, signals and history. While it waits for approval, approval says whether you can give it and, if not, why and who else can.",
         tier: RiskTier::Read,
         person_only: false,
         input_schema: r#"{"type":"object","required":["bill_id"],"properties":{"bill_id":{"type":"string","format":"uuid"}}}"#,
     },
     CommandSpec {
         name: "bill.approve",
-        summary: "Approve a bill at its current approval step. You must be one of that step's approvers.",
+        summary: "Approve a bill at its current approval step. You must be one of that step's approvers. One person gives a bill one approval, so you can't approve a second step, or a step a later one needs you for; and when approval_rules has submitter_cannot_approve on, whoever entered the bill or uploaded its document can't approve it. A refusal says who else can. bill.get shows it in approval before you try.",
         tier: RiskTier::Routine,
         person_only: true,
         input_schema: r#"{"type":"object","required":["bill_id"],"properties":{"bill_id":{"type":"string","format":"uuid"},"note":{"type":"string"}}}"#,
@@ -208,7 +208,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "bill.auto_pay",
-        summary: "Pay a bill whose workflow pays automatically (status ready_to_pay) through the connected Mercury account, to the vendor's accepted payee. Payvy does this on its own within a minute of the bill getting there; run it to pay one now. If the payment doesn't go, the bill waits for a person to release it and is never retried automatically.",
+        summary: "Pay a bill whose workflow pays automatically (status ready_to_pay) through the connected Mercury account, to the vendor's accepted payee. Payvy does this on its own within a minute of the bill getting there; run it to pay one now. A bill over the auto-pay limit (auto_pay.limits) is never paid this way; it waits for a person to release it. If the payment doesn't go, the bill waits for a person to release it and is never retried automatically.",
         tier: RiskTier::Routine,
         person_only: false,
         input_schema: r#"{"type":"object","required":["bill_id"],"properties":{"bill_id":{"type":"string","format":"uuid"}}}"#,
@@ -227,6 +227,28 @@ pub const COMMANDS: &[CommandSpec] = &[
         person_only: true,
         input_schema: r#"{"type":"object","required":["bill_id","reason"],"properties":{"bill_id":{"type":"string","format":"uuid"},"reason":{"type":"string"}}}"#,
     },
+    // ── Auto-pay limits ─────────────────────────────────────────────────────
+    CommandSpec {
+        name: "auto_pay.limits",
+        summary: "The ceiling on automatic payments: the company's limit (the $5,000.00 default until a person sets one) and each vendor's own limit, which overrides the company's in either direction. A bill over the limit in force (the vendor's if set, else the company's) never pays automatically: it waits for a person to release it, whatever its workflow says.",
+        tier: RiskTier::Read,
+        person_only: false,
+        input_schema: r#"{"type":"object","properties":{}}"#,
+    },
+    CommandSpec {
+        name: "auto_pay.lower_limit",
+        summary: "Lower the company's auto-pay limit, or with vendor_id set, lower or remove one vendor's own limit, as long as the limit in force for it doesn't go up (removing an override is allowed here when the company's limit is no higher). Lowering the company's limit doesn't change vendors with their own. Bills over the new limit wait for a person to release them. Only a person may change a limit. Anything that raises the limit in force needs auto_pay.raise_limit.",
+        tier: RiskTier::Routine,
+        person_only: true,
+        input_schema: r#"{"type":"object","required":["limit_cents"],"properties":{"vendor_id":{"type":"string","format":"uuid","description":"Leave out for the company's limit"},"limit_cents":{"type":["integer","null"],"minimum":0,"maximum":100000000000,"description":"null (with vendor_id only) removes the vendor's own limit"},"reason":{"type":"string"}}}"#,
+    },
+    CommandSpec {
+        name: "auto_pay.raise_limit",
+        summary: "Raise the company's auto-pay limit (vendors with their own limit keep it), or with vendor_id set a vendor's own limit above what applies to it now (it may be above the company's), or remove a vendor's own limit when the company's is higher (limit_cents null). Only a person may change a limit. The preview lists the bills that would start paying automatically; commit with the returned token.",
+        tier: RiskTier::Confirmed,
+        person_only: true,
+        input_schema: r#"{"type":"object","required":["limit_cents"],"properties":{"vendor_id":{"type":"string","format":"uuid","description":"Leave out for the company's limit"},"limit_cents":{"type":["integer","null"],"minimum":0,"maximum":100000000000,"description":"null (with vendor_id only) removes the vendor's own limit"},"reason":{"type":"string"}}}"#,
+    },
     // ── Inbox ───────────────────────────────────────────────────────────────
     CommandSpec {
         name: "inbox.get",
@@ -234,6 +256,21 @@ pub const COMMANDS: &[CommandSpec] = &[
         tier: RiskTier::Read,
         person_only: false,
         input_schema: r#"{"type":"object","properties":{}}"#,
+    },
+    // ── Approval rules ──────────────────────────────────────────────────────
+    CommandSpec {
+        name: "approval_rules.get",
+        summary: "The company's approval rules. submitter_cannot_approve: whoever entered a bill or uploaded its document can't approve it (bills an agent entered are unaffected). One approval per person per bill always applies.",
+        tier: RiskTier::Read,
+        person_only: false,
+        input_schema: r#"{"type":"object","properties":{}}"#,
+    },
+    CommandSpec {
+        name: "approval_rules.set",
+        summary: "Turn submitter_cannot_approve on or off for the whole company. It applies to approvals from now on, including bills already waiting.",
+        tier: RiskTier::Routine,
+        person_only: true,
+        input_schema: r#"{"type":"object","required":["submitter_cannot_approve"],"properties":{"submitter_cannot_approve":{"type":"boolean"},"reason":{"type":"string"}}}"#,
     },
     // ── People ──────────────────────────────────────────────────────────────
     CommandSpec {
@@ -252,10 +289,25 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "person.remove",
-        summary: "Stop someone signing in, and sign them out everywhere. Their past actions stay on the record.",
+        summary: "Stop someone signing in, and sign them out everywhere. Their past actions stay on the record. Refused for yourself (someone else removes you) and for the last person who can sign in.",
         tier: RiskTier::Routine,
         person_only: true,
         input_schema: r#"{"type":"object","required":["actor"],"properties":{"actor":{"type":"string"}}}"#,
+    },
+    // ── Organization ────────────────────────────────────────────────────────
+    CommandSpec {
+        name: "org.get",
+        summary: "This organization: its id, its name as people see it in the app and sign-in emails, and when it was created.",
+        tier: RiskTier::Read,
+        person_only: false,
+        input_schema: r#"{"type":"object","properties":{}}"#,
+    },
+    CommandSpec {
+        name: "org.update",
+        summary: "Rename the organization. The name is trimmed, 1 to 100 characters, and must differ from the current one. Bills, vendors and events are unchanged.",
+        tier: RiskTier::Routine,
+        person_only: true,
+        input_schema: r#"{"type":"object","required":["name"],"properties":{"name":{"type":"string","minLength":1,"maxLength":100}}}"#,
     },
     // ── Bank and payments ───────────────────────────────────────────────────
     CommandSpec {

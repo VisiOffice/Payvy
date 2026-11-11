@@ -61,12 +61,22 @@ impl TestDb {
     /// With document storage, when PAYVY_TEST_S3_* points at a store (docker
     /// compose runs SeaweedFS). None, and the test returns early, otherwise.
     pub async fn with_storage() -> Option<Self> {
+        let var = |name| std::env::var(name).ok();
+        let (Some(endpoint), Some(access_key), Some(secret_key)) = (
+            var("PAYVY_TEST_S3_ENDPOINT"),
+            var("PAYVY_TEST_S3_ACCESS_KEY"),
+            var("PAYVY_TEST_S3_SECRET_KEY"),
+        ) else {
+            // CI fails on this line, so storage tests can't pass by not running.
+            eprintln!("skipping: PAYVY_TEST_S3_* not set");
+            return None;
+        };
         let config = payvy_storage::Config {
-            endpoint: std::env::var("PAYVY_TEST_S3_ENDPOINT").ok()?,
+            endpoint,
             bucket: "payvy-test".into(),
             region: "us-east-1".into(),
-            access_key: std::env::var("PAYVY_TEST_S3_ACCESS_KEY").ok()?,
-            secret_key: std::env::var("PAYVY_TEST_S3_SECRET_KEY").ok()?,
+            access_key,
+            secret_key,
             path_style: true,
         };
         let mut db = Self::new().await?;

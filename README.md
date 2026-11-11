@@ -1,5 +1,7 @@
 # Payvy
 
+[![CI](https://github.com/VisiOffice/Payvy/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/VisiOffice/Payvy/actions/workflows/ci.yml)
+
 **The open-source Bill.com alternative.** Bills come in, follow the workflow you set for each
 vendor, and get paid from **your own** bank account: Mercury, Ramp or Brex. Payvy never touches
 your money, so it doesn't charge you to move it.
@@ -55,7 +57,9 @@ international payments are planned through Wise and Airwallex.
 | `pay` | Pay automatically, or wait for a person to release it. |
 
 Agents can propose workflows; a person accepts them. A bill keeps the workflow it arrived under,
-so changing a workflow never changes a bill already on its way.
+so changing a workflow never changes a bill already on its way. One person gives a bill one
+approval, so two approval steps always mean two people; a company can also require that whoever
+entered a bill isn't the one who approves it ([docs/approvals.md](docs/approvals.md)).
 
 **Agents prepare, people sign off.** Every action is a command, served the same way over REST
 (`POST /api/commands/{name}`) and MCP (`POST /mcp`). Agent keys can read bills, enter them, file
