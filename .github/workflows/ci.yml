@@ -103,8 +103,16 @@ jobs:
       - name: Typecheck (web and workers)
         run: pnpm -r check
 
+      # The browser itself comes from Playwright's CDN. Its system libraries
+      # are already on GitHub's Ubuntu image; --with-deps only adds optional
+      # fonts from Ubuntu's mirrors, so a mirror outage mustn't fail CI.
       - name: Playwright browsers
-        run: pnpm --dir web exec playwright install --with-deps chromium
+        run: pnpm --dir web exec playwright install chromium
+
+      - name: Playwright system dependencies (best effort)
+        continue-on-error: true
+        timeout-minutes: 5
+        run: pnpm --dir web exec playwright install-deps chromium
 
       # Builds the app and the server, then runs every browser test against
       # a fresh database, the SeaweedFS bucket and the fake model and banks,
