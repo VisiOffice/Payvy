@@ -1,4 +1,4 @@
-//! Outbound email: sign-in links now, notifications later. One small adapter
+//! Outbound email: sign-in links and workflow notifications. One small adapter
 //! with a backend per sender, like document storage. Without one configured,
 //! mail is written to the log, which is enough to sign in on a development
 //! machine and never enough in production (the server warns at startup).
@@ -12,6 +12,26 @@ pub struct Mail {
     pub to: String,
     pub subject: String,
     pub text: String,
+}
+
+/// Safe, bounded delivery classifications. Never persist provider response bodies.
+#[derive(Debug, Clone, Copy, thiserror::Error)]
+pub enum DeliveryFailure {
+    #[error("email provider rate limited the request")]
+    RateLimited,
+    #[error("email provider refused the message")]
+    Refused,
+    #[error("email delivery is uncertain; not retried automatically")]
+    Uncertain,
+}
+fn failure(status: reqwest::StatusCode) -> DeliveryFailure {
+    if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        DeliveryFailure::RateLimited
+    } else if status.is_client_error() {
+        DeliveryFailure::Refused
+    } else {
+        DeliveryFailure::Uncertain
+    }
 }
 
 pub enum Mailer {
@@ -46,6 +66,7 @@ const SES_PATH: &str = "/v2/email/outbound-emails";
 fn http() -> anyhow::Result<reqwest::Client> {
     Ok(reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(20))
+        .redirect(reqwest::redirect::Policy::none())
         .build()?)
 }
 
@@ -78,6 +99,14 @@ impl Mailer {
 
     pub fn is_log(&self) -> bool {
         matches!(self, Self::Log)
+    }
+
+    pub async fn deliver(&self, mail: Mail) -> Result<(), DeliveryFailure> {
+        self.send(mail).await.map_err(|e| {
+            e.downcast_ref::<DeliveryFailure>()
+                .copied()
+                .unwrap_or(DeliveryFailure::Uncertain)
+        })
     }
 
     pub async fn send(&self, mail: Mail) -> anyhow::Result<()> {
@@ -114,15 +143,20 @@ impl Mailer {
                     .await?;
                 let status = res.status();
                 let body: Value = res.json().await.unwrap_or(Value::Null);
-                if !status.is_success() || body["success"] != json!(true) {
-                    anyhow::bail!(
+                if !status.is_success() {
+                    return Err(anyhow::Error::new(failure(status)).context(format!(
                         "Cloudflare refused the message ({status}): {}",
                         body["errors"]
-                    );
+                    )));
                 }
-                let bounced = &body["result"]["permanent_bounces"];
-                if bounced.as_array().is_some_and(|b| !b.is_empty()) {
-                    anyhow::bail!("the message bounced: {bounced}");
+                if body["success"] != json!(true) {
+                    return Err(DeliveryFailure::Uncertain.into());
+                }
+                if body["result"]["permanent_bounces"]
+                    .as_array()
+                    .is_some_and(|b| !b.is_empty())
+                {
+                    return Err(DeliveryFailure::Refused.into());
                 }
                 Ok(())
             }
@@ -174,11 +208,14 @@ impl Mailer {
                 let res = req.send().await?;
                 let status = res.status();
                 if !status.is_success() {
+                    // Keep the existing operator diagnostics for sign-in. The
+                    // notification deliver() boundary discards this context and
+                    // persists only the bounded DeliveryFailure classification.
                     let body: Value = res.json().await.unwrap_or(Value::Null);
-                    anyhow::bail!(
+                    return Err(anyhow::Error::new(failure(status)).context(format!(
                         "SES refused the message ({status}): {}",
                         body["message"].as_str().unwrap_or("no reason given")
-                    );
+                    )));
                 }
                 Ok(())
             }

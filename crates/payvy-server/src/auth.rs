@@ -92,6 +92,7 @@ pub fn random_token() -> anyhow::Result<String> {
 #[derive(Deserialize)]
 struct LinkRequest {
     email: String,
+    return_to: Option<String>,
 }
 
 async fn send_link(State(state): State<AppState>, Json(body): Json<LinkRequest>) -> Response {
@@ -106,6 +107,14 @@ async fn send_link(State(state): State<AppState>, Json(body): Json<LinkRequest>)
             "That doesn't look like an email address.",
         );
     }
+    // Only a bill route may survive sign-in; never accept an external redirect.
+    let return_to = body
+        .return_to
+        .as_deref()
+        .and_then(|p| p.strip_prefix("/bills/"))
+        .and_then(|id| uuid::Uuid::parse_str(id).ok())
+        .map(|id| format!("?return_to=/bills/{id}"))
+        .unwrap_or_default();
     let now = (state.clock)();
     let found = match state.store.people_by_email(&email).await {
         Ok(f) => f,
@@ -143,7 +152,7 @@ async fn send_link(State(state): State<AppState>, Json(body): Json<LinkRequest>)
         }
         links.push((
             s.org_name,
-            format!("{}/sign-in#token={token}", auth.public_url),
+            format!("{}/sign-in{return_to}#token={token}", auth.public_url),
         ));
     }
     if !links.is_empty() {

@@ -852,3 +852,66 @@ async fn close(
     .await?;
     detail(cx, bill.id).await
 }
+
+/// Notification candidates use the same evaluated, pinned workflow and pure
+/// approval rules as an interactive approval. Never infer recipients from a role alone.
+pub(super) async fn notification_targets(
+    cx: &mut Cx<'_>,
+    bill_id: Uuid,
+) -> Result<(Bill, String, String, Vec<store::Person>), CommandError> {
+    use payvy_domain::permissions::Permission;
+    let bill = store::get_bill(&mut cx.tx, bill_id)
+        .await?
+        .ok_or(CommandError::NotFound("bill"))?;
+    if bill.state != State::Open {
+        return Ok((bill, String::new(), String::new(), vec![]));
+    }
+    let wf = workflow_of(cx, &bill).await?;
+    let (a, s) = store::facts(&mut cx.tx, &[bill.id]).await?;
+    let approvals: Vec<_> = a.into_iter().map(|(_, a)| a).collect();
+    let signals: Vec<_> = s.into_iter().map(|(_, s)| s).collect();
+    let limit = store::auto_pay_limits(&mut cx.tx)
+        .await?
+        .for_vendor(bill.vendor_id);
+    let progress = evaluate(cx, &bill, &wf, &approvals, &signals, limit);
+    let action = match progress.status {
+        Status::AwaitingApproval { .. } => "approve",
+        Status::AwaitingRelease { .. } => "release",
+        _ => return Ok((bill, String::new(), String::new(), vec![])),
+    };
+    let step = progress.active_step().unwrap_or_default().to_owned();
+    let d = duties(cx, &[bill.id]).await?;
+    let uploaded_by: Vec<_> = d.uploaders.iter().map(|(_, a)| a.clone()).collect();
+    let mut recipients = vec![];
+    for person in store::people(&mut cx.tx, cx.org).await? {
+        let roles = store::actor_roles(&mut cx.tx, cx.org, &person.actor).await?;
+        let eligible = match &progress.status {
+            Status::AwaitingApproval { .. } => {
+                Permission::Approve.allows(&roles)
+                    && duties::turn(
+                        &duties::Context {
+                            workflow: &wf,
+                            status: &progress.status,
+                            amount_cents: bill.amount_cents,
+                            approvals: &approvals,
+                            entered_by: &bill.created_by,
+                            uploaded_by: &uploaded_by,
+                            people: &d.people,
+                            rules: d.rules,
+                        },
+                        &person.actor,
+                        true,
+                    )
+                    .is_some_and(|t| t.can_approve)
+            }
+            Status::AwaitingRelease { by, .. } => {
+                Permission::Pay.allows(&roles) && (by.is_empty() || by.contains(&person.actor))
+            }
+            _ => false,
+        };
+        if eligible {
+            recipients.push(person);
+        }
+    }
+    Ok((bill, step, action.to_owned(), recipients))
+}

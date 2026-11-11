@@ -40,6 +40,46 @@ macro_rules! step_schema {
 }
 
 pub const COMMANDS: &[CommandSpec] = &[
+    CommandSpec {
+        name: "notification.settings",
+        summary: "Notification settings and whether a real email sender is configured.",
+        tier: RiskTier::Read,
+        person_only: false,
+        permission: Permission::Read,
+        input_schema: r#"{"type":"object","properties":{}}"#,
+    },
+    CommandSpec {
+        name: "notification.configure",
+        summary: "Enable workflow email notices for currently actionable bills. Approval reminders start after 48 hours, daily thereafter, at most three.",
+        tier: RiskTier::Routine,
+        person_only: true,
+        permission: Permission::Admin,
+        input_schema: r#"{"type":"object","required":["enabled","reminders"],"properties":{"enabled":{"type":"boolean"},"reminders":{"type":"boolean"}}}"#,
+    },
+    CommandSpec {
+        name: "notification.list",
+        summary: "Delivery history for one bill. Sent means accepted by the provider, not confirmed delivery.",
+        tier: RiskTier::Read,
+        person_only: false,
+        permission: Permission::Read,
+        input_schema: r#"{"type":"object","required":["bill_id"],"properties":{"bill_id":{"type":"string","format":"uuid"}}}"#,
+    },
+    CommandSpec {
+        name: "notification.queue",
+        summary: "Queue only due notifications for eligible people on the current pinned workflow step. Company opt-in required; deduplicated.",
+        tier: RiskTier::Routine,
+        person_only: false,
+        permission: Permission::Admin,
+        input_schema: r#"{"type":"object","required":["bill_id"],"properties":{"bill_id":{"type":"string","format":"uuid"}}}"#,
+    },
+    CommandSpec {
+        name: "notification.deliver",
+        summary: "Deliver a queued workflow notification after rechecking eligibility. No arbitrary recipient or content. Uncertain delivery is never automatically retried.",
+        tier: RiskTier::Routine,
+        person_only: false,
+        permission: Permission::Admin,
+        input_schema: r#"{"type":"object","required":["notification_id"],"properties":{"notification_id":{"type":"string","format":"uuid"}}}"#,
+    },
     // ── Vendors ─────────────────────────────────────────────────────────────
     CommandSpec {
         name: "vendor.create",

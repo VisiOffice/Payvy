@@ -11,6 +11,7 @@ mod email;
 mod events;
 mod extract;
 mod inbox;
+mod notifications;
 mod org;
 mod payee_invites;
 mod payments;
@@ -173,6 +174,7 @@ pub async fn run(
         inbound_domain: state.inbound.as_ref().map(|i| i.domain.as_str()),
         extractor: state.extractor.as_deref(),
         bank: state.bank.as_deref(),
+        auth: state.auth.as_deref(),
     };
     let result = execute(&mut cx, spec.name, &input).await?;
     let Cx { tx, events, .. } = cx;
@@ -196,6 +198,11 @@ pub async fn run(
 
 async fn execute(cx: &mut Cx<'_>, name: &str, input: &Value) -> Result<Value, CommandError> {
     match name {
+        "notification.settings" => notifications::settings(cx, parse(input)?).await,
+        "notification.configure" => notifications::configure(cx, parse(input)?).await,
+        "notification.list" => notifications::list(cx, parse(input)?).await,
+        "notification.queue" => notifications::queue(cx, parse(input)?).await,
+        "notification.deliver" => notifications::deliver(cx, parse(input)?).await,
         "vendor.create" => vendors::create(cx, parse(input)?).await,
         "vendor.update" => vendors::update(cx, parse(input)?).await,
         "vendor.remove_account" => vendors::remove_account(cx, parse(input)?).await,
@@ -288,6 +295,7 @@ pub(crate) struct Cx<'a> {
     inbound_domain: Option<&'a str>,
     extractor: Option<&'a payvy_extract::Extractor>,
     bank: Option<&'a crate::Bank>,
+    auth: Option<&'a crate::auth::Auth>,
 }
 
 impl<'a> Cx<'a> {

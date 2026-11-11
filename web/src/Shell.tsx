@@ -56,6 +56,7 @@ export function Shell({ children }: { children: ReactNode }) {
             items={[
               ...(can('bank.connect') ? [{ label: 'Bank settings', href: '/settings/bank' }] : []),
               ...(can('email.new_address') ? [{ label: 'Bill inbox', href: '/settings/email' }] : []),
+              ...(can('notification.configure') ? [{ label: 'Notifications', href: '/settings/notifications' }] : []),
               ...(can('approval_rules.set') ? [{ label: 'Approvals', href: '/settings/approvals' }] : []),
               { label: 'Default workflow', href: '/workflows' },
               { label: 'People', href: '/settings/people' },
@@ -95,6 +96,7 @@ export function Shell({ children }: { children: ReactNode }) {
             <SideNavItem label="People" href="/settings/people" isSelected={pathname.startsWith('/settings/people')} />
             <Allowed command="org.update"><SideNavItem label="Company" href="/settings/company" isSelected={pathname.startsWith('/settings/company')} /></Allowed>
             <Allowed command="auto_pay.raise_limit"><SideNavItem label="Auto-pay limit" href="/settings/auto-pay" isSelected={pathname.startsWith('/settings/auto-pay')} /></Allowed>
+            <Allowed command="notification.configure"><SideNavItem label="Notifications" href="/settings/notifications" isSelected={pathname.startsWith('/settings/notifications')} /></Allowed>
             <Allowed command="approval_rules.set"><SideNavItem label="Approvals" href="/settings/approvals" isSelected={pathname.startsWith('/settings/approvals')} /></Allowed>
           </SideNavSection>
         </SideNav>

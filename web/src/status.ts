@@ -19,6 +19,9 @@ export function billStatus(s: string): { label: string; variant: Variant } {
 }
 
 const EVENT: Record<string, string> = {
+  'notification.queued': 'Email notification queued',
+  'notification.sending': 'Email sending started',
+  'notification.delivery': 'Email delivery updated',
   'bill.created': 'Entered',
   'bill.approved': 'Approved',
   'bill.rejected': 'Rejected',

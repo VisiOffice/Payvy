@@ -71,6 +71,8 @@ first and commits with a single-use token tied to exactly what was previewed.
 Backblaze B2, AWS S3, or one you run (Garage, SeaweedFS). A file's type is read from its contents,
 and the same file arriving twice is caught.
 
+**Workflow notifications.** Opt-in email notices reach eligible approvers and payment releasers, with capped approval reminders and per-bill delivery history. See [notifications](docs/notifications.md).
+
 **Bills by email.** Each company gets an inbound address; attachments land in the inbox, and
 forwarded emails work too. Mail comes in through Cloudflare Email Routing, free on your own
 domain, or anything else that can post a signed request. See

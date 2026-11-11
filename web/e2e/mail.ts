@@ -3,7 +3,7 @@
 // the same code a person's email link does.
 import fs from 'node:fs';
 
-const LINK = /(http:\/\/[^\s"]+\/sign-in#token=[0-9a-f]{64})/g;
+const LINK = /(http:\/\/[^\s"]+\/sign-in(?:\?return_to=\/bills\/[0-9a-f-]+)?#token=[0-9a-f]{64})/g;
 
 /** Where the log ends now: links after this point are new. */
 export function logMark(log: string): number {
