@@ -11,7 +11,8 @@ export const currentPage = (page: Page) =>
 
 /**
  * A page turn is instant. A turn that doesn't land means the pages changed
- * under the walk (a save arrived), so fail fast and let expect.poll read again.
+ * under the walk (a save arrived, or a click hit a re-rendering button), so
+ * give up quickly and let expect.poll read again.
  */
 const TURN = 1000;
 
@@ -31,15 +32,22 @@ export async function shown(page: Page): Promise<number[]> {
   const numbers = ((await counter(page).textContent({ timeout: 1000 }).catch(() => null)) ?? '').match(/\d+/g);
   if (!numbers) return [];
   const [at, of] = numbers.map(Number) as [number, number];
+  // A failed expect inside expect.poll fails the test rather than retrying,
+  // so a turn that doesn't land returns no reading and the poll reads again.
+  return walk(page, at, of).catch(() => []);
+}
+
+async function walk(page: Page, at: number, of: number): Promise<number[]> {
+  const nav = page.getByRole('group', { name: 'Pages of the document' });
   for (let i = at; i > 1; i--) {
-    await nav.getByRole('button', { name: 'Previous page' }).click();
+    await nav.getByRole('button', { name: 'Previous page' }).click({ timeout: TURN });
     await expect(counter(page)).toHaveText(`Page ${i - 1} of ${of}`, { timeout: TURN });
   }
   const order: number[] = [];
   for (let i = 1; i <= of; i++) {
     order.push(await currentPage(page));
     if (i < of) {
-      await nav.getByRole('button', { name: 'Next page' }).click();
+      await nav.getByRole('button', { name: 'Next page' }).click({ timeout: TURN });
       await expect(counter(page)).toHaveText(`Page ${i + 1} of ${of}`, { timeout: TURN });
     }
   }
