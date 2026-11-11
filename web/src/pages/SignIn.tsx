@@ -18,7 +18,8 @@ import { ApiError, auth, type Me } from '../api/client';
 export function SignIn({ onSignedIn }: { onSignedIn: (me: Me) => void }) {
   const navigate = useNavigate();
   const location = useLocation();
-  const from = (location.state as { from?: string } | null)?.from ?? '/';
+  const requested = (location.state as { from?: string } | null)?.from ?? new URLSearchParams(location.search).get('return_to');
+  const from = requested && /^\/bills\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(requested) ? requested : '/';
   const token = new URLSearchParams(location.hash.slice(1)).get('token');
 
   const [email, setEmail] = useState('');
@@ -37,18 +38,18 @@ export function SignIn({ onSignedIn }: { onSignedIn: (me: Me) => void }) {
       .redeem(token)
       .then((me) => {
         onSignedIn(me);
-        navigate('/', { replace: true });
+        navigate(from, { replace: true });
       })
       .catch((e) => {
         setError(e instanceof ApiError ? e.message : 'Signing in failed. Try again.');
         setRedeeming(false);
       });
-  }, [token, onSignedIn, navigate]);
+  }, [token, onSignedIn, navigate, from]);
 
   async function ask() {
     setError(null);
     try {
-      const r = await auth.requestLink(email);
+      const r = await auth.requestLink(email, from);
       setSent(r.message);
     } catch (e) {
       setError(e instanceof ApiError ? e.message : 'Something went wrong. Try again.');

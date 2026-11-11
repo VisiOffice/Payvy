@@ -116,6 +116,12 @@ Conventions follow Visirent (`~/Code/visirent`).
   lock before checking the caller, protect the last sign-in admin, and emit old/new roles.
   Removing someone revokes their person keys as well as sessions. Agent person-only gates
   remain unchanged. See `docs/roles.md` for migration and operator recovery.
+- **Workflow emails are a durable outbox, not approvals** (`notification.*`, `notification_worker`).
+  Company opt-in, current roles, pinned workflow, and duties determine recipients; recheck before
+  claiming. Commit `sending` before non-idempotent provider HTTP, release all business locks,
+  and never replay unknown delivery. Only explicit rate limits get bounded retries. Preview
+  never sends. Initial notices and capped approval reminders are unique by bill/step/person/
+  ordinal. Sender response bodies must never enter history or events. See `docs/notifications.md`.
 - **People sign in with a link sent by email** (`auth.rs`, `people` table). No passwords. The
   token travels after `#` and is posted by the app, so mail scanners can't use it up; only
   hashes of link and session tokens are stored; asking for a link answers the same for unknown

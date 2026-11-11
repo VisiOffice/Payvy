@@ -1,6 +1,46 @@
 {
   "commands": [
     {
+      "input_schema": "{\"type\":\"object\",\"properties\":{}}",
+      "name": "notification.settings",
+      "permission": "read",
+      "person_only": false,
+      "summary": "Notification settings and whether a real email sender is configured.",
+      "tier": "read"
+    },
+    {
+      "input_schema": "{\"type\":\"object\",\"required\":[\"enabled\",\"reminders\"],\"properties\":{\"enabled\":{\"type\":\"boolean\"},\"reminders\":{\"type\":\"boolean\"}}}",
+      "name": "notification.configure",
+      "permission": "admin",
+      "person_only": true,
+      "summary": "Enable workflow email notices for currently actionable bills. Approval reminders start after 48 hours, daily thereafter, at most three.",
+      "tier": "routine"
+    },
+    {
+      "input_schema": "{\"type\":\"object\",\"required\":[\"bill_id\"],\"properties\":{\"bill_id\":{\"type\":\"string\",\"format\":\"uuid\"}}}",
+      "name": "notification.list",
+      "permission": "read",
+      "person_only": false,
+      "summary": "Delivery history for one bill. Sent means accepted by the provider, not confirmed delivery.",
+      "tier": "read"
+    },
+    {
+      "input_schema": "{\"type\":\"object\",\"required\":[\"bill_id\"],\"properties\":{\"bill_id\":{\"type\":\"string\",\"format\":\"uuid\"}}}",
+      "name": "notification.queue",
+      "permission": "admin",
+      "person_only": false,
+      "summary": "Queue only due notifications for eligible people on the current pinned workflow step. Company opt-in required; deduplicated.",
+      "tier": "routine"
+    },
+    {
+      "input_schema": "{\"type\":\"object\",\"required\":[\"notification_id\"],\"properties\":{\"notification_id\":{\"type\":\"string\",\"format\":\"uuid\"}}}",
+      "name": "notification.deliver",
+      "permission": "admin",
+      "person_only": false,
+      "summary": "Deliver a queued workflow notification after rechecking eligibility. No arbitrary recipient or content. Uncertain delivery is never automatically retried.",
+      "tier": "routine"
+    },
+    {
       "input_schema": "{\"type\":\"object\",\"required\":[\"name\"],\"properties\":{\"name\":{\"type\":\"string\"},\"email\":{\"type\":\"string\",\"format\":\"email\"},\"terms_days\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":365,\"description\":\"Payment terms, e.g. 30 for net 30\"}}}",
       "name": "vendor.create",
       "permission": "prepare",

@@ -41,8 +41,8 @@ export interface Me {
 }
 
 export const auth = {
-  requestLink: (email: string) =>
-    request<{ message: string }>('POST', '/auth/link', { email }),
+  requestLink: (email: string, return_to?: string) =>
+    request<{ message: string }>('POST', '/auth/link', { email, return_to }),
   redeem: (token: string) => request<Me>('POST', '/auth/session', { token }),
   me: () => request<Me>('GET', '/auth/session'),
   signOut: () => request<null>('DELETE', '/auth/session'),

@@ -304,3 +304,41 @@ async fn without_a_public_url_signing_in_is_off() {
     assert_eq!(res.body["error"]["code"], "not_configured");
     db.drop().await;
 }
+
+#[tokio::test]
+async fn bill_links_survive_sign_in_but_external_redirects_do_not() {
+    let Some((db, sent)) = db().await else {
+        return;
+    };
+    let bill = uuid::Uuid::new_v4();
+    for (i, route) in [
+        format!("/bills/{bill}"),
+        "https://evil.example".into(),
+        "//evil.example".into(),
+        "/bills/not-a-uuid?next=https://evil.example".into(),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let response = call(
+            &db,
+            post(
+                "/auth/link",
+                json!({"email":"robert@example.com","return_to":route}),
+            ),
+        )
+        .await;
+        assert_eq!(response.status, StatusCode::ACCEPTED);
+        let mail = mails(&sent, i + 1).await.pop().unwrap();
+        if i == 0 {
+            assert!(
+                mail.text
+                    .contains(&format!("/sign-in?return_to=/bills/{bill}#token="))
+            );
+        } else {
+            assert!(mail.text.contains("/sign-in#token="));
+            assert!(!mail.text.contains("evil.example"));
+        }
+    }
+    db.drop().await;
+}

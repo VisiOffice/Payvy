@@ -1,3 +1,4 @@
+import { NotificationHistory } from '../notifications/History';
 import { Allowed, useAccessVersion } from '../permissions';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router';
@@ -225,6 +226,8 @@ export function BillPage() {
           ))}
         </VStack>
       )}
+
+      <NotificationHistory billId={b.id} />
 
       {detail.history.length > 0 && (
         <VStack gap={2}>

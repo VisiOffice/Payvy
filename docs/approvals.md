@@ -69,3 +69,8 @@ message?, others, anyone }`. `inbox.get` keeps a bill you can't approve in `bill
   can't be approved by them (they can't sign in anyway); they aren't offered as "others".
 - **The "anyone" pool is active people with the Approver or Admin role.** Person API keys without a sign-in aren't listed as
   "others", but they may still approve.
+
+## Email notifications
+
+Company admins can enable [approval and payment-ready notices](notifications.md).
+Recipients use these same eligibility rules; reminders never approve a bill.
