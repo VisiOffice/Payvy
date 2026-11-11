@@ -53,7 +53,9 @@ function Thumbnail({ page, rotation, label }: { page: Page; rotation: number; la
  * page earlier or later (or drag it), turn it, hide or restore it; each
  * change saves straight away as a new version through `document.arrange`.
  * With `selected`, each visible page has a checkbox ("Attach page"), with
- * All and None, for creating a bill from some of the pages.
+ * All and None, for creating a bill from some of the pages. Clicking a
+ * thumbnail shows that page in the viewer (`current`, `onPick`). Closed, it
+ * is one slim row: the count, the ticks, All and None, and Show thumbnails.
  */
 export function PageStrip({
   documentId,
@@ -63,6 +65,10 @@ export function PageStrip({
   onStale,
   selected,
   onSelect,
+  isOpen = true,
+  onOpenChange,
+  current,
+  onPick,
 }: {
   documentId: string;
   contentType: string;
@@ -74,6 +80,13 @@ export function PageStrip({
   /** Pages ticked for a bill (the original's numbers); leave out when pages can't be picked. */
   selected?: ReadonlySet<number>;
   onSelect?: (next: Set<number>) => void;
+  /** Whether the thumbnails show; closed, only the summary row does. */
+  isOpen?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  /** The page the viewer shows, by its number in the original. */
+  current?: number | null;
+  /** Show this page in the viewer. */
+  onPick?: (page: number) => void;
 }) {
   const can = useCan();
   const loaded = useDocumentPages(documentId, contentType);
@@ -92,6 +105,16 @@ export function PageStrip({
     const next = strip.current.querySelector<HTMLElement>(`button[aria-label="${CSS.escape(label)}"]`);
     (next ?? strip.current.querySelector<HTMLElement>('li'))?.focus();
   }, [pages, saving]);
+
+  // Keep the current page's thumbnail in sight, without moving the window.
+  useEffect(() => {
+    const ol = strip.current;
+    const li = ol?.querySelector<HTMLElement>('li[data-current]');
+    if (!ol || !li) return;
+    const left = li.offsetLeft - ol.offsetLeft;
+    if (left < ol.scrollLeft) ol.scrollLeft = left - 8;
+    else if (left + li.offsetWidth > ol.scrollLeft + ol.clientWidth) ol.scrollLeft = left + li.offsetWidth - ol.clientWidth + 8;
+  }, [current, isOpen]);
 
   const arrangement = pages.arrangement;
   if (!arrangement) {
@@ -139,10 +162,10 @@ export function PageStrip({
   }
 
   return (
-    <section className="payvy-pages" aria-label="Pages" aria-busy={saving}>
+    <section className="payvy-pages" aria-label="Pages" aria-busy={saving} data-open={isOpen || undefined}>
       <div className="payvy-pages-head">
         <strong>Pages</strong>
-        <span>
+        <span className="payvy-pages-count">
           {arrangement.length} {arrangement.length === 1 ? 'page' : 'pages'}
           {hidden > 0 && ` · ${hidden} hidden`}
         </span>
@@ -176,8 +199,21 @@ export function PageStrip({
             </Button>
           </span>
         )}
+        {onOpenChange && (
+          <span className="payvy-pages-toggle">
+            <Button
+              label={isOpen ? 'Hide thumbnails' : 'Show thumbnails'}
+              size="sm"
+              variant="ghost"
+              aria-expanded={isOpen}
+              aria-controls={`payvy-pages-${documentId}`}
+              onClick={() => onOpenChange(!isOpen)}
+            />
+          </span>
+        )}
       </div>
-      <ol ref={strip} className="payvy-pages-strip">
+      {isOpen && (
+      <ol ref={strip} id={`payvy-pages-${documentId}`} className="payvy-pages-strip">
         {arrangement.map((p, i) => {
           const page = loaded.kind === 'ready' ? loaded.pages[p.page - 1] : undefined;
           const label = `Page ${p.page}`;
@@ -185,6 +221,7 @@ export function PageStrip({
             <li
               key={p.page}
               className="payvy-page-thumb"
+              data-current={current === p.page || undefined}
               data-hidden={p.hidden || undefined}
               data-dragging={dragging === i || undefined}
               aria-label={`${label}${p.hidden ? ', hidden' : ''}${p.rotation ? `, rotated ${p.rotation}°` : ''}`}
@@ -211,6 +248,15 @@ export function PageStrip({
                   <Thumbnail page={page} rotation={p.rotation} label={label} />
                 ) : (
                   <span className="payvy-page-thumb-blank" role="img" aria-label={label} />
+                )}
+                {onPick && !p.hidden && (
+                  <button
+                    type="button"
+                    className="payvy-page-thumb-go"
+                    aria-label={`Show page ${p.page}`}
+                    aria-current={current === p.page ? 'page' : undefined}
+                    onClick={() => onPick(p.page)}
+                  />
                 )}
               </div>
               {picking && !p.hidden && visiblePages.length > 1 ? (
@@ -289,6 +335,7 @@ export function PageStrip({
           );
         })}
       </ol>
+      )}
     </section>
   );
 }

@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type SVGProps } from 'react';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
+import { Icon } from '@astryxdesign/core/Icon';
+import { Kbd } from '@astryxdesign/core/Kbd';
 import { Spinner } from '@astryxdesign/core/Spinner';
 import { VStack } from '@astryxdesign/core/VStack';
 import { find, type Item, type Rect } from './match';
@@ -179,11 +181,41 @@ interface Shown {
 
 const ZOOMS = [0.5, 0.67, 0.8, 1, 1.25, 1.5, 2, 3];
 
+/** One page at a time, moved through with buttons and the keyboard. */
+export interface Paging {
+  /** The page shown, by its number in the original; null for the first. */
+  current: number | null;
+  onCurrentChange: (page: number) => void;
+  /** More controls for the toolbar, for the page shown (e.g. its tick box). */
+  extra?: (ref: PageRef) => ReactNode;
+}
+
+/**
+ * Where a key press belongs to something else: typing, a menu or list, a
+ * radio group (arrows move its choice), or an open dialog.
+ */
+function keyIsTaken(e: KeyboardEvent): boolean {
+  if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey || e.isComposing) return true;
+  const t = e.target instanceof Element ? e.target : null;
+  if (t) {
+    // A tick box takes neither letters nor arrows, so flipping on from one is fine.
+    if (t.closest('input:not([type="checkbox"]), textarea, select, [contenteditable]:not([contenteditable="false"])')) return true;
+    if (
+      t.closest(
+        '[role="combobox"], [role="listbox"], [role="option"], [role="menu"], [role="menuitem"], [role="radiogroup"], [role="radio"], [role="tablist"], [role="slider"], [role="spinbutton"], [role="textbox"], [role="grid"], [role="tree"], [role="dialog"], [role="alertdialog"], dialog',
+      )
+    )
+      return true;
+  }
+  return !!document.querySelector('dialog[open], [role="dialog"], [role="alertdialog"], [aria-modal="true"]');
+}
+
 /**
  * A document with zoom and highlights of what was read from it. Clicking a
  * field elsewhere sets `focus`, which scrolls to it and pulses it. With an
  * `arrangement`, pages show in its order and rotation, and hidden ones are
- * left out; the original file is unchanged.
+ * left out; the original file is unchanged. With `paging`, one page shows at
+ * a time, fitted to the panel, with Previous and Next (← → or J K).
  */
 export function DocumentViewer({
   documentId,
@@ -191,12 +223,14 @@ export function DocumentViewer({
   highlights = [],
   focus,
   arrangement,
+  paging,
 }: {
   documentId: string;
   contentType: string;
   highlights?: Highlight[];
   focus?: string | null;
   arrangement?: PageRef[] | null;
+  paging?: Paging;
 }) {
   const [attempt, setAttempt] = useState(0);
   const loaded = useDocumentPages(documentId, contentType, attempt);
@@ -216,24 +250,37 @@ export function DocumentViewer({
     });
   }, [loaded, arrangement]);
 
-  // Fit width follows the panel's width.
+  // The page shown when paging: the current one, or where it was if it left.
+  const lastIndex = useRef(0);
+  const at = paging ? shown.findIndex((s) => s.ref.page === paging.current) : -1;
+  const index = !paging || shown.length === 0 ? 0 : at >= 0 ? at : Math.min(lastIndex.current, shown.length - 1);
+  lastIndex.current = index;
+  const onCurrentChange = paging?.onCurrentChange;
+  const currentPage = paging ? shown[index]?.ref.page : undefined;
+  useEffect(() => {
+    if (paging && currentPage !== undefined && currentPage !== paging.current) onCurrentChange?.(currentPage);
+  }, [paging, currentPage, onCurrentChange]);
+  const visible = useMemo(() => (paging ? shown.slice(index, index + 1) : shown), [paging, shown, index]);
+
+  const pad = paging ? 12 : 24;
+  // Fit width follows the panel's width; fit page, the panel's height too.
   useEffect(() => {
     const el = scroller.current;
-    if (!el || shown.length === 0) return;
-    const sizes = shown.map((s) => turnedSize(s.page, s.ref.rotation));
+    if (!el || visible.length === 0) return;
+    const sizes = visible.map((s) => turnedSize(s.page, s.ref.rotation));
     const widest = Math.max(...sizes.map((p) => p.width));
     const tallest = Math.max(...sizes.map((p) => p.height));
     const update = () => {
       if (!el.clientWidth || !el.clientHeight) return;
-      const width = Math.max(0.25, (el.clientWidth - 48) / widest);
+      const width = Math.max(0.25, (el.clientWidth - pad * 2) / widest);
       setFitScale(width);
-      setPageScale(Math.max(0.25, Math.min(width, (el.clientHeight - 48) / tallest)));
+      setPageScale(Math.max(0.25, Math.min(width, (el.clientHeight - pad * 2) / tallest)));
     };
     update();
     const ro = new ResizeObserver(update);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [shown]);
+  }, [visible, pad]);
 
   const s = scale === 'fit' ? fitScale : scale === 'page' ? pageScale : scale;
   const ready = loaded.kind === 'ready';
@@ -260,6 +307,40 @@ export function DocumentViewer({
     return () => el.removeEventListener('wheel', onWheel);
   }, [zoom]);
 
+  const go = useCallback(
+    (to: number) => {
+      const target = shown[to];
+      if (!target || !onCurrentChange) return;
+      onCurrentChange(target.ref.page);
+    },
+    [shown, onCurrentChange],
+  );
+
+  // A new page starts at its top.
+  const isPaging = !!paging;
+  useEffect(() => {
+    if (isPaging) scroller.current?.scrollTo?.({ top: 0, left: 0 });
+  }, [isPaging, currentPage]);
+
+  // ← → and J K move through the pages, unless the key is for something else.
+  const paged = !!paging && shown.length > 1;
+  useEffect(() => {
+    if (!paged) return;
+    const onKey = (e: KeyboardEvent) => {
+      const dir = e.key === 'ArrowRight' || e.key === 'j' ? 1 : e.key === 'ArrowLeft' || e.key === 'k' ? -1 : 0;
+      if (!dir || keyIsTaken(e)) return;
+      // Not while the viewer is out of sight (the details tab on a phone).
+      if (!scroller.current || scroller.current.getClientRects().length === 0) return;
+      e.preventDefault();
+      go(index + dir);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [paged, go, index]);
+
+  // A swipe across a page that fits turns it, on a touch screen.
+  const swipe = useRef<{ x: number; y: number } | null>(null);
+
   // Highlights per shown page, found on the upright page and then turned.
   const found = useMemo(
     () =>
@@ -271,12 +352,22 @@ export function DocumentViewer({
     [shown, highlights],
   );
 
+  // A focused field on another page brings that page up, once per focus.
+  const brought = useRef<string | null>(null);
+  useEffect(() => {
+    if (!isPaging || !focus || brought.current === focus) return;
+    const at = found.findIndex((rects) => rects.some((r) => r.key === focus));
+    if (at < 0 || !shown[at]) return;
+    brought.current = focus;
+    onCurrentChange?.(shown[at].ref.page);
+  }, [isPaging, focus, found, shown, onCurrentChange]);
+
   // Scroll the focused field into view.
   useEffect(() => {
     if (!focus || !scroller.current) return;
     const el = scroller.current.querySelector<HTMLElement>(`[data-hl="${CSS.escape(focus)}"]`);
     el?.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
-  }, [focus, found, s]);
+  }, [focus, found, s, currentPage]);
 
   const hasText = ready && loaded.pages.some((p) => p.items.length > 0);
   const missing = useMemo(() => {
@@ -286,49 +377,134 @@ export function DocumentViewer({
   }, [found, highlights, hasText]);
 
   const hiddenCount = ready ? Math.max(0, loaded.pages.length - shown.length) : 0;
+  const offset = paging ? index : 0;
+  const here = paging ? shown[index] : undefined;
+
+  const zoomControls = (
+    <div className="payvy-viewer-controls">
+      <div className="payvy-viewer-control-group">
+        <Button
+          label="Zoom out"
+          tooltip="Zoom out"
+          icon={<Icon icon={MinusIcon} />}
+          isIconOnly={!!paging}
+          size="sm"
+          variant="ghost"
+          isDisabled={!ready || s <= ZOOMS[0]!}
+          onClick={() => zoom(-1)}
+        />
+        <span className="payvy-viewer-scale">{ready ? `${Math.round(s * 100)}%` : '—'}</span>
+        <Button
+          label="Zoom in"
+          tooltip="Zoom in"
+          icon={<Icon icon={PlusIcon} />}
+          isIconOnly={!!paging}
+          size="sm"
+          variant="ghost"
+          isDisabled={!ready || s >= ZOOMS[ZOOMS.length - 1]!}
+          onClick={() => zoom(1)}
+        />
+      </div>
+      <div className="payvy-viewer-control-group">
+        {ready && (
+          <Button label="Fit page" size="sm" variant={scale === 'page' ? 'secondary' : 'ghost'} onClick={() => setScale('page')} />
+        )}
+        <Button
+          label="Fit width"
+          size="sm"
+          variant={scale === 'fit' ? 'secondary' : 'ghost'}
+          isDisabled={!ready}
+          onClick={() => setScale('fit')}
+        />
+      </div>
+    </div>
+  );
 
   return (
     <VStack height="100%" gap={0} style={{ minHeight: 0 }}>
-      <div className="payvy-viewer-toolbar">
-        <div className="payvy-viewer-title">
-          <strong>Original document</strong>
-          {ready && (
-            <span>
-              {shown.length} {shown.length === 1 ? 'page' : 'pages'}
+      {paging ? (
+        <div className="payvy-viewer-toolbar" data-paged="">
+          {ready && shown.length > 1 && (
+            <div className="payvy-viewer-nav" role="group" aria-label="Pages of the document">
+              <Button
+                label="Previous page"
+                tooltip="Previous page (← or K)"
+                icon={<Icon icon="chevronLeft" />}
+                isIconOnly
+                size="sm"
+                variant="ghost"
+                isDisabled={index === 0}
+                aria-keyshortcuts="ArrowLeft K"
+                onClick={() => go(index - 1)}
+              />
+              <span className="payvy-viewer-counter" aria-live="polite" aria-atomic="true">
+                Page {index + 1} of {shown.length}
+              </span>
+              <Button
+                label="Next page"
+                tooltip="Next page (→ or J)"
+                icon={<Icon icon="chevronRight" />}
+                isIconOnly
+                size="sm"
+                variant="ghost"
+                isDisabled={index === shown.length - 1}
+                aria-keyshortcuts="ArrowRight J"
+                onClick={() => go(index + 1)}
+              />
+              <span className="payvy-viewer-keys" aria-hidden="true">
+                <Kbd keys="left" />
+                <Kbd keys="right" />
+                <span>or</span>
+                <Kbd keys="j" />
+                <Kbd keys="k" />
+              </span>
+            </div>
+          )}
+          {ready && shown.length <= 1 && (
+            <span className="payvy-viewer-counter">
+              {shown.length === 1 ? '1 page' : 'No pages'}
               {hiddenCount > 0 && ` · ${hiddenCount} hidden`}
             </span>
           )}
+          {here && paging.extra?.(here.ref)}
+          {zoomControls}
         </div>
-        <div className="payvy-viewer-controls">
-          <div className="payvy-viewer-control-group">
-            <Button label="Zoom out" size="sm" variant="ghost" isDisabled={!ready || s <= ZOOMS[0]!} onClick={() => zoom(-1)} />
-            <span className="payvy-viewer-scale">{ready ? `${Math.round(s * 100)}%` : '—'}</span>
-            <Button
-              label="Zoom in"
-              size="sm"
-              variant="ghost"
-              isDisabled={!ready || s >= ZOOMS[ZOOMS.length - 1]!}
-              onClick={() => zoom(1)}
-            />
-          </div>
-          <div className="payvy-viewer-control-group">
+      ) : (
+        <div className="payvy-viewer-toolbar">
+          <div className="payvy-viewer-title">
+            <strong>Original document</strong>
             {ready && (
-              <Button label="Fit page" size="sm" variant={scale === 'page' ? 'secondary' : 'ghost'} onClick={() => setScale('page')} />
+              <span>
+                {shown.length} {shown.length === 1 ? 'page' : 'pages'}
+                {hiddenCount > 0 && ` · ${hiddenCount} hidden`}
+              </span>
             )}
-            <Button
-              label="Fit width"
-              size="sm"
-              variant={scale === 'fit' ? 'secondary' : 'ghost'}
-              isDisabled={!ready}
-              onClick={() => setScale('fit')}
-            />
           </div>
+          {zoomControls}
         </div>
-      </div>
+      )}
       {missing.length > 0 && (
         <div className="payvy-viewer-hint">Not found on the page: {missing.map((m) => m.label).join(', ')}</div>
       )}
-      <div ref={scroller} className="payvy-viewer-canvas">
+      <div
+        ref={scroller}
+        className="payvy-viewer-canvas"
+        data-paged={paging ? '' : undefined}
+        onTouchStart={(e) => {
+          const t = e.touches[0];
+          swipe.current = paged && e.touches.length === 1 && t ? { x: t.clientX, y: t.clientY } : null;
+        }}
+        onTouchEnd={(e) => {
+          const from = swipe.current;
+          swipe.current = null;
+          const t = e.changedTouches[0];
+          const el = scroller.current;
+          if (!from || !t || !el || el.scrollWidth > el.clientWidth + 1) return;
+          const dx = t.clientX - from.x;
+          const dy = t.clientY - from.y;
+          if (Math.abs(dx) > 60 && Math.abs(dx) > 2 * Math.abs(dy)) go(index + (dx < 0 ? 1 : -1));
+        }}
+      >
         {loaded.kind === 'loading' && (
           <div className="payvy-preview-loading">
             <div role="status" className="payvy-loading-message">
@@ -355,14 +531,14 @@ export function DocumentViewer({
         )}
         {ready && (
           <VStack gap={4} hAlign="center">
-            {shown.map((p, i) => (
+            {visible.map((p, i) => (
               <PageView
                 key={p.ref.page}
                 page={p.page}
                 pageNumber={p.ref.page}
                 rotation={p.ref.rotation}
                 scale={s}
-                rects={found[i] ?? []}
+                rects={found[offset + i] ?? []}
                 focus={focus ?? null}
               />
             ))}
@@ -370,6 +546,24 @@ export function DocumentViewer({
         )}
       </div>
     </VStack>
+  );
+}
+
+/** Zoom out. */
+function MinusIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" {...props}>
+      <path d="M5 12h14" />
+    </svg>
+  );
+}
+
+/** Zoom in. */
+function PlusIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" {...props}>
+      <path d="M12 5v14M5 12h14" />
+    </svg>
   );
 }
 

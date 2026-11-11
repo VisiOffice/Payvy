@@ -228,6 +228,21 @@ be the source document's reading; corrections are recorded against it. `bill.cre
   hidden pages left out, with the highlights of what was read turned with their page. The bill
   page shows the arrangement the bill pinned. All of it works at phone width, including inside the
   "Original document" tab.
+- **One page at a time on document review.** The viewer shows one page of the arrangement, fitted
+  to the panel ("Fit page"; Fit width and zoom are still there), with Previous and Next, "Page 3 of
+  22" (announced as it changes), and the keys ← → or J K, shown beside the counter and on the
+  buttons' tooltips. The keys are ignored while typing (any field but a tick box), in a menu, list
+  or radio group, while a dialog is open, and with Ctrl, ⌘, Alt or Shift held. Focusing a form
+  field turns to the page its value was read from. A swipe turns the page on a touch screen when it
+  fits the width. The toolbar has the page's own "Attach page N" tick, so pages can be ticked while
+  flipping through. A one-page document (a photo) has no page controls.
+- **The thumbnails can be hidden** (Show/Hide thumbnails). Hidden, the strip is one row: the page
+  count, "N of M selected", All and None. The choice is kept in the browser (`localStorage`
+  `payvy.review.thumbnails`); until someone chooses, they show for two to six pages and are hidden
+  otherwise. Clicking a thumbnail shows that page; the page shown is outlined.
+- **The header is one row** over the invoice details (back link, title, file name, status), so on
+  a desktop the original starts at the top of the window. The bill page keeps every page in a
+  column.
 
 ## Later steps
 
