@@ -1,9 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
-import { HStack } from '@astryxdesign/core/HStack';
 import { Spinner } from '@astryxdesign/core/Spinner';
-import { Text } from '@astryxdesign/core/Text';
 import { VStack } from '@astryxdesign/core/VStack';
 import { find, type Item, type Rect } from './match';
 
@@ -23,8 +21,9 @@ interface Page {
 }
 
 /** The file through the server (same origin, signed in), as bytes. */
-async function fetchFile(documentId: string): Promise<ArrayBuffer> {
+async function fetchFile(documentId: string, signal: AbortSignal): Promise<ArrayBuffer> {
   const res = await fetch(`/api/documents/${documentId}/file`, {
+    signal,
     credentials: 'same-origin',
     headers: { 'x-payvy-client': 'web' },
   });
@@ -91,15 +90,19 @@ export function DocumentViewer({
   focus?: string | null;
 }) {
   const [loaded, setLoaded] = useState<Loaded>({ kind: 'loading' });
-  const [scale, setScale] = useState<number | 'fit'>('fit');
+  const [scale, setScale] = useState<number | 'fit' | 'page'>('page');
+  const [attempt, setAttempt] = useState(0);
+  const [pageScale, setPageScale] = useState(1);
   const [fitScale, setFitScale] = useState(1);
   const scroller = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let cancelled = false;
     let url: string | null = null;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30_000);
     setLoaded({ kind: 'loading' });
-    fetchFile(documentId)
+    fetchFile(documentId, controller.signal)
       .then(async (data) => {
         if (contentType === 'application/pdf') {
           const pages = await loadPdf(data);
@@ -109,34 +112,42 @@ export function DocumentViewer({
           if (!cancelled) setLoaded({ kind: 'image', url });
         }
       })
-      .catch((e) => !cancelled && setLoaded({ kind: 'error', message: e.message }));
+      .catch((e) => !cancelled && setLoaded({ kind: 'error', message: e.name === 'AbortError' ? 'The original is taking too long to load. Try opening it again.' : e.message }))
+      .finally(() => clearTimeout(timeout));
     return () => {
       cancelled = true;
+      controller.abort();
+      clearTimeout(timeout);
       if (url) URL.revokeObjectURL(url);
     };
-  }, [documentId, contentType]);
+  }, [documentId, contentType, attempt]);
 
   // Fit width follows the panel's width.
   useEffect(() => {
     const el = scroller.current;
     if (!el || loaded.kind !== 'pdf') return;
     const widest = Math.max(...loaded.pages.map((p) => p.width));
-    const update = () => setFitScale(Math.max(0.25, (el.clientWidth - 32) / widest));
+    const update = () => {
+      if (!el.clientWidth || !el.clientHeight) return;
+      const width = Math.max(0.25, (el.clientWidth - 48) / widest);
+      setFitScale(width);
+      setPageScale(Math.max(0.25, Math.min(width, (el.clientHeight - 48) / Math.max(...loaded.pages.map(p => p.height)))));
+    };
     update();
     const ro = new ResizeObserver(update);
     ro.observe(el);
     return () => ro.disconnect();
   }, [loaded]);
 
-  const s = scale === 'fit' ? fitScale : scale;
+  const s = scale === 'fit' ? fitScale : scale === 'page' ? pageScale : scale;
 
   const zoom = useCallback(
     (dir: 1 | -1) => {
-      const current = scale === 'fit' ? fitScale : scale;
+      const current = s;
       const next = dir > 0 ? ZOOMS.find((z) => z > current + 0.01) : [...ZOOMS].reverse().find((z) => z < current - 0.01);
       if (next) setScale(next);
     },
-    [scale, fitScale],
+    [s],
   );
 
   // Ctrl/⌘ + wheel zooms the document, not the page.
@@ -174,31 +185,32 @@ export function DocumentViewer({
   }, [found, highlights, loaded.kind]);
 
   return (
-    <VStack height="100%" gap={0}>
-      <HStack gap={2} vAlign="center" paddingInline={3} paddingBlock={2} style={{ borderBottom: '1px solid var(--color-border)' }}>
-        <Button label="Zoom out" size="sm" variant="ghost" onClick={() => zoom(-1)} />
-        <Text type="supporting" hasTabularNumbers>
-          {Math.round(s * 100)}%
-        </Text>
-        <Button label="Zoom in" size="sm" variant="ghost" onClick={() => zoom(1)} />
-        <Button label="Fit width" size="sm" variant="ghost" onClick={() => setScale('fit')} />
-        {loaded.kind === 'pdf' && missing.length > 0 && (
-          <Text type="supporting" maxLines={1}>
-            Not found on the page: {missing.map((m) => m.label).join(', ')}
-          </Text>
-        )}
-      </HStack>
+    <VStack height="100%" gap={0} style={{ minHeight: 0 }}>
+      <div className="payvy-viewer-toolbar">
+        <div className="payvy-viewer-title"><strong>Original document</strong>{loaded.kind === 'pdf' && <span>{loaded.pages.length} {loaded.pages.length === 1 ? 'page' : 'pages'}</span>}</div>
+        <div className="payvy-viewer-controls">
+          <div className="payvy-viewer-control-group">
+          <Button label="Zoom out" size="sm" variant="ghost" isDisabled={loaded.kind === 'loading' || loaded.kind === 'error' || s <= ZOOMS[0]!} onClick={() => zoom(-1)} />
+          <span className="payvy-viewer-scale">{loaded.kind === 'loading' ? '—' : `${Math.round(s * 100)}%`}</span>
+          <Button label="Zoom in" size="sm" variant="ghost" isDisabled={loaded.kind === 'loading' || loaded.kind === 'error' || s >= ZOOMS[ZOOMS.length - 1]!} onClick={() => zoom(1)} />
+          </div><div className="payvy-viewer-control-group">
+          {loaded.kind === 'pdf' && <Button label="Fit page" size="sm" variant={scale === 'page' ? 'secondary' : 'ghost'} onClick={() => setScale('page')} />}
+          <Button label="Fit width" size="sm" variant={scale === 'fit' ? 'secondary' : 'ghost'} isDisabled={loaded.kind === 'loading' || loaded.kind === 'error'} onClick={() => setScale('fit')} />
+          </div>
+        </div>
+      </div>
+      {loaded.kind === 'pdf' && missing.length > 0 && <div className="payvy-viewer-hint">Not found on the page: {missing.map(m => m.label).join(', ')}</div>}
       <div
         ref={scroller}
-        style={{ flex: 1, overflow: 'auto', background: 'var(--color-background-wash, #1a1a1a)', padding: 16 }}
+        className="payvy-viewer-canvas"
       >
-        {loaded.kind === 'loading' && <Spinner label="Opening the document" />}
-        {loaded.kind === 'error' && <Banner status="error" title={loaded.message} />}
+        {loaded.kind === 'loading' && <div className="payvy-preview-loading"><div role="status" className="payvy-loading-message"><Spinner size="sm" />Opening the original document</div><div className="payvy-paper-placeholder" aria-hidden="true"><span /><span /><span /><hr /><span /><span /></div></div>}
+        {loaded.kind === 'error' && <Banner status="error" title="Couldn’t open the original" description={loaded.message} endContent={<Button label="Retry preview" variant="secondary" onClick={() => setAttempt(n => n + 1)} />} />}
         {loaded.kind === 'image' && (
           <img
             src={loaded.url}
             alt="The document"
-            style={{ width: scale === 'fit' ? '100%' : `${s * 100}%`, display: 'block', margin: '0 auto' }}
+            style={{ width: typeof scale === 'number' ? `${s * 100}%` : '100%', maxHeight: scale === 'page' ? '100%' : undefined, objectFit: 'contain', display: 'block', margin: '0 auto' }}
           />
         )}
         {loaded.kind === 'pdf' && (

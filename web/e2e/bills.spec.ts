@@ -117,9 +117,10 @@ test('a likely duplicate is caught, and entered only on purpose', async ({ page 
   const doc = await inboxDocument('king-environmental-189727.pdf');
 
   await page.goto(`/documents/${doc}`);
-  await expect(page.getByText('Check these before making it a bill')).toBeVisible();
+  await expect(page.getByText('One thing to check', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Create bill' }).click();
   await expect(page.getByText('This looks like a bill you already have')).toBeVisible();
+  await expect(page.getByRole('button', { name: "It's a separate bill" })).toBeInViewport();
   await expect(page).toHaveURL(`/documents/${doc}`);
 
   await page.getByRole('button', { name: "It's a separate bill" }).click();

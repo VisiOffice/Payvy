@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ComponentProps, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps, type ReactNode } from 'react';
 import { useNavigate, useParams } from 'react-router';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
@@ -8,7 +8,8 @@ import { Heading } from '@astryxdesign/core/Heading';
 import { HStack } from '@astryxdesign/core/HStack';
 import { Link } from '@astryxdesign/core/Link';
 import { Selector } from '@astryxdesign/core/Selector';
-import { Spinner } from '@astryxdesign/core/Spinner';
+import { SegmentedControl, SegmentedControlItem } from '@astryxdesign/core/SegmentedControl';
+import { DocumentLoading, readWithin } from '../documents/Loading';
 import { Text } from '@astryxdesign/core/Text';
 import { TextInput } from '@astryxdesign/core/TextInput';
 import { useToast } from '@astryxdesign/core/Toast';
@@ -52,10 +53,12 @@ const CHECK: Record<string, string> = {
   lines_readable: 'Line items',
   lines_add_up: 'Line items add up',
   subtotal_plus_tax: 'Subtotal plus tax is the total',
+  not_a_duplicate: 'Possible duplicate',
 };
 
 /** A check's detail for a person: the server also writes it for agents. */
 function checkDetail(c: { check: string; detail: string }, newVendor: string | undefined): string {
+  if (c.check === 'not_a_duplicate') return 'This vendor already has a bill with this invoice number. Check it before creating another.';
   if (c.check === 'vendor' && newVendor) return `${newVendor} isn't one of your vendors yet. Add it, or choose another.`;
   if (c.check === 'vendor') return c.detail.replace(/; pick one$/, ': choose one.');
   return c.detail;
@@ -106,31 +109,43 @@ export function DocumentReview() {
   const [focus, setFocus] = useState<string | null>(null);
   const [duplicate, setDuplicate] = useState<string | null>(null);
   const [trashing, setTrashing] = useState(false);
+  const [mobileView, setMobileView] = useState('details');
+  const [reading, setReading] = useState(false);
+  const request = useRef(0);
+  const duplicateNotice = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (duplicate) duplicateNotice.current?.focus();
+  }, [duplicate]);
 
   const load = useCallback(async () => {
     if (!id) return;
+    const current = ++request.current;
+    setError(null);
     try {
-      const [d, v] = await Promise.all([
+      const [d, v] = await readWithin(Promise.all([
         run<DocumentDetail>('document.get', { document_id: id }),
         run<{ vendors: Vendor[] }>('vendor.list', {}),
-      ]);
+      ]));
+      if (current !== request.current) return;
       setDetail(d.result);
       setVendors(v.result.vendors);
       setForm(suggested(d.result.extractions[0]));
       setError(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      if (current === request.current) setError(e instanceof Error ? e.message : String(e));
     }
   }, [id]);
   useEffect(() => {
+    setDetail(null);
     void load();
+    return () => { request.current++; };
   }, [load]);
 
   const latest = detail?.extractions[0];
   const highlights = useMemo(() => highlightsOf(latest?.extraction.answer), [latest]);
 
-  if (error) return <Banner status="error" title="Couldn't load this document" description={error} />;
-  if (!detail) return <Spinner label="Loading the document" />;
+  if (error) return <div className="payvy-review-error"><Link href="/documents">← Documents</Link><h1>Review invoice</h1><Banner status="error" title="Couldn't load this document" description={error} /><Button label="Try again" variant="secondary" onClick={() => void load()} /></div>;
+  if (!detail) return <DocumentLoading />;
 
   const doc = detail.document;
   const x = latest?.extraction;
@@ -143,12 +158,13 @@ export function DocumentReview() {
   const set = (patch: Partial<Form>) => setForm((f) => ({ ...f, ...patch }));
 
   async function readAgain() {
+    setReading(true);
     try {
       await run('document.extract', { document_id: doc.id, again: true });
       await load();
     } catch (e) {
       toast({ body: e instanceof Error ? e.message : String(e), type: 'error' });
-    }
+    } finally { setReading(false); }
   }
 
   async function addVendor() {
@@ -195,9 +211,6 @@ export function DocumentReview() {
   // A vendor problem is settled once someone chooses or adds the vendor.
   const open = checks.filter((c) => !c.ok && !(c.check === 'vendor' && form.vendor_id));
   const passed = checks.filter((c) => c.ok);
-  const title = x?.draft?.vendor_name
-    ? `${x.draft.vendor_name}${x.draft.invoice_number ? ` · ${x.draft.invoice_number}` : ''}`
-    : doc.filename;
   const missing = [
     !form.vendor_id && 'choose a vendor',
     !form.invoice_number.trim() && 'enter the invoice number',
@@ -216,17 +229,23 @@ export function DocumentReview() {
         : undefined;
 
   return (
-    <div className="payvy-split">
-      <div className="payvy-split-side">
-        <VStack gap={5} padding={5}>
-          <VStack gap={1}>
-            <Heading level={1}>{title}</Heading>
-            <Text type="supporting" className="payvy-wrap">
-              {title !== doc.filename ? `${doc.filename} · ` : ''}
-              {doc.source === 'email' ? 'emailed' : 'uploaded'} {date(doc.received_at)}
-              {x ? ` · read by ${x.model}` : ''}
-            </Text>
-          </VStack>
+    <div className="payvy-document-review" data-mobile-view={mobileView}>
+      <header className="payvy-review-header">
+        <div><Link href="/documents">← Documents</Link><h1>Review invoice</h1><p className="payvy-review-filename" title={doc.filename}>{doc.filename}</p></div>
+        <span className="payvy-document-status">{doc.status === 'filed' ? 'Filed' : doc.status === 'trashed' ? 'Not a bill' : 'To review'}</span>
+      </header>
+      <div className="payvy-review-tabs"><SegmentedControl label="Document view" value={mobileView} onChange={setMobileView}>
+        <SegmentedControlItem value="details" label="Invoice details" /><SegmentedControlItem value="original" label="Original document" />
+      </SegmentedControl></div>
+      <div className="payvy-review-workspace">
+      <section className="payvy-review-side" aria-label="Invoice details">
+        <div className="payvy-review-body"><VStack gap={5}>
+          <div className="payvy-invoice-summary">
+            <span className="payvy-eyebrow">Invoice details</span>
+            <Heading level={2}>{x?.draft?.vendor_name ?? 'Your invoice'}</Heading>
+            {amountCents !== null && amountCents > 0 && <strong className="payvy-invoice-amount">{money(amountCents)}</strong>}
+            <p>Compare these details with the original before creating a bill.</p>
+          </div>
 
           {doc.status === 'filed' && doc.bill_id && (
             <Banner
@@ -239,7 +258,8 @@ export function DocumentReview() {
             <Banner status="info" title="Set aside: not a bill" description={doc.trashed_reason ?? undefined} />
           )}
 
-          {!x && doc.status === 'inbox' && (
+          {reading && <div role="status" className="payvy-reading-notice">Reading the invoice… Your original stays available while we check the details.</div>}
+          {!x && !reading && doc.status === 'inbox' && (
             <Banner
               status="info"
               title="Not read yet"
@@ -247,7 +267,7 @@ export function DocumentReview() {
               endContent={<Button label="Read it" size="sm" clickAction={readAgain} />}
             />
           )}
-          {x?.status === 'failed' && (
+          {x?.status === 'failed' && !reading && (
             <Banner
               status="error"
               title="Reading it failed"
@@ -258,7 +278,7 @@ export function DocumentReview() {
           {doc.status === 'inbox' && open.length > 0 && (
             <Banner
               status="warning"
-              title="Check these before making it a bill"
+              title={open.length === 1 ? "One thing to check" : `${open.length} things to check`}
               description={
                 <ul className="payvy-issues">
                   {open.map((c) => (
@@ -300,7 +320,7 @@ export function DocumentReview() {
                   onChange={(v) => set({ invoice_number: v })}
                 />
               </Field>
-              <HStack gap={3} wrap="wrap">
+              <div className="payvy-review-dates">
                 <Field focusKey="invoice_date" onFocus={setFocus}>
                   <DateInput
                     label="Invoice date"
@@ -318,7 +338,7 @@ export function DocumentReview() {
                     onChange={(v) => set({ due_date: v ?? '' })}
                   />
                 </Field>
-              </HStack>
+              </div>
               {!form.due_date && (
                 <Text type="supporting">No due date: the vendor's payment terms decide it.</Text>
               )}
@@ -363,22 +383,17 @@ export function DocumentReview() {
               )}
 
               {duplicate && (
+                <div ref={duplicateNotice} tabIndex={-1} role="alert">
                 <Banner
                   status="warning"
                   title="This looks like a bill you already have"
-                  description={duplicate}
+                  description="This vendor already has a bill with this invoice number. Only continue if these are separate invoices."
                   endContent={<Button label="It's a separate bill" size="sm" clickAction={() => create(true)} />}
                 />
+                </div>
               )}
 
-              <VStack gap={2}>
-                <HStack gap={2} wrap="wrap">
-                  <Button label="Create bill" variant="primary" isDisabled={!canCreate} clickAction={() => create()} />
-                  {x && <Button label="Read again" variant="ghost" clickAction={readAgain} />}
-                  <Button label="Not a bill" variant="ghost" onClick={() => setTrashing(true)} />
-                </HStack>
-                {missing.length > 0 && <Text type="supporting">To create the bill, {missing.join(' and ')}.</Text>}
-              </VStack>
+
             </VStack>
           )}
 
@@ -401,10 +416,16 @@ export function DocumentReview() {
               </ul>
             </Collapsible>
           )}
-        </VStack>
-      </div>
-      <div className="payvy-split-doc">
+          <details className="payvy-document-provenance"><summary>Document information</summary><p>{doc.source === 'email' ? 'Emailed' : 'Uploaded'} {date(doc.received_at)}</p>{x && <p>Read by {x.model}</p>}</details>
+        </VStack></div>
+        {doc.status === 'inbox' && <footer className="payvy-review-actions">
+          <div className="payvy-review-primary"><div><strong>{!canCreate ? 'Complete the details' : open.length ? 'Review the checks above' : 'Ready for your review'}</strong><p>{missing.length ? `To create the bill, ${missing.join(' and ')}.` : 'The bill will follow your workflow.'}</p></div><Button label="Create bill" variant="primary" isDisabled={!canCreate || reading} clickAction={() => create()} /></div>
+          <div className="payvy-review-secondary">{x && <Button label="Read again" variant="ghost" size="sm" isDisabled={reading} clickAction={readAgain} />}<Button label="Not a bill" variant="ghost" size="sm" isDisabled={reading} onClick={() => setTrashing(true)} /></div>
+        </footer>}
+      </section>
+      <section className="payvy-review-original" aria-label="Original document">
         <DocumentViewer documentId={doc.id} contentType={doc.content_type} highlights={highlights} focus={focus} />
+      </section>
       </div>
 
       {trashing && (

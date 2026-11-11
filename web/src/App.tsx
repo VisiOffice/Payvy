@@ -9,6 +9,7 @@ import { SignIn } from './pages/SignIn';
 import { Bills } from './pages/Bills';
 import { Inbox } from './pages/Inbox';
 import { Documents } from './pages/Documents';
+import { DocumentLoading } from './documents/Loading';
 import { Vendors } from './pages/Vendors';
 
 // The bill page brings pdf.js; load it only when a bill is opened.
@@ -93,8 +94,8 @@ export function App() {
           <Route
             path="/documents/:id"
             element={
-              <Suspense fallback={<Spinner label="Loading" />}>
-                <DocumentReview />
+              <Suspense fallback={<DocumentLoading />}>
+                <DocumentReview key={location.pathname} />
               </Suspense>
             }
           />
