@@ -3,6 +3,7 @@
 // preview and one-use confirmation, rejection, and setting documents aside.
 import { expect, test, type Page } from '@playwright/test';
 import { agent, bill, inboxDocument, vendor } from './api';
+import { pdf } from './pdf';
 
 /** The innermost element holding both the text and the button: one card. */
 function card(page: Page, text: string, button: string) {
@@ -130,20 +131,27 @@ test('a copy the vendor sent again stacks on the bill it belongs to', async ({ p
   await page.getByRole('button', { name: 'Create bill' }).click();
   await expect(page).toHaveURL(`/bills/${existing}`);
   await expect(page.getByText('Revised invoice received')).toBeVisible();
-  await expect(page.getByText('Received 2 times')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Received 2 times' })).toBeVisible();
 });
 
 test('a copy entered on purpose as a separate bill makes its own bill', async ({ page }) => {
-  const mesa = await vendor('Mesa Electric Supply Co.');
-  const existing = await bill({ vendor_id: mesa, invoice_number: '30117', invoice_date: '2026-10-30', amount_cents: 34_163 });
-  const doc = await inboxDocument('mesa-electric-30117.pdf');
+  const saguaro = await vendor('Saguaro Glass & Mirror');
+  const existing = await bill({ vendor_id: saguaro, invoice_number: 'SG-4120', invoice_date: '2026-10-30', amount_cents: 51_200 });
+  // A file of its own: the server refuses the same file twice.
+  const doc = (
+    await agent<{ id: string }>('document.upload', {
+      filename: 'saguaro-sg-4120.pdf',
+      content_base64: pdf(['Saguaro Glass & Mirror', 'Invoice SG-4120', 'Date 2026-11-04', 'Total 512.00']).toString('base64'),
+    })
+  ).id;
+  await agent('document.extract', { document_id: doc });
 
   await page.goto(`/documents/${doc}`);
   await expect(page.getByText('Create bill will stack this copy on an existing bill')).toBeVisible();
   await page.getByRole('button', { name: "It's a separate bill" }).click();
   await expect(page).toHaveURL(/\/bills\/[0-9a-f-]{36}$/);
   expect(page.url().endsWith(existing)).toBe(false);
-  await expect(page.getByRole('heading', { name: 'Mesa Electric Supply Co.' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Saguaro Glass & Mirror' })).toBeVisible();
 });
 
 test('a statement is set aside as not a bill', async ({ page }) => {

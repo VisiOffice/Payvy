@@ -517,6 +517,8 @@ pub struct List {
     state: Option<State>,
     status: Option<String>,
     vendor_id: Option<Uuid>,
+    /// Compared by invoice key, as duplicate detection does.
+    invoice_number: Option<String>,
     #[serde(default)]
     mine: bool,
     limit: Option<usize>,
@@ -560,7 +562,9 @@ pub async fn list(cx: &mut Cx<'_>, input: List) -> Result<Value, CommandError> {
     // them. Fine at small-business volumes; revisit with an index on a
     // cached status if a customer has many thousands open.
     let fetch = if derived_filter { 5_000 } else { limit as i64 };
-    let bills = store::list_bills(&mut cx.tx, state, input.vendor_id, fetch).await?;
+    let key = input.invoice_number.as_deref().map(rules::invoice_key);
+    let bills =
+        store::list_bills(&mut cx.tx, state, input.vendor_id, key.as_deref(), fetch).await?;
 
     let wf_ids: Vec<Uuid> = bills.iter().filter_map(|b| b.workflow_id).collect();
     let workflows: HashMap<Uuid, Workflow> = store::workflows_by_id(&mut cx.tx, &wf_ids)

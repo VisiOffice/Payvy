@@ -77,7 +77,7 @@ const CHECK: Record<string, string> = {
 
 /** A check's detail for a person: the server also writes it for agents. */
 function checkDetail(c: { check: string; detail: string }, newVendor: string | undefined): string {
-  if (c.check === 'not_a_duplicate') return 'This vendor already has a bill with this invoice number. Create bill will stack this copy on it, as the notice above the form explains.';
+  if (c.check === 'not_a_duplicate') return 'This vendor already has a bill with this invoice number. Create bill will stack this copy on it, as the notice beside Create bill explains.';
   if (c.check === 'vendor' && newVendor) return `${newVendor} isn't one of your vendors yet. Add it, or choose another.`;
   if (c.check === 'vendor') return c.detail.replace(/; pick one$/, ': choose one.');
   return c.detail;
@@ -155,34 +155,6 @@ const FEW_PAGES = 6;
 /** "Invoice 85273", or its place when no number was read. */
 const invoiceName = (g: SuggestedInvoice, i: number) => (g.invoice_number ? `Invoice ${g.invoice_number}` : `Invoice ${i + 1}`);
 
-/**
- * The key two invoice numbers are compared by, mirrored from
- * payvy_domain::bills::invoice_key: case, spacing, punctuation and leading
- * zeros don't make a different invoice. The server decides for real.
- */
-function invoiceKey(number: string): string {
-  let out = '';
-  let runStart = true;
-  let droppedZero = false;
-  for (const c of number) {
-    if (!/[A-Za-z0-9]/.test(c)) {
-      runStart = true;
-      continue;
-    }
-    if (c >= '0' && c <= '9') {
-      if (runStart && c === '0') {
-        droppedZero = true;
-        continue;
-      }
-      runStart = false;
-    } else {
-      runStart = true;
-    }
-    out += c.toUpperCase();
-  }
-  return out === '' && droppedZero ? '0' : out;
-}
-
 interface ListedBill {
   bill: { id: string; invoice_number: string; amount_cents: number; state: string };
 }
@@ -222,25 +194,28 @@ export function DocumentReview() {
   // the vendor's bills whenever the vendor or number changes. The server
   // makes the same comparison again when the bill is created.
   useEffect(() => {
-    const key = invoiceKey(form.invoice_number);
-    if (!form.vendor_id || !key) {
+    const number = form.invoice_number.trim();
+    if (!form.vendor_id || !number) {
       setExistingBill(null);
       return;
     }
     let active = true;
-    run<{ bills: ListedBill[] }>('bill.list', { vendor_id: form.vendor_id, limit: 200 })
-      .then((r) => {
-        if (!active) return;
-        const found = r.result.bills.find(
-          (b) => b.bill.state !== 'void' && invoiceKey(b.bill.invoice_number) === key,
-        );
-        setExistingBill(found ? { id: found.bill.id, amount_cents: found.bill.amount_cents } : null);
-      })
-      .catch(() => {
-        if (active) setExistingBill(null);
-      });
+    // The server compares numbers the way duplicate detection does, so this
+    // finds the bill however old it is and however the number is written.
+    const timer = setTimeout(() => {
+      run<{ bills: ListedBill[] }>('bill.list', { vendor_id: form.vendor_id, invoice_number: number })
+        .then((r) => {
+          if (!active) return;
+          const found = r.result.bills.find((b) => b.bill.state !== 'void');
+          setExistingBill(found ? { id: found.bill.id, amount_cents: found.bill.amount_cents } : null);
+        })
+        .catch(() => {
+          if (active) setExistingBill(null);
+        });
+    }, 250);
     return () => {
       active = false;
+      clearTimeout(timer);
     };
   }, [form.vendor_id, form.invoice_number]);
 
@@ -797,23 +772,6 @@ export function DocumentReview() {
                 </Text>
               )}
 
-              {existingBill && amountCents && (
-                <Banner
-                  status="warning"
-                  title="Create bill will stack this copy on an existing bill"
-                  description={
-                    amountCents === existingBill.amount_cents
-                      ? `Same invoice number and amount (${money(amountCents)}): a resend. It will be recorded on that bill, never payable twice.`
-                      : `That bill carries ${money(existingBill.amount_cents)}; this copy carries ${money(amountCents)}: a revision. That bill can't be paid until a person accepts or rejects the revision.`
-                  }
-                  endContent={
-                    <HStack gap={2}>
-                      <Link href={`/bills/${existingBill.id}`}>Open that bill</Link>
-                      <Button label="It's a separate bill" size="sm" clickAction={() => create(true)} />
-                    </HStack>
-                  }
-                />
-              )}
 
 
             </VStack></fieldset>
@@ -862,6 +820,24 @@ export function DocumentReview() {
           <details className="payvy-document-provenance"><summary>Document information</summary><p>{doc.source === 'email' ? 'Emailed' : 'Uploaded'} {date(doc.received_at)}</p>{x && <p>Read by {x.model}</p>}</details>
         </VStack></div>
         {doc.status === 'inbox' && can('bill.create') && <footer className="payvy-review-actions">
+          {/* Beside Create bill, so it is read before the button is pressed. */}
+          {existingBill && amountCents !== null && (
+            <div className="payvy-stack-notice"><Banner
+              status="warning"
+              title="Create bill will stack this copy on an existing bill"
+              description={
+                amountCents === existingBill.amount_cents
+                  ? `Same invoice number and amount (${money(amountCents)}): a resend. It will be recorded on that bill, never payable twice.`
+                  : `That bill carries ${money(existingBill.amount_cents)}; this copy carries ${money(amountCents)}: a revision. That bill can't be paid until a person accepts or rejects the revision.`
+              }
+              endContent={
+                <HStack gap={2}>
+                  <Link href={`/bills/${existingBill.id}`}>Open that bill</Link>
+                  <Button label="It's a separate bill" size="sm" clickAction={() => create(true)} />
+                </HStack>
+              }
+            /></div>
+          )}
           <div className="payvy-review-primary"><div><strong>{!canCreate ? activeReview ? 'Save and resolve the invoice review' : 'Complete the details' : open.length ? 'Review the checks above' : 'Ready for your review'}</strong><p>{missing.length
                   ? `To create the bill, ${missing.join(' and ')}.`
                   : visible.length > 1 && picked.length === 0

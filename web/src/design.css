@@ -220,6 +220,7 @@ body { -webkit-font-smoothing: antialiased; }
 .payvy-review-dates { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .payvy-review-actions { padding: 18px 24px 12px; flex-shrink: 0; border-top: 1px solid var(--color-border); background: var(--color-background-card); }
 .payvy-review-primary { display: grid; gap: 12px; }
+.payvy-stack-notice { margin-bottom: 12px; }
 .payvy-review-primary strong { font-size: 12px; font-weight: 600; }
 .payvy-review-primary p { font-size: 11px; color: var(--color-text-secondary); margin-top: 4px; line-height: 1.5; }
 .payvy-review-secondary { display: flex; justify-content: center; gap: 12px; margin-top: 8px; }

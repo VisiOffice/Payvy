@@ -273,11 +273,11 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "bill.list",
-        summary: "List bills, newest first. Filter by state (open, rejected, void, paid), by where open bills stand (status: awaiting_approval, held, waiting_for, awaiting_release, ready_to_pay, released), by vendor, or to bills waiting on you (mine). Each bill says received_count (how many copies of its invoice arrived) and pending_revision_amount_cents when a revised copy awaits a decision.",
+        summary: "List bills, newest first. Filter by state (open, rejected, void, paid), by where open bills stand (status: awaiting_approval, held, waiting_for, awaiting_release, ready_to_pay, released), by vendor, by invoice_number (compared the way duplicates are: ignoring case, spaces, punctuation and leading zeros), or to bills waiting on you (mine). Each bill says received_count (how many copies of its invoice arrived) and pending_revision_amount_cents when a revised copy awaits a decision.",
         tier: RiskTier::Read,
         person_only: false,
         permission: Permission::Read,
-        input_schema: r#"{"type":"object","properties":{"state":{"type":"string","enum":["open","rejected","void","paid"]},"status":{"type":"string","enum":["awaiting_approval","held","waiting_for","awaiting_release","ready_to_pay","released"]},"vendor_id":{"type":"string","format":"uuid"},"mine":{"type":"boolean","description":"Only bills a step is waiting on you for"},"limit":{"type":"integer","minimum":1,"maximum":500}}}"#,
+        input_schema: r#"{"type":"object","properties":{"state":{"type":"string","enum":["open","rejected","void","paid"]},"status":{"type":"string","enum":["awaiting_approval","held","waiting_for","awaiting_release","ready_to_pay","released"]},"vendor_id":{"type":"string","format":"uuid"},"invoice_number":{"type":"string","description":"Bills with this invoice number, compared the way duplicates are"},"mine":{"type":"boolean","description":"Only bills a step is waiting on you for"},"limit":{"type":"integer","minimum":1,"maximum":500}}}"#,
     },
     CommandSpec {
         name: "bill.get",

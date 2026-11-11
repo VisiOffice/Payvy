@@ -16,8 +16,10 @@ test('a resent invoice stacks, a revision is flagged, and a person accepts it', 
 
   // The list marks what arrived, at a glance.
   await page.goto('/bills');
-  await expect(page.getByText('Sent 3×')).toBeVisible();
-  await expect(page.getByText('Revised', { exact: true })).toBeVisible();
+  // Other tests stack copies too, so look at this bill's row.
+  const row = page.getByRole('row').filter({ hasText: 'R260405861' });
+  await expect(row.getByText('Sent 3×')).toBeVisible();
+  await expect(row.getByText('Revised', { exact: true })).toBeVisible();
 
   // The bill shows both amounts and waits for a person's decision.
   await page.goto(`/bills/${id}`);
