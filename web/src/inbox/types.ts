@@ -18,6 +18,10 @@ export interface BillItem {
   progress: { status: string; waiting_on?: string[]; by?: string[]; reason?: string } | null;
   /** While it waits for approval: whether you can give it, and who else can. */
   approval?: ApprovalTurn;
+  /** How many copies of this invoice have arrived (2+ shows “Sent N×”). */
+  received_count?: number;
+  /** A revised copy's amount while it awaits a person's decision. */
+  pending_revision_amount_cents?: number | null;
   /** look: waiting on someone other than you. */
   action: 'approve' | 'release' | 'look';
 }

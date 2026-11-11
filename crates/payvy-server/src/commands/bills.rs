@@ -188,6 +188,16 @@ async fn detail(cx: &mut Cx<'_>, bill_id: Uuid) -> Result<Value, CommandError> {
         None => None,
     };
     let payments = store::bill_payments(&mut cx.tx, bill.id).await?;
+    let arrivals = store::bill_arrivals::list_arrivals(&mut cx.tx, bill.id).await?;
+    let pending_revision = arrivals
+        .iter()
+        .rev()
+        .find(|a| a.decision == "pending")
+        .map(|a| {
+            json!({ "arrival_id": a.id, "amount_cents": a.amount_cents,
+                    "current_amount_cents": bill.amount_cents,
+                    "received_at": a.received_at, "received_by": a.received_by })
+        });
     let invoice_review = store::bill_invoice_review(&mut cx.tx, bill.id).await?;
     // Versions keep this notice true even if pages were later restored to the
     // same order. The original review and posted lines are never rewritten.
@@ -197,7 +207,11 @@ async fn detail(cx: &mut Cx<'_>, bill_id: Uuid) -> Result<Value, CommandError> {
             .and_then(|a| a["version"].as_i64())
             .is_some_and(|version| version != i64::from(r.arrangement_version))
     });
+    let received_count = arrivals.len();
     Ok(json!({
+        "arrivals": arrivals,
+        "received_count": received_count,
+        "pending_revision": pending_revision,
         "payments": payments,
         "invoice_review": invoice_review,
         "invoice_review_pages_changed": invoice_review_pages_changed,
@@ -381,11 +395,17 @@ pub async fn create(cx: &mut Cx<'_>, mut input: Create) -> Result<Value, Command
     let id = match store::insert_bill(&mut cx.tx, cx.org, &new, input.allow_duplicate).await? {
         InsertBill::Inserted(id) => id,
         InsertBill::Duplicate(existing) => {
-            return Err(CommandError::Conflict(format!(
-                "possible duplicate: bill {existing} from {} already has invoice number {invoice_number}. \
-                 Pass allow_duplicate if this really is a separate bill.",
-                vendor.name
-            )));
+            return stack_arrival(
+                cx,
+                existing,
+                input.amount_cents,
+                &input.lines,
+                input.extraction_id,
+                &invoice_number,
+                document_id,
+                corrected,
+            )
+            .await;
         }
         InsertBill::ExternalRefTaken(existing) => {
             return Err(CommandError::Conflict(format!(
@@ -409,7 +429,84 @@ pub async fn create(cx: &mut Cx<'_>, mut input: Create) -> Result<Value, Command
     if let Some(doc) = document_id {
         documents::file_with_bill(cx, doc, id).await?;
     }
+    store::bill_arrivals::insert_arrival(
+        &mut cx.tx,
+        cx.org,
+        id,
+        document_id,
+        input.amount_cents,
+        &invoice_number,
+        &input.lines,
+        &cx.actor.name,
+        cx.now,
+        "none",
+    )
+    .await?;
     detail(cx, id).await
+}
+
+/// A copy of an invoice that is already a bill: it stacks on that bill
+/// instead of becoming a second payable one. Same amount is a resend
+/// (recorded, nothing changes); a different amount on an open bill is a
+/// revision a person must accept or reject before the bill can be paid.
+/// `allow_duplicate` never reaches here: it makes a separate bill, as
+/// before, and that choice stays on its `bill.created` event.
+#[allow(clippy::too_many_arguments)]
+async fn stack_arrival(
+    cx: &mut Cx<'_>,
+    existing: Uuid,
+    amount_cents: i64,
+    lines: &[Line],
+    extraction_id: Option<Uuid>,
+    invoice_number: &str,
+    document_id: Option<Uuid>,
+    corrected: Option<Vec<String>>,
+) -> Result<Value, CommandError> {
+    // Locks the bill, so two copies arriving at once stack in order.
+    let bill = store::get_bill(&mut cx.tx, existing)
+        .await?
+        .ok_or(CommandError::NotFound("bill"))?;
+    let kind = rules::arrival_kind(bill.amount_cents, amount_cents);
+    let revised = kind == rules::ArrivalKind::Revision;
+    let pending = revised && bill.state == State::Open;
+    if pending {
+        store::bill_arrivals::supersede_pending(&mut cx.tx, bill.id, cx.now).await?;
+    }
+    if let Some(doc) = document_id {
+        documents::file_with_bill(cx, doc, bill.id).await?;
+    }
+    let arrival_id = store::bill_arrivals::insert_arrival(
+        &mut cx.tx,
+        cx.org,
+        bill.id,
+        document_id,
+        amount_cents,
+        invoice_number,
+        lines,
+        &cx.actor.name,
+        cx.now,
+        if pending { "pending" } else { "none" },
+    )
+    .await?;
+    let received_count = store::bill_arrivals::list_arrivals(&mut cx.tx, bill.id)
+        .await?
+        .len();
+    cx.emit(
+        "bill.invoice_received",
+        bill.id,
+        json!({ "bill_id": bill.id, "invoice_number": invoice_number,
+                "received_count": received_count, "arrival_id": arrival_id,
+                "amount_cents": amount_cents,
+                "current_amount_cents": bill.amount_cents,
+                "kind": if revised { "revision" } else { "resend" },
+                "pending": pending, "document_id": document_id,
+                "extraction_id": extraction_id, "corrected": corrected }),
+    )
+    .await?;
+    let mut out = detail(cx, bill.id).await?;
+    out["arrival"] = json!({ "received_count": received_count,
+        "kind": if revised { "revision" } else { "resend" }, "pending": pending });
+    Ok(out)
 }
 
 // ── Read ────────────────────────────────────────────────────────────────────
@@ -478,6 +575,13 @@ pub async fn list(cx: &mut Cx<'_>, input: List) -> Result<Value, CommandError> {
     let (approvals, signals) = store::facts(&mut cx.tx, &open_ids).await?;
     let limits = store::auto_pay_limits(&mut cx.tx).await?;
     let d = duties(cx, &open_ids).await?;
+    let all_ids: Vec<Uuid> = bills.iter().map(|b| b.id).collect();
+    let arrivals: HashMap<Uuid, (i64, Option<i64>)> =
+        store::bill_arrivals::arrival_summaries(&mut cx.tx, &all_ids)
+            .await?
+            .into_iter()
+            .map(|(id, count, pending)| (id, (count, pending)))
+            .collect();
     let builtin = Workflow::builtin_default();
 
     let mut out = Vec::new();
@@ -550,8 +654,13 @@ pub async fn list(cx: &mut Cx<'_>, input: List) -> Result<Value, CommandError> {
             && progress
                 .as_ref()
                 .is_some_and(|p| can_release(cx, &p.status));
+        let (received_count, pending_amount) = arrivals
+            .get(&bill.id)
+            .map_or((1, None), |(count, pending)| (*count, *pending));
         let mut item = json!({ "bill": bill, "progress": progress.map(|p| p.status),
-            "can_release": releaseable, "overridden_by": overridden_by });
+            "can_release": releaseable, "overridden_by": overridden_by,
+            "received_count": received_count,
+            "pending_revision_amount_cents": pending_amount });
         if let Some(t) = approval {
             item["approval"] = json!(t);
         }
@@ -571,6 +680,124 @@ pub struct Get {
 
 pub async fn get(cx: &mut Cx<'_>, input: Get) -> Result<Value, CommandError> {
     detail(cx, input.bill_id).await
+}
+
+// ── Revised invoices ────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RevisionDecision {
+    bill_id: Uuid,
+}
+
+/// The revision a person still has to decide for this bill, if any.
+async fn pending_revision(
+    cx: &mut Cx<'_>,
+    bill_id: Uuid,
+) -> Result<Option<store::bill_arrivals::Arrival>, CommandError> {
+    Ok(store::bill_arrivals::pending_revision(&mut cx.tx, bill_id).await?)
+}
+
+/// An undecided revision stops payment: the amount that would leave is
+/// exactly what is in dispute. (mark_paid only warns, like a PO exception:
+/// it records a payment that already happened.)
+async fn ensure_no_pending_revision(cx: &mut Cx<'_>, bill: &Bill) -> Result<(), CommandError> {
+    if let Some(a) = pending_revision(cx, bill.id).await? {
+        return Err(CommandError::Conflict(format!(
+            "invoice {} was revised to {} and the bill still carries {}; \
+             accept or reject the revision (bill.revision_accept / bill.revision_reject) before paying",
+            bill.invoice_number,
+            workflow::dollars(a.amount_cents),
+            workflow::dollars(bill.amount_cents)
+        )));
+    }
+    Ok(())
+}
+
+async fn decide_revision(
+    cx: &mut Cx<'_>,
+    bill_id: Uuid,
+    accept: bool,
+) -> Result<Value, CommandError> {
+    let (bill, _, _) = open_bill(cx, bill_id).await?;
+    let arrival = pending_revision(cx, bill.id).await?.ok_or_else(|| {
+        CommandError::Conflict("no revised invoice is waiting for a decision".into())
+    })?;
+    if accept {
+        // Q8: allocations may not exceed the bill, wherever its amount
+        // changes. An override voids itself on a changed amount (its
+        // fingerprint no longer matches); allocations are reversed by an
+        // explicit record, never silently, so acceptance waits for that.
+        let allocated: i64 = store::purchase_orders::allocations_for_bill(&mut cx.tx, bill.id)
+            .await?
+            .iter()
+            .map(|a| a.amount_cents)
+            .sum();
+        if allocated > arrival.amount_cents {
+            return Err(CommandError::Conflict(format!(
+                "{} is allocated to purchase orders, over the revised amount {}; \
+                 reverse the excess first (po.allocation_reverse), then accept the revision",
+                workflow::dollars(allocated),
+                workflow::dollars(arrival.amount_cents)
+            )));
+        }
+        store::bill_arrivals::set_bill_amount(
+            &mut cx.tx,
+            cx.org,
+            bill.id,
+            arrival.amount_cents,
+            &arrival.lines,
+        )
+        .await?;
+        store::bill_arrivals::decide_arrival(
+            &mut cx.tx,
+            arrival.id,
+            "accepted",
+            &cx.actor.name,
+            cx.now,
+        )
+        .await?;
+        cx.emit(
+            "bill.revision_accepted",
+            bill.id,
+            json!({ "bill_id": bill.id, "arrival_id": arrival.id,
+                    "old_amount_cents": bill.amount_cents,
+                    "new_amount_cents": arrival.amount_cents }),
+        )
+        .await?;
+    } else {
+        store::bill_arrivals::decide_arrival(
+            &mut cx.tx,
+            arrival.id,
+            "rejected",
+            &cx.actor.name,
+            cx.now,
+        )
+        .await?;
+        cx.emit(
+            "bill.revision_rejected",
+            bill.id,
+            json!({ "bill_id": bill.id, "arrival_id": arrival.id,
+                    "rejected_amount_cents": arrival.amount_cents,
+                    "amount_cents": bill.amount_cents }),
+        )
+        .await?;
+    }
+    detail(cx, bill.id).await
+}
+
+pub async fn revision_accept(
+    cx: &mut Cx<'_>,
+    input: RevisionDecision,
+) -> Result<Value, CommandError> {
+    decide_revision(cx, input.bill_id, true).await
+}
+
+pub async fn revision_reject(
+    cx: &mut Cx<'_>,
+    input: RevisionDecision,
+) -> Result<Value, CommandError> {
+    decide_revision(cx, input.bill_id, false).await
 }
 
 // ── Workflow facts ──────────────────────────────────────────────────────────
@@ -726,6 +953,7 @@ pub async fn release(cx: &mut Cx<'_>, input: Release) -> Result<Value, CommandEr
             )));
         }
     }
+    ensure_no_pending_revision(cx, &bill).await?;
     super::purchase_orders::ensure_payable(cx, &bill).await?;
     super::purchase_orders::ensure_not_overrider(cx, &bill).await?;
     // With a paying bank connected, a release pays through it, to the payee a
@@ -808,6 +1036,7 @@ pub async fn auto_pay(cx: &mut Cx<'_>, input: AutoPay) -> Result<Value, CommandE
     }
     // Checked here as well as at sending, so a preview says it too.
     payments::within_auto_pay_limit(cx, &bill).await?;
+    ensure_no_pending_revision(cx, &bill).await?;
     super::purchase_orders::ensure_payable(cx, &bill).await?;
     let c = store::live_paying_connection(&mut cx.tx)
         .await?
@@ -895,6 +1124,13 @@ pub async fn mark_paid(cx: &mut Cx<'_>, input: MarkPaid) -> Result<Value, Comman
     let po_warning = super::purchase_orders::bill_exception(cx, &bill)
         .await?
         .map(|e| format!("paid while a PO exception stood: {} ({})", e.kind, e.detail));
+    let revision_warning = pending_revision(cx, bill.id).await?.map(|a| {
+        format!(
+            "paid while a revised invoice ({}) was undecided; the bill carries {}",
+            workflow::dollars(a.amount_cents),
+            workflow::dollars(bill.amount_cents)
+        )
+    });
     store::mark_paid(
         &mut cx.tx,
         bill.id,
@@ -912,6 +1148,7 @@ pub async fn mark_paid(cx: &mut Cx<'_>, input: MarkPaid) -> Result<Value, Comman
     .await?;
     let mut out = detail(cx, bill.id).await?;
     out["po_warning"] = json!(po_warning);
+    out["revision_warning"] = json!(revision_warning);
     Ok(out)
 }
 

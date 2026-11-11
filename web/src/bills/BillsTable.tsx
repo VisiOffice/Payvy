@@ -16,6 +16,8 @@ interface BillRow extends Record<string, unknown> {
   amount: string;
   /** awaiting_release, paid, … */
   status: string;
+  sent: string | null;
+  revised: boolean;
 }
 
 export interface Listed {
@@ -28,6 +30,10 @@ export interface Listed {
     state: string;
   };
   progress: unknown;
+  /** How many copies of this invoice have arrived (2+ shows “Sent N×”). */
+  received_count?: number;
+  /** A revised copy's amount while it awaits a person's decision. */
+  pending_revision_amount_cents?: number | null;
 }
 
 /** Open bills' progress is a status object, closed ones have none. */
@@ -40,7 +46,17 @@ export function statusOf(l: Listed): string {
 
 const COLUMNS: TableColumn<BillRow>[] = [
   { key: 'vendor', header: 'Vendor', renderCell: (row) => <Link href={`/bills/${row.id}`}>{row.vendor}</Link> },
-  { key: 'invoice', header: 'Invoice', renderCell: (row) => <Link href={`/bills/${row.id}`}>{row.invoice}</Link> },
+  {
+    key: 'invoice',
+    header: 'Invoice',
+    renderCell: (row) => (
+      <>
+        <Link href={`/bills/${row.id}`}>{row.invoice}</Link>
+        {row.sent && <> <Badge label={row.sent} variant="info" /></>}
+        {row.revised && <> <Badge label="Revised" variant="warning" /></>}
+      </>
+    ),
+  },
   {
     key: 'due',
     header: 'Due',
@@ -88,13 +104,13 @@ export function rows(bills: Listed[]): BillRow[] {
     dueIso: l.bill.due_date,
     amount: money(l.bill.amount_cents),
     status: statusOf(l),
+    sent: l.received_count && l.received_count > 1 ? `Sent ${l.received_count}×` : null,
+    revised: l.pending_revision_amount_cents != null,
   }));
 }
 
 /** Without `showVendor` (on a vendor's own page) the invoice number links to the bill. */
 export function BillsTable({ bills, showVendor = true }: { bills: Listed[]; showVendor?: boolean }) {
-  const columns = showVendor
-    ? COLUMNS.map((c) => (c.key === 'invoice' ? { key: c.key, header: c.header } : c))
-    : COLUMNS.filter((c) => c.key !== 'vendor');
+  const columns = showVendor ? COLUMNS : COLUMNS.filter((c) => c.key !== 'vendor');
   return <div className="payvy-table"><Table data={rows(bills)} columns={columns} idKey="id" hasHover /></div>;
 }

@@ -479,6 +479,14 @@ export interface BillGetInput {
   bill_id: string;
 }
 
+export interface BillRevisionAcceptInput {
+  bill_id: string;
+}
+
+export interface BillRevisionRejectInput {
+  bill_id: string;
+}
+
 export interface BillApproveInput {
   bill_id: string;
   note?: string;
@@ -1006,6 +1014,8 @@ export interface CommandInputs {
   "bill.create": BillCreateInput;
   "bill.list": BillListInput;
   "bill.get": BillGetInput;
+  "bill.revision_accept": BillRevisionAcceptInput;
+  "bill.revision_reject": BillRevisionRejectInput;
   "bill.approve": BillApproveInput;
   "bill.reject": BillRejectInput;
   "bill.signal": BillSignalInput;
@@ -1104,9 +1114,11 @@ export const COMMANDS: Record<CommandName, { tier: Tier; personOnly: boolean; su
   "workflow.propose": { tier: "routine", personOnly: false, summary: "Propose a workflow for a vendor, or without vendor_id for the organization default. Nothing changes until a person accepts it with workflow.accept. Steps run in order and the last is the only pay step. Bills already received keep the workflow they arrived under." },
   "workflow.accept": { tier: "routine", personOnly: true, summary: "Accept a workflow proposal. It applies to bills received from now on." },
   "workflow.decline": { tier: "routine", personOnly: true, summary: "Decline a workflow proposal." },
-  "bill.create": { tier: "routine", personOnly: false, summary: "Enter a bill, optionally from an inbox document, or from some of its pages (pages): those are split into a new document filed with the bill, atomically, and the rest stays in the inbox. It follows the vendor's current workflow from now on. Refused if this vendor already has a bill with the same invoice number (ignoring case, spaces, punctuation and leading zeros) unless allow_duplicate is true." },
-  "bill.list": { tier: "read", personOnly: false, summary: "List bills, newest first. Filter by state (open, rejected, void, paid), by where open bills stand (status: awaiting_approval, held, waiting_for, awaiting_release, ready_to_pay, released), by vendor, or to bills waiting on you (mine)." },
-  "bill.get": { tier: "read", personOnly: false, summary: "A bill with its lines, its workflow progress step by step, approvals, signals and history, and the page arrangement of its document it pinned. While it waits for approval, approval says whether you can give it and, if not, why and who else can." },
+  "bill.create": { tier: "routine", personOnly: false, summary: "Enter a bill, optionally from an inbox document, or from some of its pages (pages): those are split into a new document filed with the bill, atomically, and the rest stays in the inbox. It follows the vendor's current workflow from now on. If this vendor already has a bill with the same invoice number (ignoring case, spaces, punctuation and leading zeros), the copy stacks on that bill instead of becoming a second payable one: same amount is a recorded resend, a different amount is a revision that blocks payment until a person accepts or rejects it. allow_duplicate instead makes a separate bill, and that choice is recorded." },
+  "bill.list": { tier: "read", personOnly: false, summary: "List bills, newest first. Filter by state (open, rejected, void, paid), by where open bills stand (status: awaiting_approval, held, waiting_for, awaiting_release, ready_to_pay, released), by vendor, or to bills waiting on you (mine). Each bill says received_count (how many copies of its invoice arrived) and pending_revision_amount_cents when a revised copy awaits a decision." },
+  "bill.get": { tier: "read", personOnly: false, summary: "A bill with its lines, its workflow progress step by step, approvals, signals and history, every copy of the invoice received for it (arrivals, oldest first, with received_count and any pending_revision awaiting a person's decision), and the page arrangement of its document it pinned. While it waits for approval, approval says whether you can give it and, if not, why and who else can." },
+  "bill.revision_accept": { tier: "routine", personOnly: true, summary: "Accept a revised invoice stacked on this bill (person only): the latest copy's amount and lines become the payable ones, and the bill can be paid again. The prior version stays in the bill's stack, not payable. This prepares the bill; it is not approval." },
+  "bill.revision_reject": { tier: "routine", personOnly: true, summary: "Reject a revised invoice stacked on this bill (person only): the bill keeps the amount it already carries, the revised copy stays in its stack, and the bill can be paid again." },
   "bill.approve": { tier: "routine", personOnly: true, summary: "Approve a bill at its current approval step. You must be one of that step's approvers. One person gives a bill one approval, so you can't approve a second step, or a step a later one needs you for; and when approval_rules has submitter_cannot_approve on, whoever entered the bill or uploaded its document can't approve it. A refusal says who else can. bill.get shows it in approval before you try." },
   "bill.reject": { tier: "routine", personOnly: true, summary: "Reject a bill: it will not be paid. Final." },
   "bill.signal": { tier: "routine", personOnly: false, summary: "Report that something outside Payvy happened for a bill, e.g. customer_funded when the customer has paid for this cost. A workflow's wait_for step waits for its signal. Name the bill by bill_id or by the external_ref it was created with." },

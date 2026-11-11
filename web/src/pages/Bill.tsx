@@ -69,6 +69,24 @@ interface Detail {
     exception: { kind: string; excess_cents: number; detail: string } | null;
     overridden: boolean;
   };
+  arrivals: {
+    id: string;
+    document_id: string | null;
+    amount_cents: number;
+    invoice_number: string;
+    received_by: string;
+    received_at: string;
+    decision: 'none' | 'pending' | 'accepted' | 'rejected' | 'superseded';
+    decided_by: string | null;
+  }[];
+  received_count: number;
+  pending_revision: {
+    arrival_id: string;
+    amount_cents: number;
+    current_amount_cents: number;
+    received_at: string;
+    received_by: string;
+  } | null;
   documents: { id: string; filename: string; content_type: string }[];
   /** The page arrangement of its document the bill pinned. */
   arrangement: { version: number; pages: PageRef[] | null } | null;
@@ -130,6 +148,20 @@ export function BillPage() {
   const steps = typeof p === 'object' && p ? (p.steps ?? []) : [];
   const doc = detail.documents[0];
 
+  async function decideRevision(accept: boolean) {
+    try {
+      await run(accept ? 'bill.revision_accept' : 'bill.revision_reject', { bill_id: b.id });
+      toast({
+        body: accept
+          ? `Revision accepted: ${b.vendor_name} ${b.invoice_number} now carries the latest amount`
+          : `Revision rejected: ${b.vendor_name} ${b.invoice_number} keeps its amount`,
+      });
+      load();
+    } catch (e) {
+      toast({ body: e instanceof Error ? e.message : String(e), type: 'error' });
+    }
+  }
+
   async function approve() {
     try {
       await run('bill.approve', { bill_id: b.id });
@@ -153,6 +185,12 @@ export function BillPage() {
         <Text type="supporting">
           Invoice {b.invoice_number} · <Link href={`/vendors/${b.vendor_id}`}>Vendor details</Link>
         </Text>
+        {(detail.received_count > 1 || detail.pending_revision) && (
+          <HStack gap={2} vAlign="center" wrap="wrap">
+            {detail.received_count > 1 && <Badge label={`Sent ${detail.received_count}×`} variant="info" />}
+            {detail.pending_revision && <Badge label="Revised" variant="warning" />}
+          </HStack>
+        )}
         <Text size="xl" weight="semibold" hasTabularNumbers>
           {money(b.amount_cents)}
         </Text>
@@ -163,6 +201,20 @@ export function BillPage() {
       )}
 
       {detail.invoice_review_pages_changed && <Banner status="warning" title="Pages changed after line review" description="The source pages changed after this review was saved. The reviewed lines and bill amounts are unchanged. Check the current pages and page-change history before approving." />}
+
+      {detail.pending_revision && isOpen && (
+        <VStack gap={2}>
+          <Banner
+            status="warning"
+            title="Revised invoice received"
+            description={`This bill carries ${money(detail.pending_revision.current_amount_cents)}; the copy received ${date(detail.pending_revision.received_at)} carries ${money(detail.pending_revision.amount_cents)}. It can't be paid until a person accepts or rejects the revision.`}
+          />
+          <HStack gap={2}>
+            <Allowed command="bill.revision_accept"><Button label="Accept revision" variant="primary" clickAction={() => decideRevision(true)} /></Allowed>
+            <Allowed command="bill.revision_reject"><Button label="Reject revision" variant="ghost" clickAction={() => decideRevision(false)} /></Allowed>
+          </HStack>
+        </VStack>
+      )}
 
       {isOpen && (
         <HStack gap={2}>
@@ -257,6 +309,31 @@ export function BillPage() {
       )}
 
       <NotificationHistory billId={b.id} />
+
+      {detail.arrivals.length > 1 && (
+        <VStack gap={2}>
+          <Heading level={2}>Received {detail.received_count} times</Heading>
+          <Text type="supporting">Every copy of this invoice the vendor sent, oldest first. Only the bill's current amount can be paid.</Text>
+          {detail.arrivals.map((a, i) => (
+            <HStack key={a.id} hAlign="between" gap={3}>
+              <VStack gap={0}>
+                <Text>
+                  {i === 0 ? 'First received' : `Copy ${i + 1}`} · {money(a.amount_cents)}
+                  {a.document_id && <> · <Link href={`/documents/${a.document_id}`}>Document</Link></>}
+                </Text>
+                <Text type="supporting">
+                  {date(a.received_at)} · by {a.received_by}
+                  {a.decision === 'pending' && ' · Revised — awaiting a decision'}
+                  {a.decision === 'accepted' && ` · Accepted${a.decided_by ? ` by ${a.decided_by}` : ''} — this is the payable amount`}
+                  {a.decision === 'rejected' && ` · Rejected${a.decided_by ? ` by ${a.decided_by}` : ''} — the bill kept its amount`}
+                  {a.decision === 'superseded' && ' · Superseded by a newer copy'}
+                  {a.decision === 'none' && i > 0 && ' · Same amount — a resend'}
+                </Text>
+              </VStack>
+            </HStack>
+          ))}
+        </VStack>
+      )}
 
       {detail.history.length > 0 && (
         <VStack gap={2}>

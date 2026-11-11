@@ -1,5 +1,6 @@
 import { Allowed, useAccessVersion } from '../permissions';
 import { useCallback, useEffect, useState } from 'react';
+import { Badge } from '@astryxdesign/core/Badge';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
 import { Card } from '@astryxdesign/core/Card';
@@ -254,6 +255,13 @@ function BillCard({
       <div className="payvy-queue-description">
         <Link href={`/bills/${b.id}`} isStandalone>{b.vendor_name}</Link>
         <span className="payvy-muted">{b.invoice_number}{b.memo ? ` · ${b.memo}` : ''}</span>
+        <span>
+          {item.received_count && item.received_count > 1 && <Badge label={`Sent ${item.received_count}×`} variant="info" />}{' '}
+          {item.pending_revision_amount_cents != null && <Badge label="Revised" variant="warning" />}
+        </span>
+        {item.pending_revision_amount_cents != null && (
+          <span className="payvy-muted">Revised invoice: this bill carries {money(b.amount_cents)}; the latest copy carries {money(item.pending_revision_amount_cents)}. It can't be paid until a person accepts or rejects the revision on the bill.</span>
+        )}
         {item.progress?.reason && <span className="payvy-muted">{item.progress.reason}</span>}
         {item.approval && !item.approval.can_approve && (
           <span className="payvy-muted">{waitingOnOthers(item.approval, names)}</span>

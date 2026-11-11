@@ -298,6 +298,8 @@ async fn execute(cx: &mut Cx<'_>, name: &str, input: &Value) -> Result<Value, Co
         "bill.create" => bills::create(cx, parse(input)?).await,
         "bill.list" => bills::list(cx, parse(input)?).await,
         "bill.get" => bills::get(cx, parse(input)?).await,
+        "bill.revision_accept" => bills::revision_accept(cx, parse(input)?).await,
+        "bill.revision_reject" => bills::revision_reject(cx, parse(input)?).await,
         "bill.approve" => bills::approve(cx, parse(input)?).await,
         "bill.reject" => bills::reject(cx, parse(input)?).await,
         "bill.signal" => bills::signal(cx, parse(input)?).await,

@@ -16,6 +16,14 @@ Conventions follow Visirent (`~/Code/visirent`).
   Don't clear `person_only` to make an agent flow easier.
 - **Confirmed tier** (release, mark paid, void): preview → single-use token bound to the input →
   commit. A preview runs the real command and rolls back.
+- **A resent invoice stacks, never pays twice.** Every copy of an invoice (vendor +
+  normalized number, as `bill.create` detects) files with its bill in `bill_arrivals`
+  and emits `bill.invoice_received`; same amount is a recorded resend, a different
+  amount on an open bill is a pending revision that blocks `bill.release`/`bill.auto_pay`
+  until a person accepts (`bill.revision_accept`: the bill takes the copy's amount and
+  lines) or rejects it. `Sent N×`/`Revised` show on the bill, in lists and in Waiting
+  on you. `allow_duplicate` remains the recorded override for a separate bill. See
+  `docs/duplicate-invoices.md`.
 - **Where a bill stands is derived, never stored.** `workflow::evaluate` over approvals, signals
   and the release gives the status every time. Commands check the evaluated status before acting.
   Don't add a `status` column to shortcut this.
