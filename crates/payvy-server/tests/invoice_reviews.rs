@@ -100,6 +100,22 @@ async fn signed_lines_are_saved_replayed_and_pinned_to_the_bill() {
         b["result"]["invoice_review"]["id"],
         r["result"]["review"]["id"]
     );
+    assert!(b["result"]["approvals"].as_array().unwrap().is_empty());
+    let err = commit(
+        &db.state,
+        &who,
+        "document.arrange",
+        json!({
+            "document_id":doc,"expected_version":0,"pages":[{"page":1,"rotation":90}]
+        }),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("Pages are pinned to the saved invoice review"),
+        "{err}"
+    );
     let mut after = input;
     after["request_id"] = json!(Uuid::new_v4());
     after["expected_version"] = json!(1);
@@ -385,5 +401,66 @@ async fn split_and_undo_cannot_unenroll_previously_reviewed_pages() {
     .unwrap();
     assert_eq!(original["result"]["required"], true);
     assert!(commit(&db.state,&who,"bill.create",json!({"document_id":doc,"vendor_id":v,"invoice_number":"BYPASS","invoice_date":"2026-11-11","amount_cents":9000})).await.is_err());
+    db.drop().await;
+}
+
+#[tokio::test]
+async fn unreviewed_lines_stay_positive_and_manual_bills_do_not_take_the_enrollment_lock() {
+    let Some((db, v, doc)) = setup().await else {
+        return;
+    };
+    let human = person("reviewer");
+    commit(
+        &db.state,
+        &human,
+        "invoice_review.configure",
+        json!({"enabled":false}),
+    )
+    .await
+    .unwrap();
+    for actor in [human.clone(), agent("preparer")] {
+        for document_id in [None, Some(&doc)] {
+            for adjustment in [-1000, 0] {
+                let e = commit(
+                    &db.state,
+                    &actor,
+                    "bill.create",
+                    json!({
+                        "document_id":document_id,"vendor_id":v,"invoice_number":"LEGACY",
+                        "invoice_date":"2026-11-11","amount_cents":9000,
+                        "lines":[{"description":"Service","amount_cents":9000-adjustment},
+                                 {"description":"Adjustment","amount_cents":adjustment}]
+                    }),
+                )
+                .await
+                .unwrap_err();
+                assert!(
+                    e.to_string()
+                        .contains("line amounts must be more than zero"),
+                    "{e}"
+                );
+            }
+        }
+    }
+    let mut tx = db.state.store.begin(human.org_id).await.unwrap();
+    payvy_store::lock_invoice_settings(&mut tx, human.org_id)
+        .await
+        .unwrap();
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        commit(
+            &db.state,
+            &human,
+            "bill.create",
+            json!({"vendor_id":v,"invoice_number":"MANUAL",
+        "invoice_date":"2026-11-11","amount_cents":9000,
+        "lines":[{"description":"Service","amount_cents":9000}]}),
+        ),
+    )
+    .await;
+    tx.rollback().await.unwrap();
+    result
+        .expect("manual bill waited for the unrelated enrollment lock")
+        .unwrap();
     db.drop().await;
 }

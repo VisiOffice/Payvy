@@ -5,7 +5,9 @@ It is off by default. An Admin enables it in Settings → Company → Invoice li
 using `invoice_review.configure`. Turning it off stops enrollment of new documents;
 previously reviewed originals and every split view of those files remain subject to review,
 including pages returned by Undo split.
-Manual bills with no document retain the existing command contract.
+Manual bills and document-backed bills without a saved review retain positive-only lines.
+Negative and zero lines are accepted only when the server derives them from a validated review.
+Only document-backed bill creation takes the company enrollment lock; manual entry does not.
 
 ## Review a document
 
@@ -31,7 +33,9 @@ bypasses any workflow, duties, payment or PO gate. A change invalidates the exce
 This first pilot reviews one whole document at a time. Split a multi-invoice file first;
 it does not create a reviewed bill from a subset of the document's pages. Saved reviews
 pin their page-arrangement version, and reviewed bills pin their source pages at creation.
-Unlike legacy bills, their pages cannot be rearranged afterwards. Review history remains
+This is an intentional pilot exception to the Document Pages Spec’s approval-time lock:
+the saved review certifies this page set, so a clerk must correct its pages before creating
+the bill. Legacy bills still lock their pages at approval. Review history remains
 available on filed documents; bill detail identifies the exact accepted revision.
 
 ## Command contract
@@ -60,9 +64,9 @@ clients can also reload the current review instead of blindly repeating a mutati
 Rows retain stable IDs and source indices within an extraction lineage. Reviews bind to
 one extraction, document and arrangement. The migration adds composite company foreign keys,
 forced RLS, and a unique bill-to-review association. Existing bill lines are not rewritten.
-The bill total remains strictly positive; lines may be negative or zero and must sum exactly
-to the bill total. Arithmetic overflow is rejected. Existing payment code sends the whole bill
-amount; this introduces neither partial payment nor vendor credit application.
+The bill total remains strictly positive; reviewed lines may be negative or zero and must
+sum exactly to the bill total. Unreviewed lines remain strictly positive. Arithmetic overflow
+is rejected. Existing payment code sends the whole bill amount; this introduces neither partial payment nor vendor credit application.
 
 ## Verification and remaining spec work
 
@@ -89,7 +93,7 @@ newly queued migrations before landing.
 
 
 Validation on 2026-11-11, with main `436b640` included:
-- All 243 Rust tests passed with PostgreSQL and document storage configured.
+- All 244 Rust tests passed with PostgreSQL and document storage configured.
 - Clippy, formatting, generated command types, workspace type checks and the web build passed.
 - The full browser run passed 54 tests and skipped the three optional edge tests. Its one
   failure exposed first-read page selection; after fixing that path, all 11 affected document
@@ -97,3 +101,8 @@ Validation on 2026-11-11, with main `436b640` included:
 
 This is the first review implementation on `feat/invoice-line-review`, not a deployed pilot
 or completion of the extraction/evidence stage of the vault spec.
+
+Review follow-up: signed/zero lines are limited to resolved saved reviews; both person and
+agent callers without a review retain positive-only lines, including with the pilot off.
+A held enrollment-lock test proves manual bill creation does not wait for that lock.
+Another regression check verifies that a reviewed bill’s pages lock before any approval.

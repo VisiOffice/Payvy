@@ -52,6 +52,8 @@ pub enum BillError {
     NotPositive,
     #[error("invoice_number can't be empty")]
     NoInvoiceNumber,
+    #[error("line amounts must be more than zero unless backed by an invoice review")]
+    LineNotPositive,
     #[error("line amounts exceed the supported range")]
     AmountOverflow,
     #[error("the lines add up to {lines} cents but the bill is {total} cents")]
@@ -60,7 +62,23 @@ pub enum BillError {
     DueBeforeInvoice,
 }
 
+/// Legacy/manual entry retains positive-only lines. Signed adjustments require
+/// the server to resolve and validate a saved invoice review first.
 pub fn validate(
+    amount_cents: Cents,
+    invoice_number: &str,
+    lines: &[Line],
+    invoice_date: chrono::NaiveDate,
+    due_date: Option<chrono::NaiveDate>,
+) -> Result<(), BillError> {
+    if lines.iter().any(|line| line.amount_cents <= 0) {
+        return Err(BillError::LineNotPositive);
+    }
+    validate_reviewed(amount_cents, invoice_number, lines, invoice_date, due_date)
+}
+
+/// Reviewed lines may contain discounts and zero rows; the total stays positive.
+pub fn validate_reviewed(
     amount_cents: Cents,
     invoice_number: &str,
     lines: &[Line],

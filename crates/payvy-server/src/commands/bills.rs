@@ -239,9 +239,13 @@ pub struct Create {
 }
 
 pub async fn create(cx: &mut Cx<'_>, mut input: Create) -> Result<Value, CommandError> {
-    store::lock_invoice_settings(&mut cx.tx, cx.org).await?;
     let review = match input.document_id {
-        Some(doc) => super::invoice_reviews::for_bill(cx, doc, input.review_id).await?,
+        Some(doc) => {
+            // Keep enrollment changes atomic with document-backed bill creation.
+            // Manual bills do not participate in enrollment or take its lock.
+            store::lock_invoice_settings(&mut cx.tx, cx.org).await?;
+            super::invoice_reviews::for_bill(cx, doc, input.review_id).await?
+        }
         None if input.review_id.is_some() => {
             return Err(CommandError::Invalid(
                 "review_id requires document_id".into(),
@@ -304,7 +308,12 @@ pub async fn create(cx: &mut Cx<'_>, mut input: Create) -> Result<Value, Command
             .terms_days
             .map(|d| input.invoice_date + Duration::days(i64::from(d)))
     });
-    rules::validate(
+    let validate = if review.is_some() {
+        rules::validate_reviewed
+    } else {
+        rules::validate
+    };
+    validate(
         input.amount_cents,
         &invoice_number,
         &input.lines,
