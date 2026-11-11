@@ -53,6 +53,18 @@ pub async fn get(cx: &mut Cx<'_>, input: Get) -> Result<Value, CommandError> {
     let accounts = store::vendor_accounts(&mut cx.tx, v.id).await?;
     let workflow = workflows::current(cx, Some(v.id)).await?;
     let payees = store::vendor_payees(&mut cx.tx, v.id).await?;
+    let current_bank = store::live_paying_connection(&mut cx.tx).await?;
+    let payees: Vec<Value> = payees
+        .into_iter()
+        .map(|p| {
+            let is_current = current_bank
+                .as_ref()
+                .is_some_and(|c| c.id == p.connection_id);
+            let mut value = json!(p);
+            value["is_current_connection"] = json!(is_current);
+            value
+        })
+        .collect();
     let limits = store::auto_pay_limits(&mut cx.tx).await?;
     let auto_pay_limit = json!({
         "own_cents": limits.vendors.get(&v.id),

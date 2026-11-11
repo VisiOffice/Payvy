@@ -1,6 +1,6 @@
 # Ramp integration development
 
-Branch: `feat/ramp-integration`. Ramp now supports staged OAuth authorization,
+Ramp supports staged OAuth authorization,
 confirmed connection activation, and explicit vendor/ACH-account mapping through
 the command API and web app. It has **no payment-create, cancel, retry, vendor-write
 or bill-write method**. Activating Ramp selects it in place of the paying bank,
@@ -96,25 +96,69 @@ to monitor existing Mercury attempts; existing payees do not carry over to Ramp.
 Ramp as `setup`, reserves the selected-paying-bank slot, and rejects unsupported
 Ramp modes. `bill.release` refuses a Ramp send; `pay_elsewhere` remains available.
 
-On a vendor page, select **Vendor in Ramp**, then a specific **Ramp ACH account**.
+On a vendor page, use **Search Ramp vendors**, select **Vendor in Ramp**, then a
+specific **Ramp ACH account**. Search is sent to Ramp with the name/active filters;
+selecting or accepting an account fetches only that vendor and its instruments.
 The proposal records the connection, remote vendor ID, instrument ID, last four,
 and a fingerprint including the displayed name and fee. Only a person can accept
 it in **Waiting on you**. Acceptance reads Ramp again and refuses changed,
 missing or inactive destinations. No vendor or account is created in Ramp.
+Vendor pages warn when an accepted mapping belongs to a previous connection.
+Waiting on you labels stale proposals and disables Accept; the command still
+checks the current connection even if the page is stale.
 
 Commands: `bank.authorize`, `bank.complete_authorization`, `bank.authorization`,
-`bank.activate` (person-only, confirmed), `bank.renew`, and the existing
+`bank.activate` (person-only, confirmed), `bank.maintain`, `bank.renew`, and the existing
 `bank.recipients`, `vendor.propose_payee`, `vendor.accept_payee`, `bank.disconnect`.
 Activation requires an explicit `replacing_connection_id`, including `null` if
 none. Ramp proposals require `connection_id`, `instrument_id` and
 `instrument_fingerprint` from discovery, as well as `recipient_id` and `ach`.
 
-Access renewal is **manual in this slice**: use **Renew Ramp access** in Bank or
-`bank.renew`. It serializes against other renewals and connection changes,
-reseals the new credentials, and preserves the original refresh-token deadline
-when Ramp omits it. Preview never exchanges credentials. Expired/missing/revoked
-refresh grants require reconnecting. Background renewal and automatic recovery
-from authorization failures are not implemented.
+## Automatic renewal and connection health
+
+The server runs a Ramp checker independently of Mercury payment polling. Every
+30 seconds it looks for due live connections (up to 50 per pass) and runs
+`bank.maintain` as the bank agent. All writes and health events still go through
+the command registry. Maintenance can check an existing grant and renew its
+access token; it cannot authorize, activate, change an account, accept a payee,
+or send a payment. Already-retired grants are skipped; an in-flight response is
+discarded if the connection was retired or changed meanwhile.
+
+The checker renews within five minutes of access expiry, otherwise checks the
+business every fifteen minutes. Requests are separated by at least one minute,
+including short-lived grants; a very short grant may expire before the next
+scheduled check. A per-grant advisory lock serializes workers and manual checks.
+Provider calls hold neither the company bank lock nor the bank connection row lock,
+so payee decisions, disconnects and replacements can proceed while Ramp is slow.
+After HTTP, a short bank lock protects rechecking the original live connection and
+credential snapshot before saving; late responses cannot rewrite a retired grant.
+The original refresh token and its absolute expiry are retained. A
+successful refresh is sealed and committed even when the following business
+probe fails. Previews send no health probes or refresh requests.
+
+`bank.get` exposes the last recorded health and check time, access expiry, retry
+time and available recovery action, never credentials or provider error bodies:
+
+- **Connected:** access was checked; renewal is automatic when the grant includes
+  refresh access. A successful business probe must match the selected business.
+- **Waiting to retry:** transient failures use 1, 2, 4, 8 and 16 minute delays.
+  Rate limits use the numeric Retry-After, bounded to 1 minute–24 hours, with a
+  one-minute fallback. The retry time is persisted, so restarting the server,
+  another worker, or a person's check cannot bypass it.
+- **Checks paused:** five consecutive failures stop automatic attempts. A person
+  can use **Check Ramp connection** (`bank.renew`) after cooldown to start a new
+  bounded recovery cycle. Agents cannot resume a paused cycle.
+- **Needs reconnection:** rejected or expired authorization, missing refresh
+  access when renewal is due, unreadable credentials, a changed server app, or
+  a mismatched/inactive business stops renewal. A person must fix the underlying
+  configuration where necessary, authorize again, and confirm replacement.
+
+Health describes the last scheduled business/access check, not every Ramp
+endpoint's current availability. A vendor endpoint can fail between checks; the
+mapping screen shows the error and links to Bank settings. Bank settings refresh
+health every thirty seconds while visible and on focus. Current mappings remain
+subject to fresh destination validation when proposed or accepted. Ramp payment
+submission and auto-pay are still disabled regardless of connection health.
 
 ## Verification of activation and mapping
 
@@ -123,15 +167,18 @@ from authorization failures are not implemented.
 cargo test -p payvy-server --test ramp --test payments --test rho
 pnpm --dir web build
 cargo build -p payvy-server
-PAYVY_E2E_BANK_ONLY=true pnpm --dir web e2e:only ramp.spec.ts bank.spec.ts payee-invite.spec.ts recipient.spec.ts
+PAYVY_E2E_BANK_ONLY=true pnpm --dir web e2e:only ramp.spec.ts ramp-health.spec.ts bank.spec.ts payee-invite.spec.ts recipient.spec.ts
 ```
 
 The server tests use real Postgres RLS and a loopback fake, covering person/org
 binding, expiry/replay, failed OAuth exchange, replacement previews, changed
-funding, instrument identity, changed/inactive payees, renewal deadlines and the
-send gate. Browser tests drive the real API and only fake Ramp's consent
+funding, instrument identity, changed/inactive payees, pre-expiry renewal across
+concurrent workers, cooldown persistence, retry exhaustion, rejected grants,
+renewal deadlines, stale mapping flags, and the send gate. Browser tests drive the real API and only fake Ramp's consent
 redirect and bank endpoints; they exercise callback, selection, confirmation,
-proposal and person acceptance on desktop and mobile. These tests do not verify
+proposal, person acceptance, stale-mapping warnings, and automatic-renewal
+failure/reconnection on desktop and mobile. The health browser test uses the
+real worker and a short fake grant, so it takes about two minutes. These tests do not verify
 real Ramp app access or production eligibility.
 
 ## Next slice

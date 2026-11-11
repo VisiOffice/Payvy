@@ -329,6 +329,26 @@ impl Ramp {
         self.list("/developer/v1/bank-accounts", &[]).await
     }
 
+    /// Fetch one vendor for account selection and acceptance; never download
+    /// the complete vendor directory to validate a specific destination.
+    pub async fn vendor(&self, id: Uuid) -> Result<Vendor, Error> {
+        let vendor: Vendor = self
+            .get(self.url(&format!("/developer/v1/vendors/{id}"))?)
+            .await?;
+        if vendor.id != id {
+            return Err(Error::InvalidResponse);
+        }
+        Ok(vendor)
+    }
+
+    pub async fn search_vendors(&self, name: &str) -> Result<Vec<Vendor>, Error> {
+        self.list(
+            "/developer/v1/vendors",
+            &[("name", name), ("is_active", "true")],
+        )
+        .await
+    }
+
     pub async fn vendors(&self) -> Result<Vec<Vendor>, Error> {
         self.list("/developer/v1/vendors", &[]).await
     }

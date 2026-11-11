@@ -16,7 +16,7 @@ impl From<api::Error> for CommandError {
 fn conflict(message: &str) -> CommandError {
     CommandError::Conflict(message.into())
 }
-fn config<'a>(cx: &'a Cx<'_>) -> Result<&'a crate::ramp::Config, CommandError> {
+pub(super) fn config<'a>(cx: &'a Cx<'_>) -> Result<&'a crate::ramp::Config, CommandError> {
     cx.bank()?.ramp.as_ref().ok_or(CommandError::NotConfigured(
         "Ramp OAuth is not configured on this server",
     ))
@@ -27,7 +27,7 @@ fn hash(value: &[u8]) -> String {
 fn stage_purpose(id: Uuid) -> String {
     format!("ramp-authorization:{id}")
 }
-fn bank_purpose(id: Uuid) -> String {
+pub(super) fn bank_purpose(id: Uuid) -> String {
     format!("bank:{id}")
 }
 fn deadline(now: DateTime<Utc>, seconds: u64) -> Result<DateTime<Utc>, CommandError> {
@@ -40,14 +40,14 @@ fn deadline(now: DateTime<Utc>, seconds: u64) -> Result<DateTime<Utc>, CommandEr
 
 // Serialize ONLY as plaintext input to the sealer, never as a command result.
 #[derive(Serialize, Deserialize)]
-struct Credentials {
-    access: String,
-    access_expires: DateTime<Utc>,
-    refresh: Option<String>,
-    refresh_expires: Option<DateTime<Utc>>,
+pub(super) struct Credentials {
+    pub(super) access: String,
+    pub(super) access_expires: DateTime<Utc>,
+    pub(super) refresh: Option<String>,
+    pub(super) refresh_expires: Option<DateTime<Utc>>,
 }
 impl Credentials {
-    fn from_tokens(t: Tokens, now: DateTime<Utc>) -> Result<Self, CommandError> {
+    pub(super) fn from_tokens(t: Tokens, now: DateTime<Utc>) -> Result<Self, CommandError> {
         for scope in api::DISCOVERY_SCOPES.split_whitespace() {
             if !t.scope.split_whitespace().any(|s| s == scope) {
                 return Err(api::Error::Unauthorized.into());
@@ -71,14 +71,14 @@ impl Credentials {
         }
         Ok(config(cx)?.client(&self.access)?)
     }
-    fn seal(&self, cx: &Cx<'_>, purpose: &str) -> Result<Vec<u8>, CommandError> {
+    pub(super) fn seal(&self, cx: &Cx<'_>, purpose: &str) -> Result<Vec<u8>, CommandError> {
         Ok(cx.bank()?.sealer.seal(
             cx.org,
             purpose,
             &serde_json::to_string(self).map_err(anyhow::Error::from)?,
         )?)
     }
-    fn open(cx: &Cx<'_>, purpose: &str, sealed: &[u8]) -> Result<Self, CommandError> {
+    pub(super) fn open(cx: &Cx<'_>, purpose: &str, sealed: &[u8]) -> Result<Self, CommandError> {
         let raw = cx.bank()?.sealer.open(cx.org, purpose, sealed)?;
         serde_json::from_str(&raw)
             .map_err(|_| conflict("Ramp credentials could not be read; reconnect Ramp"))
@@ -309,6 +309,12 @@ pub async fn activate(cx: &mut Cx<'_>, input: Activate) -> Result<Value, Command
     )
     .await?;
     db::insert_details(&mut cx.tx, cx.org, id, &a.client_id, &selected).await?;
+    db::set_health(
+        &mut cx.tx,
+        id,
+        &super::ramp_health::connected(cx.now, credentials.access_expires),
+    )
+    .await?;
     db::finish(&mut cx.tx, a.id, "used", None).await?;
     // Match Mercury replacement: remove its old webhook, while polling keeps
     // tracking outstanding payments through their retained connection. The
@@ -335,56 +341,32 @@ pub(super) async fn client(
     if config(cx)?.environment_name() != c.environment || config(cx)?.client_id != app {
         return Err(conflict("Ramp app configuration changed; reconnect Ramp"));
     }
+    let health = db::health(&mut cx.tx, c.id)
+        .await?
+        .ok_or(CommandError::NotFound("Ramp connection health"))?;
+    if health.health_status == "needs_reconnection" {
+        return Err(conflict(
+            "Reconnect Ramp in Bank settings to restore access",
+        ));
+    }
+    if health.health_status == "paused"
+        || health.next_attempt_at.is_some_and(|at| at > cx.now)
+            && health.health_status == "retrying"
+    {
+        return Err(conflict(
+            "Ramp access checks are paused or waiting to retry. See Bank settings for the retry time.",
+        ));
+    }
     Credentials::open(cx, &bank_purpose(c.id), &c.token_sealed)?.client(cx)
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Renew {
-    connection_id: Uuid,
+    pub(super) connection_id: Uuid,
 }
 pub async fn renew(cx: &mut Cx<'_>, input: Renew) -> Result<Value, CommandError> {
-    store::lock_bank(&mut cx.tx, cx.org).await?;
-    let c = db::lock_connection(&mut cx.tx, input.connection_id)
-        .await?
-        .filter(|c| c.provider == "ramp" && c.retired_at.is_none())
-        .ok_or(CommandError::NotFound("live Ramp connection"))?;
-    let (app, _) = db::details(&mut cx.tx, c.id)
-        .await?
-        .ok_or(CommandError::NotFound("Ramp connection details"))?;
-    let conf = config(cx)?;
-    if c.environment != conf.environment_name() || app != conf.client_id {
-        return Err(conflict("Ramp app configuration changed; reconnect Ramp"));
-    }
-    let old = Credentials::open(cx, &bank_purpose(c.id), &c.token_sealed)?;
-    if old.access_expires > cx.now + Duration::seconds(30) {
-        return Err(conflict(
-            "Ramp access is still valid; renew once it expires",
-        ));
-    }
-    if old.refresh_expires.is_some_and(|d| d <= cx.now) {
-        return Err(conflict("Ramp authorization expired; reconnect Ramp"));
-    }
-    let refresh = old
-        .refresh
-        .as_deref()
-        .ok_or_else(|| conflict("Ramp did not grant refresh access; reconnect Ramp"))?;
-    if cx.preview {
-        return Ok(json!({"connection_id":c.id,"note":"Preview does not renew credentials"}));
-    }
-    let tokens = conf.oauth()?.refresh(refresh).await?;
-    let mut credentials = Credentials::from_tokens(tokens, cx.now)?;
-    // Third-party grants do not rotate. Preserve the original absolute expiry.
-    credentials.refresh_expires = old.refresh_expires;
-    let sealed = credentials.seal(cx, &bank_purpose(c.id))?;
-    db::update_credentials(&mut cx.tx, c.id, &sealed).await?;
-    cx.emit(
-        "bank.credentials_renewed",
-        c.id,
-        json!({"provider":"ramp","connection_id":c.id}),
-    )
-    .await?;
-    Ok(json!({"connection_id":c.id,"access_expires_at":credentials.access_expires}))
+    super::ramp_health::maintain(cx, input, true).await
 }
 
 pub(super) async fn destinations(
@@ -393,12 +375,10 @@ pub(super) async fn destinations(
     vendor_id: Uuid,
 ) -> Result<Vec<Value>, CommandError> {
     let client = client(cx, c).await?;
-    let vendor = client
-        .vendors()
-        .await?
-        .into_iter()
-        .find(|v| v.id == vendor_id && v.is_active)
-        .ok_or_else(|| conflict("This Ramp vendor is missing or inactive"))?;
+    let vendor = client.vendor(vendor_id).await?;
+    if !vendor.is_active {
+        return Err(conflict("This Ramp vendor is inactive"));
+    }
     client.ach_instruments(vendor_id).await?.into_iter().map(|instrument| {
         let mut details = json!({"connection_id":c.id,"recipient_id":vendor.id,"recipient_name":vendor.name,"instrument_id":instrument.id,"method":"ach","destination":instrument.account_number_last_four.masked(),"fee":instrument.fee});
         let fingerprint = hash(&serde_json::to_vec(&details).map_err(anyhow::Error::from)?);

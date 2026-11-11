@@ -49,11 +49,15 @@ pub async fn get(cx: &mut Cx<'_>) -> Result<Value, CommandError> {
         Ok(n)
     };
 
+    let paying = store::live_paying_connection(&mut cx.tx).await?;
     let mut payees = Vec::new();
     for p in store::open_payee_proposals(&mut cx.tx).await? {
         let vendor_name = name_of(&mut cx.tx, p.vendor_id).await?;
         let current = store::active_payee(&mut cx.tx, p.vendor_id).await?;
-        payees.push(json!({ "proposal": p, "vendor_name": vendor_name, "current": current }));
+        payees.push(json!({ "proposal": p, "vendor_name": vendor_name, "current": current,
+            "is_current_connection":paying.as_ref().is_some_and(|c| c.id == p.connection_id),
+            "current_is_current_connection":current.as_ref().is_some_and(|p| paying.as_ref().is_some_and(|c| c.id == p.connection_id)),
+        }));
     }
 
     let mut workflows = Vec::new();

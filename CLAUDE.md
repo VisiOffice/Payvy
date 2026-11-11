@@ -85,6 +85,15 @@ Conventions follow Visirent (`~/Code/visirent`).
   provider), its client has no pay method, and `bill.release` with only Rho behaves exactly
   as with no paying bank — paid elsewhere, then `bill.mark_paid`. Never route a payment,
   recipient or payee through it; tests use a fake Rho (`tests/rho.rs`), never a real one.
+- **Ramp is setup-only** (`mode: setup`): no payment submission or auto-pay. Its
+  independent checker runs `bank.maintain` for an already-authorized grant.
+  Renewals serialize per grant, then recheck under the bank lock after HTTP. Never
+  hold the company bank lock or connection row lock during maintenance HTTP. Discard
+  late results for changed/retired connections. Retain the original refresh expiry,
+  and persist health/backoff even when the provider fails. Five transient failures
+  pause automatic attempts; only person-only `bank.renew` resumes after cooldown.
+  Rejected grants require reconnecting. Never clear a person-only gate to renew,
+  and never put credentials or provider response bodies in health, events or logs.
 - **The web app (`web/`) is one more caller of the commands.** Vite, React 19 and Astryx
   (`@astryxdesign/*`, exact versions pinned; it is in beta). It calls `/api/commands/{name}` with
   the session cookie and the `x-payvy-client` header, which the server requires for cookie

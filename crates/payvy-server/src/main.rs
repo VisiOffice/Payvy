@@ -411,6 +411,7 @@ async fn main() -> anyhow::Result<()> {
                     }
                     state = state.with_bank(bank);
                     tokio::spawn(payvy_server::payment_worker::run(state.clone()));
+                    tokio::spawn(payvy_server::ramp_worker::run(state.clone()));
                     tracing::info!("paying through connected banks");
                 }
                 None => tracing::warn!("PAYVY_SECRETS_KEY not set; bills are paid outside Payvy"),

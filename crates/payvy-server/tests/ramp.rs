@@ -28,10 +28,26 @@ struct Data {
     funding_changed: bool,
     inactive: bool,
     fail_token: bool,
+    pause: Option<(String, Arc<Gate>)>,
     writes: usize,
+    token_status: Option<u16>,
+    advance_on_token: Option<Arc<Mutex<chrono::DateTime<chrono::Utc>>>>,
+    business_status: Option<u16>,
+    retry_after: Option<u64>,
+    malformed_token: bool,
+    missing_refresh: bool,
+    token_ttl: Option<u64>,
+    directory_reads: usize,
+    vendor_reads: usize,
+    business_reads: usize,
     webhook_deletes: usize,
     fail_webhook_delete: bool,
     mercury_checks: usize,
+}
+#[derive(Default)]
+struct Gate {
+    entered: tokio::sync::Notify,
+    resume: tokio::sync::Notify,
 }
 struct Fake {
     url: String,
@@ -65,9 +81,27 @@ impl Fake {
         bank
     }
 }
-async fn respond(State(data): State<Arc<Mutex<Data>>>, req: Request<Body>) -> impl IntoResponse {
+async fn respond(
+    State(data): State<Arc<Mutex<Data>>>,
+    req: Request<Body>,
+) -> axum::response::Response {
     let (parts, body) = req.into_parts();
     let raw = axum::body::to_bytes(body, 10000).await.unwrap();
+    let gate = {
+        let mut d = data.lock().unwrap();
+        if d.pause
+            .as_ref()
+            .is_some_and(|(path, _)| path == parts.uri.path())
+        {
+            d.pause.take().map(|(_, gate)| gate)
+        } else {
+            None
+        }
+    };
+    if let Some(gate) = gate {
+        gate.entered.notify_one();
+        gate.resume.notified().await;
+    }
     let mut d = data.lock().unwrap();
     let path = parts.uri.path();
     if path.starts_with("/mercury/") {
@@ -85,7 +119,8 @@ async fn respond(State(data): State<Arc<Mutex<Data>>>, req: Request<Body>) -> im
                     StatusCode::OK
                 },
                 Json(json!({})),
-            );
+            )
+                .into_response();
         }
         assert_eq!(
             path,
@@ -96,7 +131,8 @@ async fn respond(State(data): State<Arc<Mutex<Data>>>, req: Request<Body>) -> im
         return (
             StatusCode::OK,
             Json(json!({"id":"legacy-transaction","status":"sent"})),
-        );
+        )
+            .into_response();
     }
     let page = |data: Value| json!({"data":data,"page":{"next":null}});
     let value = if path == "/developer/v1/token" {
@@ -108,19 +144,43 @@ async fn respond(State(data): State<Arc<Mutex<Data>>>, req: Request<Body>) -> im
                 .starts_with("Basic ")
         );
         d.tokens += 1;
+        if let Some(clock) = &d.advance_on_token {
+            *clock.lock().unwrap() += chrono::Duration::seconds(30);
+        }
+        if let Some(status) = d.token_status {
+            let mut response = (
+                StatusCode::from_u16(status).unwrap(),
+                Json(json!({"error":"private-grant-error-secret"})),
+            )
+                .into_response();
+            if let Some(seconds) = d.retry_after {
+                response
+                    .headers_mut()
+                    .insert("retry-after", seconds.to_string().parse().unwrap());
+            }
+            return response;
+        }
+        if d.malformed_token {
+            return (
+                StatusCode::OK,
+                Json(json!({"access_token":"secret-should-not-escape"})),
+            )
+                .into_response();
+        }
         if d.fail_token {
             return (
                 StatusCode::BAD_REQUEST,
                 Json(json!({"message":"secret-client MUST NOT LEAK"})),
-            );
+            )
+                .into_response();
         }
         let refresh = String::from_utf8_lossy(&raw).contains("grant_type=refresh_token");
         if refresh {
             d.refreshes += 1;
             assert!(String::from_utf8_lossy(&raw).contains("refresh_token=secret-refresh"));
         }
-        let mut t = json!({"access_token":"secret-access","token_type":"Bearer","scope":DISCOVERY_SCOPES,"expires_in":3600});
-        if !refresh {
+        let mut t = json!({"access_token":"secret-access","token_type":"Bearer","scope":DISCOVERY_SCOPES,"expires_in":d.token_ttl.unwrap_or(3600)});
+        if !refresh && !d.missing_refresh {
             t["refresh_token"] = json!("secret-refresh");
             t["refresh_token_expires_in"] = json!(7200);
         }
@@ -129,10 +189,18 @@ async fn respond(State(data): State<Arc<Mutex<Data>>>, req: Request<Body>) -> im
         assert_eq!(parts.headers["authorization"], "Bearer secret-access");
         if parts.method != "GET" {
             d.writes += 1;
-            return (StatusCode::METHOD_NOT_ALLOWED, Json(json!({})));
+            return (StatusCode::METHOD_NOT_ALLOWED, Json(json!({}))).into_response();
         }
         match path {
             "/developer/v1/business" => {
+                d.business_reads += 1;
+                if let Some(status) = d.business_status {
+                    return (
+                        StatusCode::from_u16(status).unwrap(),
+                        Json(json!({"private":"secret-business-error"})),
+                    )
+                        .into_response();
+                }
                 json!({"id":ID,"business_name_legal":"Example Business","active":true})
             }
             "/developer/v1/entities" => page(
@@ -142,7 +210,12 @@ async fn respond(State(data): State<Arc<Mutex<Data>>>, req: Request<Body>) -> im
                 json!([{"id":ID,"account_name":"Operating","account_number_last_four":if d.funding_changed {"9999"} else {"0042"},"has_ach_details":true,"financial_institution_name":"Test Bank"}]),
             ),
             "/developer/v1/vendors" => {
+                d.directory_reads += 1;
                 page(json!([{"id":ID,"name":"Supply Co","is_active":!d.inactive}]))
+            }
+            p if p == format!("/developer/v1/vendors/{ID}") => {
+                d.vendor_reads += 1;
+                json!({"id":ID,"name":"Supply Co","is_active":!d.inactive})
             }
             p if p == format!("/developer/v1/vendors/{ID}/payment-methods") => page(json!([
                 {"id":ID,"type":"ACH","account_number_last_four":if d.last_four {"9876"} else {"1234"},"fee":{"amount":0,"currency_code":"USD","minor_unit_conversion_rate":100}},
@@ -151,7 +224,7 @@ async fn respond(State(data): State<Arc<Mutex<Data>>>, req: Request<Body>) -> im
             _ => panic!("unexpected Ramp call: {path}"),
         }
     };
-    (StatusCode::OK, Json(value))
+    (StatusCode::OK, Json(value)).into_response()
 }
 async fn begin(db: &TestDb) -> (String, String) {
     let r = commit(&db.state, &person("robert"), "bank.authorize", json!({}))
@@ -637,18 +710,21 @@ async fn renewal_preserves_refresh_deadline_and_preview_never_exchanges() {
     );
     assert_ne!(first.is_ok(), second.is_ok());
     let renewed = first.or(second).unwrap();
+    assert!(
+        renewed["events"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("bank.credentials_renewed"))
+    );
     assert!(!renewed.to_string().contains("secret-"));
     commit(&db.state, &agent("bot"), "bank.recipients", json!({}))
         .await
         .unwrap();
     *db.clock.lock().unwrap() += chrono::Duration::minutes(60);
-    assert!(
-        commit(&db.state, &person("robert"), "bank.renew", input)
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("authorization expired")
-    );
+    let health = commit(&db.state, &person("robert"), "bank.renew", input)
+        .await
+        .unwrap();
+    assert_eq!(health["result"]["health"]["reason"], "grant_expired");
     assert_eq!(fake.data.lock().unwrap().refreshes, 1);
     db.drop().await;
 }
@@ -806,6 +882,506 @@ async fn activation_cleans_up_mercury_webhook_and_polling_retains_old_payments()
             result["result"]["bill"]["paid_reference"],
             "legacy-transaction"
         );
+        assert_eq!(fake.data.lock().unwrap().writes, 0);
+        db.drop().await;
+    }
+}
+
+async fn health(db: &TestDb) -> Value {
+    commit(&db.state, &person("robert"), "bank.get", json!({}))
+        .await
+        .unwrap()["result"]["connection"]["health"]
+        .clone()
+}
+
+#[tokio::test]
+async fn worker_renews_before_expiry_and_serializes_replicas() {
+    let Some(mut db) = TestDb::new().await else {
+        return;
+    };
+    let fake = Fake::start().await;
+    db.state = db.state.clone().with_bank(fake.bank());
+    let id = connected(&db).await;
+    assert_eq!(health(&db).await["status"], "connected");
+    *db.clock.lock().unwrap() += chrono::Duration::minutes(16);
+    assert_eq!(payvy_server::ramp_worker::tick(&db.state).await.unwrap(), 1);
+    assert_eq!(fake.data.lock().unwrap().tokens, 1); // health probe, no early exchange
+    *db.clock.lock().unwrap() += chrono::Duration::minutes(40);
+    let (a, b) = tokio::join!(
+        payvy_server::ramp_worker::tick(&db.state),
+        payvy_server::ramp_worker::tick(&db.state)
+    );
+    assert_eq!(a.unwrap() + b.unwrap(), 1);
+    assert_eq!(fake.data.lock().unwrap().tokens, 2);
+    assert_eq!(health(&db).await["status"], "connected");
+    assert_eq!(health(&db).await["access_expired"], false);
+    commit(
+        &db.state,
+        &agent("bot"),
+        "bank.recipients",
+        json!({"recipient_id":ID}),
+    )
+    .await
+    .unwrap();
+    let other = payvy_server::Actor::agent(db.add_org().await, "bank");
+    assert!(
+        commit(
+            &db.state,
+            &other,
+            "bank.maintain",
+            json!({"connection_id":id})
+        )
+        .await
+        .is_err()
+    );
+    // Maintenance is operational only; it never gains person-only activation rights.
+    assert!(
+        commit(
+            &db.state,
+            &agent("bank"),
+            "bank.disconnect",
+            json!({"provider":"ramp"})
+        )
+        .await
+        .is_err()
+    );
+    commit(
+        &db.state,
+        &person("robert"),
+        "bank.disconnect",
+        json!({"provider":"ramp"}),
+    )
+    .await
+    .unwrap();
+    *db.clock.lock().unwrap() += chrono::Duration::hours(1);
+    assert_eq!(payvy_server::ramp_worker::tick(&db.state).await.unwrap(), 0);
+    assert_eq!(fake.data.lock().unwrap().tokens, 2);
+    assert_eq!(fake.data.lock().unwrap().writes, 0);
+    db.drop().await;
+}
+
+#[tokio::test]
+async fn transient_failures_back_off_then_pause_until_a_person_resumes() {
+    let Some(mut db) = TestDb::new().await else {
+        return;
+    };
+    let fake = Fake::start().await;
+    db.state = db.state.clone().with_bank(fake.bank());
+    let id = connected(&db).await;
+    fake.data.lock().unwrap().token_status = Some(503);
+    *db.clock.lock().unwrap() += chrono::Duration::minutes(56);
+    for attempt in 1..=5 {
+        let before = (db.state.clock)();
+        assert_eq!(payvy_server::ramp_worker::tick(&db.state).await.unwrap(), 1);
+        let h = health(&db).await;
+        assert_eq!(
+            h["status"],
+            if attempt == 5 { "paused" } else { "retrying" }
+        );
+        assert_eq!(h["reason"], "provider_unavailable");
+        assert!(!h.to_string().contains("secret"));
+        assert_eq!(fake.data.lock().unwrap().tokens, attempt + 1);
+        assert_eq!(payvy_server::ramp_worker::tick(&db.state).await.unwrap(), 0);
+        assert!(
+            commit(
+                &db.state,
+                &person("robert"),
+                "bank.renew",
+                json!({"connection_id":id})
+            )
+            .await
+            .is_err()
+        );
+        let delay = chrono::Duration::seconds(60 << (attempt - 1));
+        assert_eq!(h["retry_at"], json!(before + delay));
+        *db.clock.lock().unwrap() += delay;
+    }
+    assert_eq!(payvy_server::ramp_worker::tick(&db.state).await.unwrap(), 0);
+    // Agents cannot override the stop or call the person's recovery action.
+    assert!(
+        commit(
+            &db.state,
+            &agent("bot"),
+            "bank.renew",
+            json!({"connection_id":id})
+        )
+        .await
+        .is_err()
+    );
+    assert!(
+        commit(
+            &db.state,
+            &agent("bot"),
+            "bank.maintain",
+            json!({"connection_id":id})
+        )
+        .await
+        .is_err()
+    );
+    fake.data.lock().unwrap().token_status = None;
+    let recovered = commit(
+        &db.state,
+        &person("robert"),
+        "bank.renew",
+        json!({"connection_id":id}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(recovered["result"]["health"]["status"], "connected");
+    assert_eq!(health(&db).await["reason"], Value::Null);
+    db.drop().await;
+}
+
+#[tokio::test]
+async fn rate_limits_are_persisted_and_previews_never_exchange() {
+    let Some(mut db) = TestDb::new().await else {
+        return;
+    };
+    let fake = Fake::start().await;
+    db.state = db.state.clone().with_bank(fake.bank());
+    let id = connected(&db).await;
+    *db.clock.lock().unwrap() += chrono::Duration::minutes(56);
+    {
+        let mut d = fake.data.lock().unwrap();
+        d.token_status = Some(429);
+        d.retry_after = Some(600);
+    }
+    fake.data.lock().unwrap().advance_on_token = Some(db.clock.clone());
+    commands::run(
+        &db.state,
+        &agent("bank"),
+        "bank.maintain",
+        json!({"connection_id":id}),
+        Mode::Preview,
+    )
+    .await
+    .unwrap();
+    assert_eq!(fake.data.lock().unwrap().tokens, 1);
+    assert_eq!(payvy_server::ramp_worker::tick(&db.state).await.unwrap(), 1);
+    let h = health(&db).await;
+    assert_eq!(h["reason"], "rate_limited");
+    assert_eq!(
+        h["retry_at"],
+        json!((db.state.clock)() + chrono::Duration::minutes(10))
+    );
+    *db.clock.lock().unwrap() += chrono::Duration::minutes(9);
+    assert_eq!(payvy_server::ramp_worker::tick(&db.state).await.unwrap(), 0);
+    assert!(
+        commit(
+            &db.state,
+            &person("robert"),
+            "bank.renew",
+            json!({"connection_id":id})
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(fake.data.lock().unwrap().tokens, 2);
+    fake.data.lock().unwrap().token_status = None;
+    *db.clock.lock().unwrap() += chrono::Duration::minutes(1);
+    assert_eq!(payvy_server::ramp_worker::tick(&db.state).await.unwrap(), 1);
+    assert_eq!(health(&db).await["status"], "connected");
+    db.drop().await;
+}
+
+#[tokio::test]
+async fn rejected_grants_stop_and_read_errors_never_rewrite_health() {
+    for status in [400, 401, 403] {
+        let Some(mut db) = TestDb::new().await else {
+            return;
+        };
+        let fake = Fake::start().await;
+        db.state = db.state.clone().with_bank(fake.bank());
+        let id = connected(&db).await;
+        fake.data.lock().unwrap().token_status = Some(status);
+        *db.clock.lock().unwrap() += chrono::Duration::minutes(56);
+        assert_eq!(payvy_server::ramp_worker::tick(&db.state).await.unwrap(), 1);
+        let h = health(&db).await;
+        assert_eq!(h["status"], "needs_reconnection");
+        assert_eq!(h["reason"], "authorization_rejected");
+        assert!(!h.to_string().contains("private-grant-error"));
+        assert!(
+            commit(&db.state, &agent("bot"), "bank.recipients", json!({}))
+                .await
+                .is_err()
+        );
+        *db.clock.lock().unwrap() += chrono::Duration::hours(1);
+        assert_eq!(payvy_server::ramp_worker::tick(&db.state).await.unwrap(), 0);
+        assert!(
+            commit(
+                &db.state,
+                &person("robert"),
+                "bank.renew",
+                json!({"connection_id":id})
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(fake.data.lock().unwrap().tokens, 2);
+        assert_eq!(health(&db).await["status"], "needs_reconnection");
+        db.drop().await;
+    }
+}
+
+#[tokio::test]
+async fn a_refresh_is_saved_even_if_the_following_health_probe_fails() {
+    let Some(mut db) = TestDb::new().await else {
+        return;
+    };
+    let fake = Fake::start().await;
+    db.state = db.state.clone().with_bank(fake.bank());
+    connected(&db).await;
+    *db.clock.lock().unwrap() += chrono::Duration::minutes(56);
+    fake.data.lock().unwrap().business_status = Some(503);
+    assert_eq!(payvy_server::ramp_worker::tick(&db.state).await.unwrap(), 1);
+    assert_eq!(health(&db).await["status"], "retrying");
+    assert_eq!(fake.data.lock().unwrap().tokens, 2);
+    fake.data.lock().unwrap().business_status = None;
+    *db.clock.lock().unwrap() += chrono::Duration::minutes(1);
+    assert_eq!(payvy_server::ramp_worker::tick(&db.state).await.unwrap(), 1);
+    assert_eq!(health(&db).await["status"], "connected");
+    assert_eq!(fake.data.lock().unwrap().tokens, 2); // no redundant token exchange
+    db.drop().await;
+}
+
+#[tokio::test]
+async fn malformed_tokens_revoked_access_and_missing_refresh_grants_are_safe() {
+    for scenario in ["malformed", "revoked", "no_refresh"] {
+        let Some(mut db) = TestDb::new().await else {
+            return;
+        };
+        let fake = Fake::start().await;
+        db.state = db.state.clone().with_bank(fake.bank());
+        if scenario == "no_refresh" {
+            fake.data.lock().unwrap().missing_refresh = true;
+        }
+        connected(&db).await;
+        *db.clock.lock().unwrap() += chrono::Duration::minutes(56);
+        if scenario == "malformed" {
+            fake.data.lock().unwrap().malformed_token = true;
+        }
+        if scenario == "revoked" {
+            fake.data.lock().unwrap().business_status = Some(401);
+        }
+        assert_eq!(payvy_server::ramp_worker::tick(&db.state).await.unwrap(), 1);
+        let h = health(&db).await;
+        assert_eq!(
+            h["status"],
+            if scenario == "malformed" {
+                "retrying"
+            } else {
+                "needs_reconnection"
+            }
+        );
+        assert_eq!(
+            h["reason"],
+            match scenario {
+                "malformed" => "invalid_response",
+                "revoked" => "authorization_rejected",
+                _ => "no_refresh_grant",
+            }
+        );
+        assert!(!h.to_string().contains("secret"));
+        db.drop().await;
+    }
+}
+
+#[tokio::test]
+async fn mapping_uses_one_vendor_and_stale_mappings_are_labeled() {
+    let Some(mut db) = TestDb::new().await else {
+        return;
+    };
+    let fake = Fake::start().await;
+    db.state = db.state.clone().with_bank(fake.bank());
+    let connection = connected(&db).await;
+    let v = vendor(&db.state, &agent("bot"), "Supply Co").await;
+    let r = commit(
+        &db.state,
+        &agent("bot"),
+        "bank.recipients",
+        json!({"recipient_id":ID}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(fake.data.lock().unwrap().directory_reads, 0);
+    assert_eq!(fake.data.lock().unwrap().vendor_reads, 1);
+    let input = json!({"vendor_id":v,"connection_id":connection,"recipient_id":ID,"method":"ach","instrument_id":ID,"instrument_fingerprint":r["result"]["destinations"][0]["fingerprint"]});
+    let p = commit(
+        &db.state,
+        &agent("bot"),
+        "vendor.propose_payee",
+        input.clone(),
+    )
+    .await
+    .unwrap();
+    commit(
+        &db.state,
+        &person("robert"),
+        "vendor.accept_payee",
+        json!({"proposal_id":p["result"]["proposal"]["id"]}),
+    )
+    .await
+    .unwrap();
+    commit(&db.state, &agent("bot"), "vendor.propose_payee", input)
+        .await
+        .unwrap();
+    assert_eq!(fake.data.lock().unwrap().directory_reads, 0);
+    let detail = commit(
+        &db.state,
+        &agent("bot"),
+        "vendor.get",
+        json!({"vendor_id":v}),
+    )
+    .await
+    .unwrap();
+    assert!(
+        detail["result"]["payees"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|p| p["is_current_connection"] == true)
+    );
+    connected(&db).await;
+    let detail = commit(
+        &db.state,
+        &agent("bot"),
+        "vendor.get",
+        json!({"vendor_id":v}),
+    )
+    .await
+    .unwrap();
+    assert!(
+        detail["result"]["payees"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|p| p["is_current_connection"] == false)
+    );
+    let inbox = commit(&db.state, &person("robert"), "inbox.get", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(
+        inbox["result"]["payee_changes"][0]["is_current_connection"],
+        false
+    );
+    db.drop().await;
+}
+
+/// Stall each HTTP phase, rather than rely on wall-clock sleeps. Bank writes
+/// must finish before the stalled response is released, and that response must
+/// not update the retired connection's credentials, health, or audit events.
+#[tokio::test]
+async fn slow_maintenance_does_not_block_payees_or_connection_changes() {
+    for path in ["/developer/v1/token", "/developer/v1/business"] {
+        let Some(mut db) = TestDb::new().await else {
+            return;
+        };
+        let fake = Fake::start().await;
+        db.state = db.state.clone().with_bank(fake.bank());
+        let id = connected(&db).await;
+        let v = vendor(&db.state, &agent("bot"), "Local supplier").await;
+        let list = commit(
+            &db.state,
+            &agent("bot"),
+            "bank.recipients",
+            json!({"recipient_id":ID}),
+        )
+        .await
+        .unwrap();
+        let fingerprint = list["result"]["destinations"][0]["fingerprint"].clone();
+        let before_health = health(&db).await;
+        let mut tx = db
+            .state
+            .store
+            .begin(payvy_store::DEFAULT_ORG)
+            .await
+            .unwrap();
+        let before_credentials = payvy_store::get_connection(&mut tx, id.parse().unwrap())
+            .await
+            .unwrap()
+            .unwrap()
+            .token_sealed;
+        tx.rollback().await.unwrap();
+        *db.clock.lock().unwrap() += chrono::Duration::minutes(56);
+        let gate = Arc::new(Gate::default());
+        fake.data.lock().unwrap().pause = Some((path.into(), gate.clone()));
+        let state = db.state.clone();
+        let original_id = id.clone();
+        let check = tokio::spawn(async move {
+            commit(
+                &state,
+                &agent("bank"),
+                "bank.maintain",
+                json!({"connection_id":original_id}),
+            )
+            .await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), gate.entered.notified())
+            .await
+            .expect("maintenance reached stalled Ramp request");
+        let replacement = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let proposal = commit(
+                &db.state,
+                &agent("bot"),
+                "vendor.propose_payee",
+                json!({
+                    "vendor_id":v,"connection_id":id,"recipient_id":ID,"method":"ach",
+                    "instrument_id":ID,"instrument_fingerprint":fingerprint
+                }),
+            )
+            .await
+            .unwrap();
+            commit(
+                &db.state,
+                &person("robert"),
+                "vendor.accept_payee",
+                json!({"proposal_id":proposal["result"]["proposal"]["id"]}),
+            )
+            .await
+            .unwrap();
+            commit(
+                &db.state,
+                &person("robert"),
+                "bank.disconnect",
+                json!({"provider":"ramp"}),
+            )
+            .await
+            .unwrap();
+            connected(&db).await
+        })
+        .await
+        .expect("bank operations must not wait for maintenance HTTP");
+        assert_ne!(replacement, id);
+        let replacement_health = health(&db).await;
+        gate.resume.notify_one();
+        let error = check.await.unwrap().unwrap_err();
+        assert!(
+            matches!(error, commands::CommandError::Conflict(_)),
+            "{error}"
+        );
+        assert_eq!(health(&db).await, replacement_health);
+        let mut tx = db
+            .state
+            .store
+            .begin(payvy_store::DEFAULT_ORG)
+            .await
+            .unwrap();
+        let original = payvy_store::get_connection(&mut tx, id.parse().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(original.retired_at.is_some());
+        assert_eq!(original.token_sealed, before_credentials);
+        let h = payvy_store::ramp::health(&mut tx, original.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(json!(h.checked_at), before_health["checked_at"]);
+        assert_eq!(h.health_status, "connected");
+        let events: i64 = sqlx::query_scalar("SELECT count(*) FROM events WHERE entity_id=$1 AND kind IN ('bank.credentials_renewed','bank.connection_checked')")
+            .bind(original.id).fetch_one(&mut *tx).await.unwrap();
+        assert_eq!(events, 0);
+        tx.rollback().await.unwrap();
         assert_eq!(fake.data.lock().unwrap().writes, 0);
         db.drop().await;
     }

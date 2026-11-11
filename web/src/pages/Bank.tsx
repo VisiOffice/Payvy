@@ -22,8 +22,10 @@ import { run } from '../api/client';
 import { date, money } from '../money';
 import { Page } from '../Page';
 import { RampConnection } from './RampConnection';
+import { RampHealth, type RampHealthState } from './RampHealth';
 
 interface Connection {
+  health?: RampHealthState;
   id: string;
   provider: 'mercury' | 'rho' | 'ramp';
   environment: 'production' | 'sandbox';
@@ -61,6 +63,12 @@ export function Bank() {
       .catch((e) => setError(message(e)));
   }, []);
   useEffect(load, [load]);
+  useEffect(() => {
+    const timer = window.setInterval(() => { if (!document.hidden) load(); }, 30_000);
+    const refresh = () => load();
+    window.addEventListener('focus', refresh);
+    return () => { window.clearInterval(timer); window.removeEventListener('focus', refresh); };
+  }, [load]);
 
   const rho = bank?.connections.find((c) => c.provider === 'rho' && c.capability === 'read_only') ?? null;
 
@@ -75,7 +83,9 @@ export function Bank() {
       {bank && (
         <>
           <PayingBank connection={bank.connection} onChange={load} />
-          <RampConnection available={bank.ramp_available} onChanged={load} />
+          <section id="ramp-connect" style={{ scrollMarginTop: 24 }}>
+            <RampConnection available={bank.ramp_available} onChanged={load} />
+          </section>
           <ReadingBank connection={rho} onChange={load} />
         </>
       )}
@@ -151,13 +161,14 @@ function PayingBank({ connection, onChange }: { connection: Connection | null; o
               <MetadataListItem label="Pays from">{c.account_name}</MetadataListItem>
               <MetadataListItem label="Payments">{c.mode === 'setup' ? 'Disabled — setup only' : MODE[c.mode] ?? c.mode}</MetadataListItem>
               <MetadataListItem label="Updates">
-                {c.provider === 'ramp' ? 'Use Renew Ramp access if your session expires' : c.webhook_id ? 'As they happen' : 'Checked every minute'}
+                {c.provider === 'ramp' ? 'Access renews automatically' : c.webhook_id ? 'As they happen' : 'Checked every minute'}
               </MetadataListItem>
             </MetadataList>
+            {c.provider === 'ramp' && <RampHealth connectionId={c.id} health={c.health} onChanged={onChange} />}
             <HStack gap={2} hAlign="between" vAlign="center" wrap="wrap">
               <Connected c={c} />
               <HStack gap={2}>
-                {c.provider === 'ramp' && <RenewRamp connectionId={c.id} />}
+
                 <Button label="Replace with Mercury" variant="ghost" onClick={() => setReplacing(true)} />
                 <Disconnect
                   c={c}
@@ -379,15 +390,4 @@ function ConnectRho({ onConnected }: { onConnected: () => void }) {
       </HStack>
     </VStack>
   );
-}
-
-function RenewRamp({ connectionId }: { connectionId: string }) {
-  const toast = useToast();
-  const [busy, setBusy] = useState(false);
-  return <Button label="Renew Ramp access" variant="ghost" isDisabled={busy} onClick={async () => {
-    setBusy(true);
-    try { await run('bank.renew', { connection_id: connectionId }); toast({ body: 'Ramp access renewed' }); }
-    catch (e) { toast({ body: message(e), type: 'error' }); }
-    finally { setBusy(false); }
-  }} />;
 }
