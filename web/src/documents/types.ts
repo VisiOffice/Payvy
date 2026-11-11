@@ -2,6 +2,7 @@
 // a document next to what was read from it.
 import type { Highlight } from '../viewer/DocumentViewer';
 import { dateForms } from '../viewer/match';
+import type { DocumentEvent, Pages } from './pages';
 
 export interface Doc {
   id: string;
@@ -14,6 +15,7 @@ export interface Doc {
   trashed_reason: string | null;
   received_at: string;
   created_by: string;
+  page_count: number | null;
 }
 
 /** What the model read, as printed on the document. */
@@ -85,12 +87,17 @@ export interface ExtractionSummary {
   failed_checks: string[];
   bill_input: BillInput | null;
   new_vendor: { name: string; email: string | null } | null;
+  /** Read before the pages were last rearranged. */
+  out_of_date?: boolean;
 }
 
 export interface DocumentDetail {
   document: Doc;
+  pages: Pages;
   /** Newest first. */
   extractions: ExtractionSummary[];
+  /** Everything that happened to the document, newest first. */
+  history: DocumentEvent[];
 }
 
 export const FIELDS: { key: keyof Read; label: string; isDate?: boolean; isAmount?: boolean }[] = [

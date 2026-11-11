@@ -218,7 +218,27 @@ body { -webkit-font-smoothing: antialiased; }
 .payvy-review-primary strong { font-size: 12px; font-weight: 600; }
 .payvy-review-primary p { font-size: 11px; color: var(--color-text-secondary); margin-top: 4px; line-height: 1.5; }
 .payvy-review-secondary { display: flex; justify-content: center; gap: 12px; margin-top: 8px; }
-.payvy-review-original { min-width: 0; min-height: 0; overflow: hidden; }
+.payvy-review-original { min-width: 0; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
+.payvy-review-viewer { flex: 1; min-height: 0; }
+.payvy-pages { flex: none; border-bottom: 1px solid var(--color-border); background: var(--color-background-surface); padding: 12px 20px 10px; }
+.payvy-pages-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; font-size: 12px; margin-bottom: 10px; }
+.payvy-pages-head strong { font-weight: 550; }
+.payvy-pages-head > span { color: var(--color-text-secondary); font-size: 11px; }
+.payvy-pages-head .payvy-pages-locked { color: var(--color-text-warning); background: var(--color-warning-muted); border-radius: 5px; padding: 2px 8px; }
+.payvy-pages-strip { display: flex; gap: 10px; overflow-x: auto; list-style: none; margin: 0; padding: 2px 2px 6px; }
+.payvy-page-thumb { flex: none; width: 132px; display: grid; justify-items: center; gap: 6px; padding: 8px 6px 6px; border: 1px solid var(--color-border); border-radius: 8px; background: var(--color-background-card); }
+.payvy-page-thumb:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
+.payvy-page-thumb[draggable='true'] { cursor: grab; }
+.payvy-page-thumb[data-dragging] { opacity: .5; }
+.payvy-page-thumb-picture { width: 100%; height: 92px; display: flex; align-items: center; justify-content: center; }
+.payvy-page-thumb-picture img, .payvy-page-thumb-blank { max-width: 88px; max-height: 92px; box-shadow: 0 1px 3px #0000002e; background: white; }
+.payvy-page-thumb-blank { display: block; width: 70px; height: 90px; }
+.payvy-page-thumb-number { font-size: 11px; color: var(--color-text-secondary); font-variant-numeric: tabular-nums; }
+.payvy-page-thumb-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 2px; }
+.payvy-page-thumb[data-hidden] .payvy-page-thumb-picture { opacity: .35; filter: grayscale(1); }
+.payvy-page-thumb[data-hidden] { background: var(--color-background-muted); border-style: dashed; }
+.payvy-page-history { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; font-size: 12px; }
+.payvy-page-history li { display: grid; gap: 2px; }
 .payvy-review-tabs { display: none; }
 .payvy-document-provenance { font-size: 11px; color: var(--color-text-secondary); border-top: 1px solid var(--color-border); padding-top: 16px; }
 .payvy-document-provenance summary { cursor: pointer; }
@@ -264,6 +284,12 @@ body { -webkit-font-smoothing: antialiased; }
   .payvy-review-loading { display: grid; grid-template-columns: 1fr; }
   .payvy-review-loading .payvy-preview-placeholder { display: none; }
   .payvy-viewer-toolbar { padding: 12px; }
+  .payvy-pages { padding: 10px 12px 8px; }
+  .payvy-page-thumb { width: 120px; padding: 8px 4px 6px; }
+  .payvy-page-thumb-actions { gap: 0; }
+  .payvy-page-thumb-picture { height: 72px; }
+  .payvy-page-thumb-picture img, .payvy-page-thumb-blank { max-height: 72px; max-width: 72px; }
+  .payvy-page-thumb-blank { width: 56px; height: 72px; }
 }
 @media (max-width: 640px) {
   .payvy-document-upload { padding: 16px; }

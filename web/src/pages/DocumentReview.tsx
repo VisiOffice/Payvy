@@ -19,6 +19,9 @@ import { ReasonDialog } from '../inbox/ReasonDialog';
 import { cents, date, dollars, money } from '../money';
 import { DocumentViewer } from '../viewer/DocumentViewer';
 import { highlightsOf, type BillLine, type DocumentDetail, type ExtractionSummary } from '../documents/types';
+import { PageStrip } from '../documents/PageStrip';
+import { historyLine } from '../documents/pages';
+import { useSession } from '../session';
 
 interface Vendor {
   id: string;
@@ -102,6 +105,7 @@ export function DocumentReview() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const toast = useToast();
+  const { me } = useSession();
   const [detail, setDetail] = useState<DocumentDetail | null>(null);
   const [vendors, setVendors] = useState<Vendor[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -140,6 +144,17 @@ export function DocumentReview() {
     void load();
     return () => { request.current++; };
   }, [load]);
+
+  /** The document again, keeping what was typed in the form. */
+  const refresh = useCallback(async () => {
+    if (!id) return;
+    try {
+      const d = await run<DocumentDetail>('document.get', { document_id: id });
+      setDetail(d.result);
+    } catch (e) {
+      toast({ body: e instanceof Error ? e.message : String(e), type: 'error' });
+    }
+  }, [id, toast]);
 
   const latest = detail?.extractions[0];
   const highlights = useMemo(() => highlightsOf(latest?.extraction.answer), [latest]);
@@ -218,6 +233,9 @@ export function DocumentReview() {
     !amountCents && 'enter the amount',
   ].filter((m): m is string => !!m);
 
+  const nameOf = (actor: string) => (actor === me.person.actor ? me.person.name : actor);
+  const pageHistory = detail.history.filter((h) => h.kind === 'document.arranged').slice(0, 5);
+
   const match = x?.vendor_match;
   const vendorNote =
     match?.result === 'matched'
@@ -273,6 +291,14 @@ export function DocumentReview() {
               title="Reading it failed"
               description={x.error ?? undefined}
               endContent={<Button label="Try again" size="sm" clickAction={readAgain} />}
+            />
+          )}
+          {latest?.out_of_date && x?.status === 'read' && !reading && doc.status === 'inbox' && (
+            <Banner
+              status="warning"
+              title="Read before the pages were rearranged"
+              description="These details were read from the pages as they were. Read it again to bring them up to date."
+              endContent={<Button label="Read again" size="sm" clickAction={readAgain} />}
             />
           )}
           {doc.status === 'inbox' && open.length > 0 && (
@@ -416,6 +442,19 @@ export function DocumentReview() {
               </ul>
             </Collapsible>
           )}
+          {pageHistory.length > 0 && (
+            <VStack gap={2}>
+              <Text type="label">Page history</Text>
+              <ol className="payvy-page-history" aria-label="Page history">
+                {pageHistory.map((h) => (
+                  <li key={h.id}>
+                    <Text>{historyLine(h, nameOf)}</Text>
+                    <Text type="supporting">{date(h.at)}</Text>
+                  </li>
+                ))}
+              </ol>
+            </VStack>
+          )}
           <details className="payvy-document-provenance"><summary>Document information</summary><p>{doc.source === 'email' ? 'Emailed' : 'Uploaded'} {date(doc.received_at)}</p>{x && <p>Read by {x.model}</p>}</details>
         </VStack></div>
         {doc.status === 'inbox' && <footer className="payvy-review-actions">
@@ -424,7 +463,22 @@ export function DocumentReview() {
         </footer>}
       </section>
       <section className="payvy-review-original" aria-label="Original document">
-        <DocumentViewer documentId={doc.id} contentType={doc.content_type} highlights={highlights} focus={focus} />
+        <PageStrip
+          documentId={doc.id}
+          contentType={doc.content_type}
+          pages={detail.pages}
+          onChange={setDetail}
+          onStale={refresh}
+        />
+        <div className="payvy-review-viewer">
+          <DocumentViewer
+            documentId={doc.id}
+            contentType={doc.content_type}
+            highlights={highlights}
+            focus={focus}
+            arrangement={detail.pages.arrangement}
+          />
+        </div>
       </section>
       </div>
 
@@ -462,3 +516,4 @@ function Field({
     </div>
   );
 }
+

@@ -29,6 +29,7 @@ const EVENT: Record<string, string> = {
   'bill.payment_failed': 'Payment failed',
   'bill.payment_returned': 'Payment returned',
   'bill.voided': 'Voided',
+  'bill.pages_arranged': 'Pages rearranged',
 };
 
 /** An event kind like `bill.created` as words. */

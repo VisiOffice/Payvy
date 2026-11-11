@@ -20,7 +20,7 @@ import { ReleaseDialog } from '../inbox/ReleaseDialog';
 import { METHOD, type Bill as BillT } from '../inbox/types';
 import { DueText } from '../Due';
 import { date, money } from '../money';
-import { DocumentViewer } from '../viewer/DocumentViewer';
+import { DocumentViewer, type PageRef } from '../viewer/DocumentViewer';
 import { highlightsOf, type DocumentDetail, type Read } from '../documents/types';
 import { ReadFields } from '../documents/ReadFields';
 import { waitingOnOthers, type ApprovalTurn } from '../approval';
@@ -49,7 +49,9 @@ interface Detail {
     external_ref?: string | null;
   }[];
   documents: { id: string; filename: string; content_type: string }[];
-  history: { id: string; kind: string; actor: string; at: string }[];
+  /** The page arrangement of its document the bill pinned. */
+  arrangement: { version: number; pages: PageRef[] | null } | null;
+  history: { id: string; kind: string; actor: string; at: string; payload?: { summary?: string } }[];
 }
 
 const STEP_STATE: Record<Step['state'], { label: string; variant: 'success' | 'info' | 'neutral' }> = {
@@ -229,7 +231,8 @@ export function BillPage() {
               <li key={h.id}>
                 <span className="payvy-dot" aria-hidden="true" />
                 <Text>
-                  {eventLabel(h.kind)}{' '}
+                  {eventLabel(h.kind)}
+                  {h.kind === 'bill.pages_arranged' && h.payload?.summary ? `: ${h.payload.summary}` : ''}{' '}
                   <Text type="supporting">
                     {date(h.at)} · by {h.actor}
                   </Text>
@@ -249,7 +252,13 @@ export function BillPage() {
         <div className="payvy-split">
           <div className="payvy-split-side">{side}</div>
           <div className="payvy-split-doc">
-            <DocumentViewer documentId={doc.id} contentType={doc.content_type} highlights={highlights} focus={focus} />
+            <DocumentViewer
+              documentId={doc.id}
+              contentType={doc.content_type}
+              highlights={highlights}
+              focus={focus}
+              arrangement={detail.arrangement?.pages}
+            />
           </div>
         </div>
       ) : (
