@@ -88,7 +88,7 @@ is provided in this first version.
   Calling them early, repeatedly, or for another company cannot generate extra
   notices. No-change attempts return conflict.
 
-Migration `0018_notifications.sql` adds RLS-protected settings and a durable outbox.
+Migration `0019_notifications.sql` adds RLS-protected settings and a durable outbox.
 No bill status is stored or changed. The worker uses keyset pagination across all
 open bills (no newest-N cutoff), handles time-based workflow transitions, and
 sends at most 50 notices per company per pass with five concurrent provider calls.
