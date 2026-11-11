@@ -412,7 +412,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "po.match_apply",
         summary: "Reserve bill amounts against purchase orders. Atomic across every PO in the call: all affected POs are locked in a consistent order, the whole set is validated (active, vendor, available plus the revision's pinned allowance, total not over the bill), then everything reserves together or nothing does. Reserving is preparation, not approval.",
-        tier: RiskTier::Routine,
+        tier: RiskTier::Confirmed,
         person_only: false,
         permission: Permission::Prepare,
         input_schema: r#"{"type":"object","required":["bill_id","allocations"],"properties":{"bill_id":{"type":"string","format":"uuid"},"allocations":{"type":"array","minItems":1,"items":{"type":"object","required":["po_id","amount_cents"],"properties":{"po_id":{"type":"string","format":"uuid"},"amount_cents":{"type":"integer","minimum":1}}}}}}"#,
@@ -420,7 +420,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "po.override",
         summary: "Permit one bill's PO exception (person only, separate from vendor approval): bound to this bill, its current POs and allocations, the exception and an authorized excess amount, with a required reason. Relevant changes void it and need a new override. It does not create PO capacity or hide the excess.",
-        tier: RiskTier::Routine,
+        tier: RiskTier::Confirmed,
         person_only: true,
         permission: Permission::Admin,
         input_schema: r#"{"type":"object","required":["bill_id","authorized_excess_cents","reason"],"properties":{"bill_id":{"type":"string","format":"uuid"},"authorized_excess_cents":{"type":"integer","minimum":0},"reason":{"type":"string"}}}"#,

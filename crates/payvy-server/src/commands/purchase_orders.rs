@@ -305,10 +305,18 @@ pub async fn activate(cx: &mut Cx<'_>, input: PoId) -> Result<Value, CommandErro
             po.po_number, po.status
         )));
     }
-    if text(po.owner.clone()).is_none() {
+    let Some(owner) = text(po.owner.clone()) else {
         return Err(CommandError::Invalid(
             "a PO needs an owner before it can be activated".into(),
         ));
+    };
+    // The owner is accountable for the PO's exceptions, so it must be someone
+    // who can sign in to this company now, not just a name.
+    let people = store::people(&mut cx.tx, cx.org).await?;
+    if !people.iter().any(|p| p.actor == owner) {
+        return Err(CommandError::Invalid(format!(
+            "the owner {owner:?} isn't a person in this company; set the owner to someone in Settings > People"
+        )));
     }
     if po.revision.is_none() {
         return Err(CommandError::Invalid(

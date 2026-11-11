@@ -5,9 +5,24 @@ use payvy_server::commands::CommandError;
 use serde_json::{Value, json};
 
 mod common;
-use common::{TestDb, agent, bill, commit, person, vendor};
+use common::{TestDb, agent, bill, commit, confirm, person, vendor};
+
+/// The PO owner must be a person in the company before activation.
+async fn add_robert(db: &TestDb) {
+    let r = commit(
+        &db.state,
+        &person("admin"),
+        "person.add",
+        json!({ "email": "robert@example.com", "name": "Robert", "actor": "robert" }),
+    )
+    .await;
+    if let Err(e) = r {
+        assert!(matches!(e, CommandError::Conflict(_)), "{e}");
+    }
+}
 
 async fn active_po(db: &TestDb, vendor_id: &str, number: &str, cents: i64) -> String {
+    add_robert(db).await;
     let robert = person("robert");
     let created = commit(&db.state, &agent("claude-ap"), "po.create", json!({
         "vendor_id": vendor_id, "po_number": number, "owner": "robert", "authorized_cents": cents,
@@ -73,6 +88,15 @@ async fn lifecycle_draft_then_person_activates_and_agents_cannot() {
     .await
     .unwrap_err();
     assert!(matches!(e, CommandError::PersonOnly(_)), "{e}");
+    // The owner must be a person in the company, not just a name.
+    let e = commit(&db.state, &robert, "po.activate", json!({ "po_id": id }))
+        .await
+        .unwrap_err();
+    assert!(
+        e.to_string().contains("isn't a person in this company"),
+        "{e}"
+    );
+    add_robert(&db).await;
     let active = commit(&db.state, &robert, "po.activate", json!({ "po_id": id }))
         .await
         .unwrap();
@@ -103,7 +127,7 @@ async fn partial_billing_reserves_accepts_and_reverses() {
     assert_eq!(preview["result"]["candidates"][0]["proposed_cents"], 40_000);
     assert_eq!(amounts(&db, &po).await["reserved_cents"], 0);
     // $400 then $600 against a $1,000 PO: both valid, neither equals the total.
-    let applied = commit(
+    let applied = confirm(
         &db.state,
         &agent("claude-ap"),
         "po.match_apply",
@@ -134,7 +158,7 @@ async fn partial_billing_reserves_accepts_and_reverses() {
     assert_eq!(accepted["result"]["amounts"]["consumed_cents"], 40_000);
     assert_eq!(accepted["result"]["amounts"]["reserved_cents"], 0);
     let b600 = bill(&db.state, &agent("claude-ap"), &v, "inv-600", 60_000).await;
-    commit(
+    confirm(
         &db.state,
         &agent("claude-ap"),
         "po.match_apply",
@@ -147,7 +171,7 @@ async fn partial_billing_reserves_accepts_and_reverses() {
     assert_eq!(amounts(&db, &po).await["progress"], "fully_billed");
     // Nothing left: even $1 is refused, and releasing restores it exactly.
     let b1 = bill(&db.state, &agent("claude-ap"), &v, "inv-1", 100).await;
-    let e = commit(
+    let e = confirm(
         &db.state,
         &agent("claude-ap"),
         "po.match_apply",
@@ -215,7 +239,7 @@ async fn overage_cap_is_cumulative_smaller_of_both_and_revision_pinned() {
     assert_eq!(got["result"]["revision"]["allowance_cents"], 2_500);
     let b1 = bill(&db.state, &agent("claude-ap"), &v, "cap-1", 60_000).await;
     let b2 = bill(&db.state, &agent("claude-ap"), &v, "cap-2", 60_000).await;
-    commit(
+    confirm(
         &db.state,
         &agent("claude-ap"),
         "po.match_apply",
@@ -226,7 +250,7 @@ async fn overage_cap_is_cumulative_smaller_of_both_and_revision_pinned() {
     .await
     .unwrap();
     // Splitting the overcharge across invoices cannot evade the cumulative cap.
-    let e = commit(
+    let e = confirm(
         &db.state,
         &agent("claude-ap"),
         "po.match_apply",
@@ -238,7 +262,7 @@ async fn overage_cap_is_cumulative_smaller_of_both_and_revision_pinned() {
     .unwrap_err();
     assert!(matches!(e, CommandError::Conflict(_)), "{e}");
     let b3 = bill(&db.state, &agent("claude-ap"), &v, "cap-3", 42_500).await;
-    commit(
+    confirm(
         &db.state,
         &agent("claude-ap"),
         "po.match_apply",
@@ -261,7 +285,7 @@ async fn a_revision_never_releases_allocations_and_splits_are_atomic() {
     let a = active_po(&db, &v, "PO-A", 30_000).await;
     let b = active_po(&db, &v, "PO-B", 30_000).await;
     let bill600 = bill(&db.state, &agent("claude-ap"), &v, "split-1", 60_000).await;
-    commit(&db.state, &agent("claude-ap"), "po.match_apply", json!({
+    confirm(&db.state, &agent("claude-ap"), "po.match_apply", json!({
         "bill_id": bill600,
         "allocations": [{ "po_id": a, "amount_cents": 30_000 }, { "po_id": b, "amount_cents": 30_000 }],
     })).await.unwrap();
@@ -293,7 +317,7 @@ async fn a_revision_never_releases_allocations_and_splits_are_atomic() {
     assert_eq!(after_get["result"]["revision"]["revision"], 2);
     // A failing split reserves on neither PO.
     let other_bill = bill(&db.state, &agent("claude-ap"), &v, "split-2", 40_000).await;
-    let e = commit(&db.state, &agent("claude-ap"), "po.match_apply", json!({
+    let e = confirm(&db.state, &agent("claude-ap"), "po.match_apply", json!({
         "bill_id": other_bill,
         "allocations": [{ "po_id": a, "amount_cents": 20_000 }, { "po_id": b, "amount_cents": 20_000 }],
     })).await.unwrap_err();
@@ -302,7 +326,7 @@ async fn a_revision_never_releases_allocations_and_splits_are_atomic() {
     assert_eq!(amounts(&db, &b).await["reserved_cents"], 30_000);
     // And allocations may not exceed the bill itself.
     let small = bill(&db.state, &agent("claude-ap"), &v, "split-3", 10_000).await;
-    let e = commit(
+    let e = confirm(
         &db.state,
         &agent("claude-ap"),
         "po.match_apply",
@@ -336,7 +360,7 @@ async fn imports_land_as_drafts_with_opening_consumption_counted_once() {
     let id = imported["result"]["id"].as_str().unwrap().to_owned();
     // Drafts take no allocations, and re-importing does not double-count.
     let b = bill(&db.state, &agent("claude-ap"), &v, "imp-1", 10_000).await;
-    let e = commit(
+    let e = confirm(
         &db.state,
         &agent("claude-ap"),
         "po.match_apply",
@@ -351,6 +375,7 @@ async fn imports_land_as_drafts_with_opening_consumption_counted_once() {
         .await
         .unwrap();
     assert_eq!(again["result"]["id"], id);
+    add_robert(&db).await;
     commit(&db.state, &robert, "po.activate", json!({ "po_id": id }))
         .await
         .unwrap();
@@ -375,7 +400,7 @@ async fn two_bills_racing_for_the_last_capacity_exactly_one_reserves() {
             let state = &db.state;
             let po = po.clone();
             async move {
-                commit(state, &agent("claude-ap"), "po.match_apply", json!({
+                confirm(state, &agent("claude-ap"), "po.match_apply", json!({
                 "bill_id": bill_id, "allocations": [{ "po_id": po, "amount_cents": 70_000 }],
             })).await
             }
@@ -432,7 +457,7 @@ async fn the_payment_gate_blocks_release_and_an_override_permits_it() {
     assert!(matches!(e, CommandError::Conflict(_)), "{e}");
     assert!(e.to_string().contains("no_po"), "{e}");
     // mass assignment of bank details is not the override: only a person, with a reason.
-    let e = commit(
+    let e = confirm(
         &db.state,
         &agent("claude-ap"),
         "po.override",
@@ -444,7 +469,7 @@ async fn the_payment_gate_blocks_release_and_an_override_permits_it() {
     .unwrap_err();
     assert!(matches!(e, CommandError::PersonOnly(_)), "{e}");
     // An override below the excess is refused; at the excess it permits release.
-    let e = commit(
+    let e = confirm(
         &db.state,
         &robert,
         "po.override",
@@ -455,7 +480,7 @@ async fn the_payment_gate_blocks_release_and_an_override_permits_it() {
     .await
     .unwrap_err();
     assert!(matches!(e, CommandError::Invalid(_)), "{e}");
-    let over = commit(&db.state, &robert, "po.override", json!({
+    let over = confirm(&db.state, &robert, "po.override", json!({
         "bill_id": b, "authorized_excess_cents": 50_000, "reason": "verbal PO, paperwork follows",
     })).await.unwrap();
     assert_eq!(over["result"]["overridden"], true);
@@ -474,7 +499,7 @@ async fn a_relevant_change_voids_an_override_and_reject_releases_allocations() {
     let v = manual_po_vendor(&db).await;
     let po = active_po(&db, &v, "PO-GATE", 100_000).await;
     let b = bill(&db.state, &agent("claude-ap"), &v, "gate-2", 50_000).await;
-    commit(
+    confirm(
         &db.state,
         &robert,
         "po.override",
@@ -485,7 +510,7 @@ async fn a_relevant_change_voids_an_override_and_reject_releases_allocations() {
     .await
     .unwrap();
     // Allocating after the override changes the scoped facts: it no longer holds.
-    commit(
+    confirm(
         &db.state,
         &agent("claude-ap"),
         "po.match_apply",

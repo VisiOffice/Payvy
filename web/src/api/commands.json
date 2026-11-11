@@ -366,7 +366,7 @@
       "permission": "prepare",
       "person_only": false,
       "summary": "Reserve bill amounts against purchase orders. Atomic across every PO in the call: all affected POs are locked in a consistent order, the whole set is validated (active, vendor, available plus the revision's pinned allowance, total not over the bill), then everything reserves together or nothing does. Reserving is preparation, not approval.",
-      "tier": "routine"
+      "tier": "confirmed"
     },
     {
       "input_schema": "{\"type\":\"object\",\"required\":[\"bill_id\",\"authorized_excess_cents\",\"reason\"],\"properties\":{\"bill_id\":{\"type\":\"string\",\"format\":\"uuid\"},\"authorized_excess_cents\":{\"type\":\"integer\",\"minimum\":0},\"reason\":{\"type\":\"string\"}}}",
@@ -374,7 +374,7 @@
       "permission": "admin",
       "person_only": true,
       "summary": "Permit one bill's PO exception (person only, separate from vendor approval): bound to this bill, its current POs and allocations, the exception and an authorized excess amount, with a required reason. Relevant changes void it and need a new override. It does not create PO capacity or hide the excess.",
-      "tier": "routine"
+      "tier": "confirmed"
     },
     {
       "input_schema": "{\"type\":\"object\",\"required\":[\"allocation_id\"],\"properties\":{\"allocation_id\":{\"type\":\"string\",\"format\":\"uuid\"}}}",

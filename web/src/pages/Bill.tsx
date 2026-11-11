@@ -15,7 +15,8 @@ import { Text } from '@astryxdesign/core/Text';
 import { TextInput } from '@astryxdesign/core/TextInput';
 import { useToast } from '@astryxdesign/core/Toast';
 import { VStack } from '@astryxdesign/core/VStack';
-import { run } from '../api/client';
+import { preview as previewCommand, run } from '../api/client';
+import type { PoMatchApplyInput } from '../api/commands.gen';
 import { Page } from '../Page';
 import { billStatus, eventLabel } from '../status';
 import { ReasonDialog } from '../inbox/ReasonDialog';
@@ -349,7 +350,10 @@ function PoPanel({ billId, po, onChange }: {
     const amount = toCents(amounts[poId] ?? '');
     if (amount === null) return;
     try {
-      await run('po.match_apply', { bill_id: billId, allocations: [{ po_id: poId, amount_cents: amount }] });
+      // Confirmed: reserve exactly what the preview checked.
+      const input: PoMatchApplyInput = { bill_id: billId, allocations: [{ po_id: poId, amount_cents: amount }] };
+      const p = await previewCommand('po.match_apply', input);
+      await run('po.match_apply', input, p.confirm_token);
       toast({ body: 'Reserved against the purchase order' });
       onChange();
       loadPreview();
@@ -371,7 +375,10 @@ function PoPanel({ billId, po, onChange }: {
     const amount = toCents(excess);
     if (amount === null || !reason.trim()) return;
     try {
-      await run('po.override', { bill_id: billId, authorized_excess_cents: amount, reason: reason.trim() });
+      // Confirmed: permit exactly the excess the preview checked.
+      const input = { bill_id: billId, authorized_excess_cents: amount, reason: reason.trim() };
+      const p = await previewCommand('po.override', input);
+      await run('po.override', input, p.confirm_token);
       toast({ body: 'Exception permitted for this bill' });
       setReason('');
       onChange();
