@@ -36,6 +36,7 @@ interface Step {
 }
 
 interface Detail {
+  invoice_review?: { id:string; version:number; document_id:string; created_by:string; summary_reason:string | null; payload:{ rows: {id:string; description:string; amount:string; excluded_reason:string|null}[] } } | null;
   bill: BillT & { created_by: string; created_at: string };
   lines: { description: string; amount_cents: number }[];
   progress: ({ status: string; waiting_on?: string[]; steps?: Step[] } & Record<string, unknown>) | string | null;
@@ -195,6 +196,12 @@ export function BillPage() {
         </VStack>
       )}
 
+      {detail.invoice_review && <Card><VStack gap={2}>
+        <Text weight="semibold">Invoice review · revision {detail.invoice_review.version}</Text>
+        <Text type="supporting">Recorded by {detail.invoice_review.created_by}. Review history and excluded rows remain with the source document.</Text>
+        {detail.invoice_review.summary_reason && <Banner status="warning" title="Summary-only bill" description={detail.invoice_review.summary_reason} />}
+        <Link href={`/documents/${detail.invoice_review.document_id}`}>View source and review history</Link>
+      </VStack></Card>}
       {detail.lines.length > 0 && (
         <VStack gap={2}>
           <Heading level={2}>Lines</Heading>

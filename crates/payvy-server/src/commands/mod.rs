@@ -11,6 +11,7 @@ mod email;
 mod events;
 mod extract;
 mod inbox;
+mod invoice_reviews;
 mod notifications;
 mod org;
 mod payee_invites;
@@ -198,6 +199,14 @@ pub async fn run(
 
 async fn execute(cx: &mut Cx<'_>, name: &str, input: &Value) -> Result<Value, CommandError> {
     match name {
+        "invoice_review.settings" => invoice_reviews::settings(cx).await,
+        "invoice_review.configure" => invoice_reviews::configure(cx, parse(input)?).await,
+        "document.review_get" => invoice_reviews::get(cx, parse(input)?).await,
+        "document.review_save" => invoice_reviews::save(cx, parse(input)?).await,
+        "document.review_preview" => invoice_reviews::preview(cx, parse(input)?).await,
+        "document.review_accept_summary" => {
+            invoice_reviews::accept_summary(cx, parse(input)?).await
+        }
         "notification.settings" => notifications::settings(cx, parse(input)?).await,
         "notification.configure" => notifications::configure(cx, parse(input)?).await,
         "notification.list" => notifications::list(cx, parse(input)?).await,

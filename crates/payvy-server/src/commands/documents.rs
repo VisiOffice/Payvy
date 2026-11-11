@@ -270,6 +270,14 @@ async fn lock(cx: &mut Cx<'_>, doc: &store::Document) -> Result<Option<String>, 
     let Some(bill_id) = doc.bill_id else {
         return Ok(None);
     };
+    if store::bill_invoice_review(&mut cx.tx, bill_id)
+        .await?
+        .is_some()
+    {
+        return Ok(Some(
+            "Pages are pinned to the saved invoice review used to create this bill".into(),
+        ));
+    }
     let bill = store::get_bill(&mut cx.tx, bill_id).await?.ok_or_else(|| {
         anyhow::anyhow!("document {} is filed with missing bill {bill_id}", doc.id)
     })?;

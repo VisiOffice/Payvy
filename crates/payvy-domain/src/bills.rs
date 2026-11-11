@@ -52,8 +52,8 @@ pub enum BillError {
     NotPositive,
     #[error("invoice_number can't be empty")]
     NoInvoiceNumber,
-    #[error("line {0}: amount_cents must be more than zero")]
-    LineNotPositive(usize),
+    #[error("line amounts exceed the supported range")]
+    AmountOverflow,
     #[error("the lines add up to {lines} cents but the bill is {total} cents")]
     LinesDontAddUp { lines: Cents, total: Cents },
     #[error("due_date is before invoice_date")]
@@ -73,11 +73,11 @@ pub fn validate(
     if invoice_key(invoice_number).is_empty() {
         return Err(BillError::NoInvoiceNumber);
     }
-    if let Some(i) = lines.iter().position(|l| l.amount_cents <= 0) {
-        return Err(BillError::LineNotPositive(i + 1));
-    }
     if !lines.is_empty() {
-        let sum: Cents = lines.iter().map(|l| l.amount_cents).sum();
+        let sum = lines
+            .iter()
+            .try_fold(0i64, |s, l| s.checked_add(l.amount_cents))
+            .ok_or(BillError::AmountOverflow)?;
         if sum != amount_cents {
             return Err(BillError::LinesDontAddUp {
                 lines: sum,

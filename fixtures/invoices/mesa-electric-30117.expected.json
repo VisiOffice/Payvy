@@ -5,5 +5,19 @@
   "invoice_date": "2026-10-30",
   "tax_cents": 2618,
   "total_cents": 34163,
-  "line_count": 3
+  "line_count": 3,
+  "lines": [
+    {
+      "description": "12/2 Romex, 250 ft (2)",
+      "amount_cents": 23800
+    },
+    {
+      "description": "20A breakers (10)",
+      "amount_cents": 11250
+    },
+    {
+      "description": "Contractor discount 10%",
+      "amount_cents": -3505
+    }
+  ]
 }

@@ -47,6 +47,7 @@ export interface SuggestedInvoice {
 
 /** What the model read, as printed on the document. */
 export interface Read {
+  lines?: {description:string; amount:string}[];
   vendor_name: string | null;
   invoice_number: string | null;
   invoice_date: string | null;
@@ -132,7 +133,7 @@ export interface DocumentDetail {
   split_into: SplitPart[];
 }
 
-export const FIELDS: { key: keyof Read; label: string; isDate?: boolean; isAmount?: boolean }[] = [
+export const FIELDS: { key: Exclude<keyof Read, 'lines'>; label: string; isDate?: boolean; isAmount?: boolean }[] = [
   { key: 'vendor_name', label: 'Vendor' },
   { key: 'invoice_number', label: 'Invoice number' },
   { key: 'invoice_date', label: 'Invoice date', isDate: true },
