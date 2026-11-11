@@ -1,5 +1,5 @@
 -- The ceiling on automatic payments. One row with vendor_id NULL is the
--- company's limit; a row per vendor may set a lower one. With no company
+-- company's limit; a row per vendor overrides it, higher or lower. With no company
 -- row, the default in payvy-domain applies ($5,000.00,
 -- workflow::DEFAULT_AUTO_PAY_LIMIT_CENTS), so existing and new companies
 -- start with the same ceiling. There is no "no limit".
