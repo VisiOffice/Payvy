@@ -1010,7 +1010,9 @@ async fn activation_refuses_opening_consumption_over_authorized_plus_allowance()
     .await
     .unwrap_err();
     assert!(matches!(e, CommandError::Conflict(_)), "{e}");
-    assert!(e.to_string().contains("opening"), "{e}");
+    assert!(e.to_string().contains("opening consumption"), "{e}");
+    assert!(e.to_string().contains("$1,100.00"), "{e}");
+    assert!(!e.to_string().contains("110000"), "{e}");
     // Still a draft, and raising the authorized amount by revision fixes it.
     commit(
         &db.state,

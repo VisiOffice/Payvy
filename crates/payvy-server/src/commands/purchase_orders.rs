@@ -393,11 +393,12 @@ pub async fn activate(cx: &mut Cx<'_>, input: PoId) -> Result<Value, CommandErro
     let amounts = po_store::amounts(&mut cx.tx, &po).await?;
     if amounts.committed_cents() > amounts.ceiling_cents() {
         return Err(CommandError::Conflict(format!(
-            "PO {} has {} in opening consumption, over its authorized {} plus allowance {};              raise the authorized amount (po.update) or correct the import before activating",
+            "PO {} has {} in opening consumption, over its authorized {} plus allowance {}. \
+             Raise the authorized amount (po.update) or correct the import before activating",
             po.po_number,
-            amounts.committed_cents(),
-            amounts.authorized_cents,
-            amounts.allowance_cents
+            payvy_domain::workflow::dollars(amounts.committed_cents()),
+            payvy_domain::workflow::dollars(amounts.authorized_cents),
+            payvy_domain::workflow::dollars(amounts.allowance_cents)
         )));
     }
     po_store::set_status(
