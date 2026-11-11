@@ -85,7 +85,9 @@ invoice number, dates, lines, tax and total. Payvy checks the numbers against ea
 the vendor, flags duplicates and keeps a draft that someone enters with one command. Use Claude or
 anything with an OpenAI-compatible API: OpenAI, Gemini, Grok, OpenRouter, or a model on your own
 server so invoices never leave it. Sample invoices in the repo score any model before you trust it.
-See [`docs/extraction.md`](docs/extraction.md).
+See [`docs/extraction.md`](docs/extraction.md). An optional [richer reader pilot](docs/extraction-v2.md)
+adds quantity/rate details, source citations and checked line review. It is off by default;
+real-invoice accuracy evaluation remains a rollout gate.
 
 **Try historical invoices.** The [legacy importer pilot](docs/legacy-invoice-import.md)
 exports a small sample from old Django Payvy into Documents for review. It includes

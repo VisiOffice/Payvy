@@ -1,4 +1,5 @@
 use super::{CommandError, Cx, documents};
+use payvy_domain::invoice_evidence::{self as evidence, SourcePage};
 use payvy_domain::{
     extraction,
     invoice_review::{self as rules, Review, Row, TaxBasis},
@@ -17,30 +18,140 @@ pub struct Get {
 #[serde(deny_unknown_fields)]
 pub struct Configure {
     enabled: bool,
+    extraction_v2_enabled: Option<bool>,
 }
 
 pub async fn settings(cx: &mut Cx<'_>) -> Result<Value, CommandError> {
-    Ok(json!({"enabled": store::invoice_review_enabled(&mut cx.tx).await?}))
+    Ok(
+        json!({"enabled": store::invoice_review_enabled(&mut cx.tx).await?, "extraction_v2_enabled":store::extraction_v2_enabled(&mut cx.tx).await?}),
+    )
 }
 pub async fn configure(cx: &mut Cx<'_>, input: Configure) -> Result<Value, CommandError> {
     store::lock_invoice_settings(&mut cx.tx, cx.org).await?;
     let was = store::invoice_review_enabled(&mut cx.tx).await?;
-    if was == input.enabled {
+    let old_v2 = store::extraction_v2_enabled(&mut cx.tx).await?;
+    let v2 = input.enabled && input.extraction_v2_enabled.unwrap_or(old_v2);
+    if was == input.enabled && old_v2 == v2 {
         return Err(CommandError::Conflict(
             "Line review setting is unchanged".into(),
         ));
     }
     store::set_invoice_review_enabled(&mut cx.tx, cx.org, input.enabled).await?;
+    store::set_extraction_v2_enabled(&mut cx.tx, cx.org, v2).await?;
     cx.emit(
         "invoice_review.configured",
         cx.org,
-        json!({"was":was,"enabled":input.enabled}),
+        json!({"was":was,"enabled":input.enabled,"extraction_v2_was":old_v2,"extraction_v2_enabled":v2}),
     )
     .await?;
     settings(cx).await
 }
-fn result(r: &InvoiceReview) -> Value {
-    json!({"review":r,"validation":rules::validate(&r.payload)})
+async fn result(cx: &mut Cx<'_>, r: &InvoiceReview) -> Result<Value, CommandError> {
+    let (validation, analysis) = validate(cx, r.document_id, &r.payload, r.extraction_id).await?;
+    Ok(json!({"review":r,"validation":validation,"analysis":analysis}))
+}
+async fn validate(
+    cx: &mut Cx<'_>,
+    doc: Uuid,
+    payload: &Review,
+    extraction: Option<Uuid>,
+) -> Result<(rules::Validation, Option<Value>), CommandError> {
+    let mut validation = rules::validate(payload);
+    let reading = match extraction {
+        Some(id) => store::get_extraction(&mut cx.tx, id).await?,
+        None => None,
+    };
+    let analysis = reading.as_ref().and_then(|e| e.analysis.clone());
+    let is_v2 = analysis.as_ref().is_some_and(|a| a["schema_version"] == 2);
+    let missing_reading = !is_v2 && store::extraction_v2_enrolled(&mut cx.tx, doc).await?;
+    if !is_v2 && !missing_reading {
+        return Ok((validation, analysis));
+    }
+    let data = if is_v2 {
+        analysis.clone().unwrap_or(Value::Null)
+    } else {
+        json!({"schema_version":2,"coverage_ok":false,"coverage":{"reason":"No current richer reading is available. Read again or check all selected pages manually."}})
+    };
+    if (data["coverage_ok"] != true || data["stale"] == true)
+        && payload
+            .coverage_resolution
+            .as_ref()
+            .is_none_or(|s| s.trim().is_empty())
+    {
+        validation.issues.push(rules::Issue{code:"page_coverage_incomplete",row_id:None,detail:"The reader did not establish complete page coverage. Check every selected page against the original and record what you confirmed, or read again.".into()});
+        validation.header_ready = false;
+    }
+    let pages: Vec<SourcePage> =
+        serde_json::from_value(data["source_pages"].clone()).unwrap_or_default();
+    let mut resolved_rows = Vec::new();
+    for row in &payload.rows {
+        if row.excluded_reason.is_some() {
+            resolved_rows.push(json!([]));
+            continue;
+        }
+        let details = row.details.clone().unwrap_or_default();
+        if let Some(original) = row.source_index.and_then(|i| {
+            reading
+                .as_ref()
+                .and_then(|e| e.answer.as_ref())
+                .and_then(|a| a["lines"].get(i))
+        }) {
+            let old: evidence::LineDetails =
+                serde_json::from_value(original["details"].clone()).unwrap_or_default();
+            let omitted = old.fields().iter().any(|(f, v)| {
+                v.is_some()
+                    && details
+                        .fields()
+                        .iter()
+                        .any(|(k, new)| f == k && new.is_none())
+            });
+            let lost_uncertainty = old.states.iter().any(|(f, state)| {
+                matches!(
+                    state,
+                    evidence::FieldState::Unreadable | evidence::FieldState::Conflicting
+                ) && details.states.get(f) != Some(state)
+            });
+            if (omitted || lost_uncertainty)
+                && row
+                    .source_resolution
+                    .as_ref()
+                    .is_none_or(|s| s.trim().is_empty())
+            {
+                validation.issues.push(rules::Issue{code:"source_detail_removed",row_id:Some(row.id.clone()),detail:"An extracted detail or uncertainty was removed. Explain what you verified against the original.".into()});
+            }
+        }
+
+        let mut fields = vec![
+            ("description", Some(row.description.as_str())),
+            ("amount", Some(row.amount.as_str())),
+        ];
+        fields.extend(details.fields());
+        let grounded: Vec<_> = fields
+            .into_iter()
+            .filter_map(|(f, v)| {
+                v.map(|v| evidence::ground(f, v, &row.description, &details, &pages))
+            })
+            .flatten()
+            .collect();
+        if grounded.iter().any(|g| g.status != "located")
+            && row
+                .source_resolution
+                .as_ref()
+                .is_none_or(|s| s.trim().is_empty())
+        {
+            validation.issues.push(rules::Issue{code:"source_unverified",row_id:Some(row.id.clone()),detail:"Some row fields could not be located with their row context. Check the cited pages and record a source resolution; text location alone never verifies correctness.".into()});
+        }
+        resolved_rows.push(json!(grounded));
+    }
+    validation.ready = validation.issues.is_empty();
+    let mut analysis = data;
+    if !analysis.is_object() {
+        analysis = json!({"schema_version":2,"coverage_ok":false});
+    }
+    analysis["rows"] = json!(resolved_rows);
+    // Full source text stays in the extraction record; the review panel needs only quotes/status.
+    analysis.as_object_mut().unwrap().remove("source_pages");
+    Ok((validation, Some(analysis)))
 }
 fn initial(ex: Option<&store::Extraction>) -> Review {
     let answer = ex.and_then(|e| e.answer.as_ref());
@@ -60,6 +171,11 @@ fn initial(ex: Option<&store::Extraction>) -> Review {
             description: l["description"].as_str().unwrap_or("").into(),
             amount: l["amount"].as_str().unwrap_or("").into(),
             excluded_reason: None,
+            details: l
+                .get("details")
+                .and_then(|d| serde_json::from_value(d.clone()).ok()),
+            quantity_resolution: None,
+            source_resolution: None,
         })
         .collect();
     let tax = field("tax");
@@ -86,6 +202,7 @@ fn initial(ex: Option<&store::Extraction>) -> Review {
         tax,
         tax_basis,
         source_checked: false,
+        coverage_resolution: None,
     }
 }
 pub async fn get(cx: &mut Cx<'_>, input: Get) -> Result<Value, CommandError> {
@@ -94,7 +211,14 @@ pub async fn get(cx: &mut Cx<'_>, input: Get) -> Result<Value, CommandError> {
         .ok_or(CommandError::NotFound("document"))?;
     let history = store::invoice_review_history(&mut cx.tx, input.document_id).await?;
     let extractions = store::document_extractions(&mut cx.tx, input.document_id).await?;
-    let latest = extractions.iter().find(|e| e.status == "read");
+    let current_version = documents::current_arrangement(cx, input.document_id)
+        .await?
+        .map_or(0, |a| a.version);
+    let latest = extractions.iter().find(|e| {
+        e.status == "read"
+            && e.arrangement_version == current_version
+            && e.analysis.as_ref().is_none_or(|a| a["stale"] != true)
+    });
     let enabled = store::invoice_review_enabled(&mut cx.tx).await?;
     let required = enabled || store::invoice_review_enrolled(&mut cx.tx, input.document_id).await?;
     let version = documents::current_arrangement(cx, input.document_id)
@@ -102,8 +226,13 @@ pub async fn get(cx: &mut Cx<'_>, input: Get) -> Result<Value, CommandError> {
         .map_or(0, |a| a.version);
     let seed = initial(latest);
     let payload = history.first().map(|r| &r.payload).unwrap_or(&seed);
+    let ex = history
+        .first()
+        .map(|r| r.extraction_id)
+        .unwrap_or_else(|| latest.map(|e| e.id));
+    let (validation, analysis) = validate(cx, input.document_id, payload, ex).await?;
     Ok(
-        json!({"enabled":enabled,"required":required,"review":history.first(),"history":history,"initial":seed,"extraction_id":latest.map(|e|e.id),"arrangement_version":version,"validation":rules::validate(payload)}),
+        json!({"analysis":analysis,"enabled":enabled,"required":required,"review":history.first(),"history":history,"initial":seed,"extraction_id":latest.map(|e|e.id),"arrangement_version":version,"validation":validation}),
     )
 }
 
@@ -225,7 +354,35 @@ async fn writable(
     }
     Ok(history)
 }
-pub async fn save(cx: &mut Cx<'_>, input: Save) -> Result<Value, CommandError> {
+fn invalidate_resolutions(input: &mut Save, old: Option<&InvoiceReview>) {
+    if let Some(old) = old {
+        for row in &mut input.payload.rows {
+            if let Some(before) = old.payload.rows.iter().find(|r| r.id == row.id) {
+                if (row.amount != before.amount
+                    || row.description != before.description
+                    || row.details != before.details)
+                    && row.quantity_resolution == before.quantity_resolution
+                {
+                    row.quantity_resolution = None;
+                }
+                if (row.amount != before.amount
+                    || row.description != before.description
+                    || row.details != before.details)
+                    && row.source_resolution == before.source_resolution
+                {
+                    row.source_resolution = None;
+                }
+            }
+        }
+        if (old.arrangement_version != input.arrangement_version
+            || old.extraction_id != input.extraction_id)
+            && old.payload.coverage_resolution == input.payload.coverage_resolution
+        {
+            input.payload.coverage_resolution = None;
+        }
+    }
+}
+pub async fn save(cx: &mut Cx<'_>, mut input: Save) -> Result<Value, CommandError> {
     store::lock_invoice_settings(&mut cx.tx, cx.org).await?;
     let request =
         json!({"command":"document.review_save","actor_kind":cx.actor.kind,"input":input});
@@ -237,7 +394,7 @@ pub async fn save(cx: &mut Cx<'_>, input: Save) -> Result<Value, CommandError> {
                 "Request ID was already used for different input".into(),
             ));
         }
-        return Ok(result(&r));
+        return result(cx, &r).await;
     }
     let history = writable(
         cx,
@@ -246,6 +403,7 @@ pub async fn save(cx: &mut Cx<'_>, input: Save) -> Result<Value, CommandError> {
         input.arrangement_version,
     )
     .await?;
+    invalidate_resolutions(&mut input, history.first());
     check_source(cx, &input, history.first()).await?;
     if history.first().is_some_and(|r| {
         r.payload == input.payload
@@ -273,9 +431,9 @@ pub async fn save(cx: &mut Cx<'_>, input: Save) -> Result<Value, CommandError> {
     )
     .await?;
     cx.emit("document.review_saved",input.document_id,json!({"review_id":r.id,"version":r.version,"previous_review_id":history.first().map(|r|r.id),"summary_invalidated":history.first().is_some_and(|r|r.summary_reason.is_some())})).await?;
-    Ok(result(&r))
+    result(cx, &r).await
 }
-pub async fn preview(cx: &mut Cx<'_>, input: Save) -> Result<Value, CommandError> {
+pub async fn preview(cx: &mut Cx<'_>, mut input: Save) -> Result<Value, CommandError> {
     let history = writable(
         cx,
         input.document_id,
@@ -283,8 +441,11 @@ pub async fn preview(cx: &mut Cx<'_>, input: Save) -> Result<Value, CommandError
         input.arrangement_version,
     )
     .await?;
+    invalidate_resolutions(&mut input, history.first());
     check_source(cx, &input, history.first()).await?;
-    Ok(json!({"validation":rules::validate(&input.payload)}))
+    let (validation, analysis) =
+        validate(cx, input.document_id, &input.payload, input.extraction_id).await?;
+    Ok(json!({"validation":validation,"analysis":analysis}))
 }
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -304,7 +465,7 @@ pub async fn accept_summary(cx: &mut Cx<'_>, input: AcceptSummary) -> Result<Val
         if r.request_payload != request {
             return Err(CommandError::Conflict("Request ID was reused".into()));
         }
-        return Ok(result(&r));
+        return result(cx, &r).await;
     }
     let history = writable(
         cx,
@@ -321,7 +482,11 @@ pub async fn accept_summary(cx: &mut Cx<'_>, input: AcceptSummary) -> Result<Val
             "Give a summary-only reason (1–1000 characters)".into(),
         ));
     }
-    if !rules::validate(&old.payload).header_ready {
+    if !validate(cx, old.document_id, &old.payload, old.extraction_id)
+        .await?
+        .0
+        .header_ready
+    {
         return Err(CommandError::Invalid(
             "Review invoice details and source before accepting summary-only".into(),
         ));
@@ -354,7 +519,7 @@ pub async fn accept_summary(cx: &mut Cx<'_>, input: AcceptSummary) -> Result<Val
         json!({"review_id":r.id,"previous_review_id":old.id,"reason":input.reason}),
     )
     .await?;
-    Ok(result(&r))
+    result(cx, &r).await
 }
 
 /// Called under the document lock by bill.create, even if the client omitted
@@ -405,7 +570,9 @@ pub async fn for_bill(
             ));
         }
     }
-    let validation = rules::validate(&r.payload);
+    let validation = validate(cx, r.document_id, &r.payload, r.extraction_id)
+        .await?
+        .0;
     if !validation.header_ready || (!validation.ready && r.summary_reason.is_none()) {
         return Err(CommandError::Invalid(
             "Resolve line review issues or have a person explicitly accept a summary-only bill"

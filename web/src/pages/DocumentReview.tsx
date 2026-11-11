@@ -1,4 +1,4 @@
-import { LineReview, type ReviewDetail, type ReviewPayload, type ReviewRevision, type ReviewValidation } from '../documents/LineReview';
+import { LineReview, type ReviewDetail, type ReviewPayload, type ReviewRevision, type ReviewValidation, type SourceEvidence, type ReviewAnalysis } from '../documents/LineReview';
 import { Allowed, useCan } from '../permissions';
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps, type ReactNode } from 'react';
 import { useNavigate, useParams } from 'react-router';
@@ -181,6 +181,7 @@ export function DocumentReview() {
   /** Pages ticked for the bill: the original's page numbers. */
   const [selected, setSelected] = useState<Set<number>>(new Set());
   /** The page the viewer shows: the original's page number. */
+  const [evidenceFocus, setEvidenceFocus] = useState<SourceEvidence | null>(null);
   const [current, setCurrent] = useState<number | null>(null);
   const [thumbnails, setThumbnails] = useState<boolean | null>(thumbnailsChoice);
   const request = useRef(0);
@@ -250,8 +251,8 @@ export function DocumentReview() {
   const highlights = useMemo(() => {
     const answer = detail?.extractions.find(x => x.extraction.id === reviewExtraction)?.extraction.answer;
     const sourceLines = answer?.lines ?? [];
-    return [...highlightsOf(latest?.extraction.answer), ...sourceLines.map((row,i) => ({key:`line-${i}`,label:`Original line ${i+1}`,candidates:[row.description].filter(Boolean)}))];
-  }, [latest, detail, reviewExtraction]);
+    return [...(evidenceFocus?.quote ? [{key:'evidence',label:'Cited source text',candidates:[evidenceFocus.quote],page:evidenceFocus.page ?? undefined}] : []), ...highlightsOf(latest?.extraction.answer), ...sourceLines.map((row,i) => ({key:`line-${i}`,label:`Original line ${i+1}`,candidates:[row.description].filter(Boolean)}))];
+  }, [latest, detail, reviewExtraction, evidenceFocus]);
 
   const activeReview = !!reviewDetail?.required;
   const currentReview: ReviewPayload | null = reviewPayload ? { ...reviewPayload,
@@ -356,7 +357,7 @@ export function DocumentReview() {
     if (!currentReview || !reviewDetail) return;
     setReviewBusy(true);
     try {
-      const r = await run<{review: ReviewRevision; validation: ReviewValidation}>('document.review_save', {
+      const r = await run<{review: ReviewRevision; validation: ReviewValidation; analysis: ReviewAnalysis | null}>('document.review_save', {
         document_id: doc.id, extraction_id: reviewExtraction,
         expected_version: reviewDetail.review?.version ?? 0,
         arrangement_version: detail!.pages.version, request_id: crypto.randomUUID(), payload: currentReview,
@@ -370,7 +371,7 @@ export function DocumentReview() {
     if (!reviewDetail?.review) return;
     setReviewBusy(true);
     try {
-      const r = await run<{review: ReviewRevision; validation: ReviewValidation}>('document.review_accept_summary', {
+      const r = await run<{review: ReviewRevision; validation: ReviewValidation; analysis: ReviewAnalysis | null}>('document.review_accept_summary', {
         document_id:doc.id, expected_version:reviewDetail.review.version,
         arrangement_version:detail!.pages.version, request_id:crypto.randomUUID(),reason,
       });
@@ -451,7 +452,7 @@ export function DocumentReview() {
     }
   }
 
-  const checks = (x?.checks ?? []).filter(c => !activeReview || !['lines_readable', 'lines_add_up', 'subtotal_plus_tax'].includes(c.check));
+  const checks = (x?.checks ?? []).filter(c => !activeReview || !['lines_readable', 'lines_add_up', 'subtotal_plus_tax', 'page_coverage_incomplete'].includes(c.check));
   // A vendor problem is settled once someone chooses or adds the vendor;
   // several invoices have their own notice below.
   const open = checks.filter(
@@ -708,6 +709,7 @@ export function DocumentReview() {
               {activeReview && currentReview && reviewDetail && <LineReview
                 value={currentReview} onChange={setReviewPayload} detail={reviewDetail}
                 dirty={reviewDirty} busy={reviewBusy} save={saveReview} summary={acceptSummary}
+                evidence={item => {setEvidenceFocus(item);setCurrent(item.page);setFocus('evidence');setMobileView('original');}}
                 canSummary={can('document.review_accept_summary')} source={i => setFocus(`line-${i}`)}
                 newer={reviewDetail.extraction_id !== reviewExtraction} useNew={useNewReading} partial={partial || groups.length > 1} split={partial ? splitForReview : null}
               />}

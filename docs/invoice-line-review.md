@@ -12,7 +12,8 @@ Only document-backed bill creation takes the company enrollment lock; manual ent
 
 ## Review a document
 
-The current reader still extracts description and amount. Review shows those original
+The default v1 reader extracts description and amount. The separate opt-in
+[richer reader](extraction-v2.md) adds quantity/rate details and source checks. Review shows those original
 rows even before a vendor is matched and even when they do not reconcile. Edit amounts,
 add rows, move rows up, or exclude/restore a row with a reason. Discounts are negative;
 zero rows are retained. Select whether tax is already included or added once. Missing

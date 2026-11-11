@@ -17,8 +17,10 @@ mod common;
 use common::{TestDb, agent, commit, person, vendor};
 
 /// Answers queued by the test, and the requests it received.
+type ReadGate = (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>);
 #[derive(Clone, Default)]
 struct Fake {
+    gate: Arc<Mutex<Option<ReadGate>>>,
     answers: Arc<Mutex<Vec<(StatusCode, Value)>>>,
     seen: Arc<Mutex<Vec<(HeaderMap, Value)>>>,
 }
@@ -39,6 +41,11 @@ async fn reply(
     Json(body): Json<Value>,
 ) -> (StatusCode, Json<Value>) {
     fake.seen.lock().unwrap().push((headers, body));
+    let gate = fake.gate.lock().unwrap().clone();
+    if let Some((started, resume)) = gate {
+        started.notify_one();
+        resume.notified().await;
+    }
     let next = {
         let mut q = fake.answers.lock().unwrap();
         (!q.is_empty()).then(|| q.remove(0))
@@ -313,12 +320,13 @@ async fn the_reader_records_failures_and_retries_later() {
     let first = &got["result"]["extractions"][0]["extraction"];
     assert_eq!(first["status"], "failed");
     assert_eq!(first["created_by"], "extractor");
+    assert!(first["error"].as_str().unwrap().contains("503"), "{first}");
+
     assert!(
-        first["error"]
+        !first["error"]
             .as_str()
             .unwrap()
-            .contains("model is loading"),
-        "{first}"
+            .contains("model is loading")
     );
 
     // It waits before trying again.
@@ -415,5 +423,364 @@ async fn the_eval_scores_answers_against_the_fixtures() {
         score.right >= 9 && score.right < score.total,
         "{}",
         score.right
+    );
+}
+
+fn rich_invoice() -> Value {
+    let mut read = king_invoice();
+    read["vendor_name"] = json!("Synthetic Services");
+    read["invoice_number"] = json!("V2-100");
+    read["invoice_date"] = json!("2026-11-11");
+    read["due_date"] = Value::Null;
+    read["subtotal"] = Value::Null;
+    read["tax"] = Value::Null;
+    read["total"] = json!("30.86");
+    read["coverage"] = json!({"pages_read":[1],"complete":true,"reason":null});
+    read["lines"] = json!([
+        {"description":"Disposal","amount":"30.86","details":{"quantity":"2.5","unit":"ton","unit_price":"12.345"}},
+        {"description":"Included visit","amount":"0.00","details":{"quantity":"1","unit":"visit","unit_price":"0.00"}}
+    ]);
+    for row in read["lines"].as_array_mut().unwrap() {
+        let quote = format!(
+            "{} {} {} {} {}",
+            row["description"].as_str().unwrap(),
+            row["details"]["quantity"].as_str().unwrap(),
+            row["details"]["unit"].as_str().unwrap(),
+            row["details"]["unit_price"].as_str().unwrap(),
+            row["amount"].as_str().unwrap()
+        );
+        let mut states = serde_json::Map::new();
+        let mut evidence = Vec::new();
+        for field in payvy_domain::invoice_evidence::FIELDS {
+            let present = if ["description", "amount"].contains(field) {
+                true
+            } else {
+                row["details"][field].is_string()
+            };
+            states.insert(
+                (*field).into(),
+                json!(if present { "present" } else { "absent" }),
+            );
+            if present {
+                evidence.push(json!({"field":field,"page":1,"quote":quote}));
+            }
+        }
+        row["details"]["states"] = json!(states);
+        row["details"]["evidence"] = json!(evidence);
+    }
+    read
+}
+async fn upload_rich(db: &TestDb) -> String {
+    let bytes = include_bytes!("../../../fixtures/invoices-v2/fractional.pdf");
+    let r = commit(&db.state,&person("reviewer"),"document.upload",json!({"filename":"fractional.pdf","content_base64":base64::engine::general_purpose::STANDARD.encode(bytes)})).await.unwrap();
+    r["result"]["id"].as_str().unwrap().into()
+}
+#[tokio::test]
+async fn richer_review_gates_arithmetic_evidence_and_retains_immutable_metadata() {
+    let Some((db, fake)) = db_with(Provider::OpenAiCompatible).await else {
+        return;
+    };
+    let who = person("reviewer");
+    let v = vendor(&db.state, &who, "Synthetic Services").await;
+    commit(
+        &db.state,
+        &who,
+        "invoice_review.configure",
+        json!({"enabled":true,"extraction_v2_enabled":true}),
+    )
+    .await
+    .unwrap();
+    let doc = upload_rich(&db).await;
+    fake.answer(StatusCode::OK, openai_says(&rich_invoice()));
+    let ex = commit(
+        &db.state,
+        &who,
+        "document.extract",
+        json!({"document_id":doc}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(ex["result"]["extraction"]["analysis"]["schema_version"], 2);
+    assert_eq!(ex["result"]["ready"], false);
+    assert_eq!(ex["result"]["review_required"], true);
+    assert_eq!(ex["result"]["extraction"]["analysis"]["coverage_ok"], true);
+    let get = commit(
+        &db.state,
+        &who,
+        "document.review_get",
+        json!({"document_id":doc}),
+    )
+    .await
+    .unwrap();
+    let mut p = get["result"]["initial"].clone();
+    p["vendor_id"] = json!(v);
+    p["source_checked"] = json!(true);
+    // Explain the original explicitly, so the contract holds without local OCR tools too.
+    for row in p["rows"].as_array_mut().unwrap() {
+        row["source_resolution"] = json!("Checked all fields against the original PDF");
+    }
+    let mut input = json!({"document_id":doc,"extraction_id":get["result"]["extraction_id"],"expected_version":0,"arrangement_version":0,"request_id":uuid::Uuid::new_v4(),"payload":p});
+    let first = commit(&db.state, &who, "document.review_save", input.clone())
+        .await
+        .unwrap();
+    assert_eq!(first["result"]["validation"]["ready"], true);
+    input["expected_version"] = json!(1);
+    input["request_id"] = json!(uuid::Uuid::new_v4());
+    input["payload"]["rows"][0]["details"]["quantity"] = json!("3");
+    let preview = commit(&db.state, &who, "document.review_preview", input.clone())
+        .await
+        .unwrap();
+    assert_eq!(preview["result"]["validation"]["ready"], false);
+    let second = commit(&db.state, &who, "document.review_save", input.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        preview["result"]["validation"],
+        second["result"]["validation"]
+    );
+    assert!(second["result"]["review"]["payload"]["rows"][0]["source_resolution"].is_null());
+    let bill = json!({"vendor_id":v,"document_id":doc,"review_id":second["result"]["review"]["id"],"invoice_number":"V2-100","invoice_date":"2026-11-11","amount_cents":3086});
+    assert!(
+        commit(&db.state, &who, "bill.create", bill.clone())
+            .await
+            .is_err()
+    );
+    input["payload"] = second["result"]["review"]["payload"].clone();
+    input["payload"]["rows"][0]["quantity_resolution"] =
+        json!("Printed quantity corrected; supplier's printed total includes a bundle adjustment");
+    input["payload"]["rows"][0]["source_resolution"] =
+        json!("Checked changed quantity and printed amount against the original");
+    input["expected_version"] = json!(2);
+    input["request_id"] = json!(uuid::Uuid::new_v4());
+    let third = commit(&db.state, &who, "document.review_save", input.clone())
+        .await
+        .unwrap();
+    assert_eq!(third["result"]["validation"]["ready"], true);
+    // Dropping details cannot silently erase extracted quantities or their validation.
+    input["payload"]["rows"][0]["details"] = Value::Null;
+    input["expected_version"] = json!(3);
+    input["request_id"] = json!(uuid::Uuid::new_v4());
+    let omitted = commit(&db.state, &who, "document.review_preview", input)
+        .await
+        .unwrap();
+    assert_eq!(omitted["result"]["validation"]["ready"], false);
+    commit(
+        &db.state,
+        &who,
+        "invoice_review.configure",
+        json!({"enabled":false}),
+    )
+    .await
+    .unwrap();
+    let mut missing = bill.clone();
+    missing.as_object_mut().unwrap().remove("review_id");
+    assert!(
+        commit(&db.state, &who, "bill.create", missing)
+            .await
+            .is_err()
+    );
+    let mut accepted = bill;
+    accepted["review_id"] = third["result"]["review"]["id"].clone();
+    let b = commit(&db.state, &who, "bill.create", accepted)
+        .await
+        .unwrap();
+    assert_eq!(b["result"]["lines"][0]["amount_cents"], 3086);
+    assert_eq!(
+        b["result"]["invoice_review"]["payload"]["rows"][0]["details"]["unit_price"],
+        "12.345"
+    );
+    assert_eq!(
+        b["result"]["invoice_review"]["payload"]["rows"][0]["details"]["quantity"],
+        "3"
+    );
+    let history = commit(
+        &db.state,
+        &who,
+        "document.review_get",
+        json!({"document_id":doc}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        history["result"]["history"][2]["payload"]["rows"][0]["details"]["quantity"],
+        "2.5"
+    );
+    db.drop().await;
+}
+
+#[tokio::test]
+async fn incomplete_page_coverage_needs_explicit_review_even_after_disabling() {
+    let Some((db, fake)) = db_with(Provider::OpenAiCompatible).await else {
+        return;
+    };
+    let who = person("reviewer");
+    let v = vendor(&db.state, &who, "Synthetic Services").await;
+    commit(
+        &db.state,
+        &who,
+        "invoice_review.configure",
+        json!({"enabled":true,"extraction_v2_enabled":true}),
+    )
+    .await
+    .unwrap();
+    let doc = upload_rich(&db).await;
+    let mut read = rich_invoice();
+    read["coverage"] = json!({"complete":false,"pages_read":[],"reason":"Unreadable table"});
+    fake.answer(StatusCode::OK, openai_says(&read));
+    commit(
+        &db.state,
+        &who,
+        "document.extract",
+        json!({"document_id":doc}),
+    )
+    .await
+    .unwrap();
+    commit(
+        &db.state,
+        &who,
+        "invoice_review.configure",
+        json!({"enabled":false}),
+    )
+    .await
+    .unwrap();
+    let get = commit(
+        &db.state,
+        &who,
+        "document.review_get",
+        json!({"document_id":doc}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(get["result"]["required"], true);
+    let mut p = get["result"]["initial"].clone();
+    p["vendor_id"] = json!(v);
+    p["source_checked"] = json!(true);
+    for row in p["rows"].as_array_mut().unwrap() {
+        row["source_resolution"] = json!("Checked original");
+    }
+    let mut input = json!({"document_id":doc,"extraction_id":get["result"]["extraction_id"],"expected_version":0,"arrangement_version":0,"request_id":uuid::Uuid::new_v4(),"payload":p});
+    let r = commit(&db.state, &who, "document.review_save", input.clone())
+        .await
+        .unwrap();
+    assert_eq!(r["result"]["validation"]["header_ready"], false);
+    assert!(commit(&db.state,&who,"document.review_accept_summary",json!({"document_id":doc,"expected_version":1,"arrangement_version":0,"request_id":uuid::Uuid::new_v4(),"reason":"Only summary available"})).await.is_err());
+    input["expected_version"] = json!(1);
+    input["request_id"] = json!(uuid::Uuid::new_v4());
+    input["payload"]["coverage_resolution"] =
+        json!("Checked the single selected page, including both rows and the printed total");
+    let r = commit(&db.state, &who, "document.review_save", input)
+        .await
+        .unwrap();
+    assert_eq!(r["result"]["validation"]["ready"], true);
+    db.drop().await;
+}
+
+#[tokio::test]
+async fn model_wait_releases_document_lock_and_stale_results_stay_history_only() {
+    let Some((db, fake)) = db_with(Provider::OpenAiCompatible).await else {
+        return;
+    };
+    let who = person("reviewer");
+    commit(
+        &db.state,
+        &who,
+        "invoice_review.configure",
+        json!({"enabled":true,"extraction_v2_enabled":true}),
+    )
+    .await
+    .unwrap();
+    let doc = upload_rich(&db).await;
+    let started = Arc::new(tokio::sync::Notify::new());
+    let resume = Arc::new(tokio::sync::Notify::new());
+    *fake.gate.lock().unwrap() = Some((started.clone(), resume.clone()));
+    fake.answer(StatusCode::OK, openai_says(&rich_invoice()));
+    let state = db.state.clone();
+    let actor = who.clone();
+    let d = doc.clone();
+    let reading = tokio::spawn(async move {
+        commit(&state, &actor, "document.extract", json!({"document_id":d})).await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), started.notified())
+        .await
+        .unwrap();
+    commit(
+        &db.state,
+        &who,
+        "invoice_review.configure",
+        json!({"enabled":false}),
+    )
+    .await
+    .unwrap();
+    let required = commit(
+        &db.state,
+        &who,
+        "document.review_get",
+        json!({"document_id":doc}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(required["result"]["required"], true);
+    let duplicate = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        commit(
+            &db.state,
+            &who,
+            "document.extract",
+            json!({"document_id":doc}),
+        ),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(duplicate, Err(CommandError::Conflict(_))));
+    assert_eq!(fake.requests().len(), 1);
+    let arranged = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        commit(
+            &db.state,
+            &who,
+            "document.arrange",
+            json!({"document_id":doc,"expected_version":0,"pages":[{"page":1,"rotation":90}]}),
+        ),
+    )
+    .await;
+    resume.notify_one();
+    arranged
+        .expect("model must not hold document lock")
+        .unwrap();
+    let out = reading.await.unwrap().unwrap();
+    assert_eq!(out["result"]["extraction"]["analysis"]["stale"], true);
+    let get = commit(
+        &db.state,
+        &who,
+        "document.review_get",
+        json!({"document_id":doc}),
+    )
+    .await
+    .unwrap();
+    assert!(get["result"]["extraction_id"].is_null());
+    assert_eq!(get["result"]["validation"]["ready"], false);
+    db.drop().await;
+}
+
+#[tokio::test]
+async fn v2_eval_scores_fields_nulls_repeated_rows_and_coverage() {
+    let (fake, base) = fake_api().await;
+    for _ in 0..4 {
+        fake.answer(StatusCode::OK, openai_says(&rich_invoice()));
+    }
+    let extractor = Extractor::new(Config {
+        provider: Provider::OpenAiCompatible,
+        base_url: format!("{base}/v1"),
+        api_key: None,
+        model: "fake".into(),
+    })
+    .unwrap();
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/invoices-v2");
+    let score = payvy_server::eval::run(&extractor, &dir).await.unwrap();
+    assert_eq!(score.failed_documents, 0);
+    assert_eq!(score.total, 100);
+    assert!(
+        score.right >= 50 && score.right < 100,
+        "only fractional and scanned match this deliberately fixed fake answer"
     );
 }

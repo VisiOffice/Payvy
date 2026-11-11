@@ -289,3 +289,5 @@ button.payvy-wf-node:hover { background: rgb(127 127 127 / 0.06); }
 .payvy-review-row-fields { display: grid; grid-template-columns: minmax(0, 1fr) 7rem; gap: .5rem; margin: .45rem 0; }
 .payvy-review-reconciliation { padding: .7rem; border-radius: 8px; background: color-mix(in srgb, currentColor 5%, transparent); display: grid; gap: .35rem; }
 @media (max-width: 400px) { .payvy-review-row-fields { grid-template-columns: minmax(0, 1fr); } }
+
+.payvy-source-evidence { border-inline-start: 2px solid var(--payvy-border, #7775); padding-inline-start: .6rem; overflow-wrap: anywhere; }

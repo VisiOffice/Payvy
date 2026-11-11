@@ -170,9 +170,24 @@ export function startFakeModel(port: number): Promise<http.Server> {
       }
       const body = JSON.parse(raw);
       const file = fileOf(body);
-      const read = file.includes('American Reclamation')
+      let read = file.includes('American Reclamation')
         ? readReclamation(pagesAsked(body))
         : (READS.find(([needle]) => file.includes(needle))?.[1] ?? blank);
+      if (file.includes('V2-UI')) {
+        read = {...blank, kind:'invoice',vendor_name:'Richer review vendor',invoice_number:'V2-UI',invoice_date:'2026-11-11',currency:'USD',total:'30.86',
+          lines:[{description:'Disposal',amount:'30.86',details:{quantity:'2.5',unit:'ton',unit_price:'12.345'}}]};
+        const rows=read.lines as {description:string;amount:string;details:Record<string,unknown>}[];
+        for(const row of rows){
+          const states:Record<string,string>={};const evidence:object[]=[];
+          for(const field of ['description','amount','quantity','unit','unit_price','tax_amount','tax_rate','item_code','service_start','service_end']) {
+            const present=['description','amount'].includes(field) || row.details[field] != null;
+            states[field]=present?'present':'absent';
+            if(present)evidence.push({field,page:1,quote:'Disposal 2.5 ton 12.345 30.86'});
+          }
+          row.details={...row.details,states,evidence};
+        }
+        read.coverage={pages_read:[1],complete:true,reason:null};
+      }
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(
         JSON.stringify({

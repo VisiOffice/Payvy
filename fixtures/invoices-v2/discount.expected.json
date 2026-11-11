@@ -1,0 +1,41 @@
+{
+  "schema_version": 2,
+  "pages": [
+    1
+  ],
+  "expected": {
+    "invoice_number": "V2-101",
+    "total": "90.00",
+    "currency": "USD",
+    "lines": [
+      {
+        "description": "Rental",
+        "amount": "100.00",
+        "details": {
+          "quantity": "2",
+          "unit": "day",
+          "unit_price": "50.00",
+          "tax_amount": null,
+          "tax_rate": null,
+          "item_code": null,
+          "service_start": null,
+          "service_end": null
+        }
+      },
+      {
+        "description": "Discount",
+        "amount": "-10.00",
+        "details": {
+          "quantity": null,
+          "unit": null,
+          "unit_price": null,
+          "tax_amount": null,
+          "tax_rate": null,
+          "item_code": null,
+          "service_start": null,
+          "service_end": null
+        }
+      }
+    ]
+  }
+}

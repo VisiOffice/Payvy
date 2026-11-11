@@ -50,6 +50,66 @@ pub async fn run(extractor: &Extractor, dir: &Path) -> anyhow::Result<Score> {
             .ok_or_else(|| anyhow::anyhow!("{name}: no document next to its expected answer"))?;
         let bytes = std::fs::read(&file)?;
         let kind = documents::check(&bytes)?;
+        if expected["schema_version"] == 2 {
+            let pages: Vec<u32> = serde_json::from_value(expected["pages"].clone())?;
+            let mut checks = Vec::new();
+            compare_fields("", &expected["expected"], &Value::Null, &mut checks);
+            let count = checks.len() + 1; // complete, exact selected-page coverage
+            score.total += count;
+            match extractor.read_pages_v2(&bytes, kind, &pages).await {
+                Err(e) => {
+                    score.failed_documents += 1;
+                    println!("  {name}: 0/{count} failed: {e}");
+                }
+                Ok(out) => {
+                    checks.clear();
+                    compare_fields("", &expected["expected"], &json!(out.read), &mut checks);
+                    checks.push((
+                        "coverage".into(),
+                        out.read
+                            .coverage
+                            .as_ref()
+                            .is_some_and(|c| c.complete && c.pages_read == pages),
+                    ));
+                    let right = checks.iter().filter(|(_, ok)| *ok).count();
+                    score.right += right;
+                    let sources = crate::source_text::read(&bytes, kind, &pages).await;
+                    let mut located = 0;
+                    let mut checked = 0;
+                    for row in &out.read.lines {
+                        let details = row.details.clone().unwrap_or_default();
+                        let mut fields = vec![
+                            ("description", Some(row.description.as_str())),
+                            ("amount", Some(row.amount.as_str())),
+                        ];
+                        fields.extend(details.fields());
+                        for (field, value) in fields {
+                            if let Some(value) = value {
+                                checked += 1;
+                                let evidence = payvy_domain::invoice_evidence::ground(
+                                    field,
+                                    value,
+                                    &row.description,
+                                    &details,
+                                    &sources,
+                                );
+                                located +=
+                                    usize::from(evidence.iter().all(|g| g.status == "located"));
+                            }
+                        }
+                    }
+                    println!(
+                        "  {name}: {right}/{count} exact fields/row counts/coverage; {located}/{checked} fields have located evidence (not correctness)"
+                    );
+                    for (field, ok) in checks {
+                        if !ok {
+                            println!("    mismatch: {field}");
+                        }
+                    }
+                }
+            }
+            continue;
+        }
         let fields = expected.as_object().map(|o| o.len()).unwrap_or(0);
         score.total += fields;
         let out = match extractor.read(&bytes, kind).await {
@@ -101,4 +161,41 @@ pub async fn run(extractor: &Extractor, dir: &Path) -> anyhow::Result<Score> {
     }
     println!("{}/{} fields right", score.right, score.total);
     Ok(score)
+}
+
+/// Expected nulls are scored too: inventing an absent value is an error.
+/// Arrays score row count as well as every row's fields, preserving repeated rows.
+fn compare_fields(path: &str, want: &Value, got: &Value, checks: &mut Vec<(String, bool)>) {
+    match want {
+        Value::Object(map) => {
+            for (key, value) in map {
+                compare_fields(&format!("{path}/{key}"), value, &got[key], checks);
+            }
+        }
+        Value::Array(rows) => {
+            checks.push((
+                format!("{path}/count"),
+                got.as_array().is_some_and(|r| r.len() == rows.len()),
+            ));
+            for (i, row) in rows.iter().enumerate() {
+                compare_fields(&format!("{path}/{i}"), row, &got[i], checks);
+            }
+        }
+        _ => checks.push((path.into(), want == got)),
+    }
+}
+#[cfg(test)]
+mod v2_tests {
+    use super::*;
+    #[test]
+    fn detects_missing_repeated_rows_and_invented_absent_values() {
+        let want =
+            json!({"lines":[{"quantity":null,"amount":"0.00"},{"quantity":null,"amount":"0.00"}]});
+        let got = json!({"lines":[{"quantity":"0","amount":"0.00"}]});
+        let mut checks = Vec::new();
+        compare_fields("", &want, &got, &mut checks);
+        assert!(checks.contains(&("/lines/count".into(), false)));
+        assert!(checks.contains(&("/lines/0/quantity".into(), false)));
+        assert!(checks.contains(&("/lines/1/amount".into(), false)));
+    }
 }

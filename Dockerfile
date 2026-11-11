@@ -26,7 +26,7 @@ RUN --mount=type=cache,id=payvy-cargo-registry,target=/usr/local/cargo/registry,
 
 FROM debian:trixie-slim AS app
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && apt-get install -y --no-install-recommends ca-certificates curl poppler-utils tesseract-ocr tesseract-ocr-eng \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --uid 10001 --user-group --create-home payvy
 COPY --from=build /out/payvy /usr/local/bin/payvy
