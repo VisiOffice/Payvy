@@ -1,4 +1,4 @@
-// Settings > Bill inbox: the address bills are emailed or forwarded to.
+// Settings > Email-in address: the address bills are emailed or forwarded to.
 // Creating or replacing it is a person's act (email.new_address is
 // person_only), so it lives here.
 import { useCallback, useEffect, useState } from 'react';
@@ -48,7 +48,7 @@ export function EmailSettings() {
     setBusy(true);
     try {
       const r = await run<{ address: string; retired: string | null }>('email.new_address', {});
-      toast({ body: r.result.retired ? `${r.result.retired} no longer works` : 'Bill inbox created' });
+      toast({ body: r.result.retired ? `${r.result.retired} no longer works` : 'Email-in address created' });
       setReplacing(false);
       await load();
     } catch (e) {
@@ -69,11 +69,11 @@ export function EmailSettings() {
 
   return (
     <Page
-      title="Bill inbox"
+      title="Email-in address"
       narrow
       description="Vendors send bills to this address, or you forward them. Attachments land in Documents, are read, and wait for you to review."
     >
-      {error && <Banner status="error" title="Couldn't load the bill inbox" description={error} />}
+      {error && <Banner status="error" title="Couldn't load the email-in address" description={error} />}
       {unavailable && (
         <Banner
           status="info"
@@ -87,7 +87,7 @@ export function EmailSettings() {
           {current.address ? (
             <VStack gap={4}>
               <HStack gap={3} vAlign="center" wrap="wrap">
-                <code className="payvy-inbox-address" aria-label="Bill inbox address">
+                <code className="payvy-inbox-address" aria-label="Email-in address">
                   {current.address}
                 </code>
                 <Button label="Copy" variant="secondary" size="sm" onClick={() => copy(current.address!)} />
@@ -108,7 +108,7 @@ export function EmailSettings() {
             </VStack>
           ) : (
             <VStack gap={3}>
-              <Text>No bill inbox yet.</Text>
+              <Text>No email-in address yet.</Text>
               <HStack>
                 <Button label="Create address" variant="primary" isDisabled={busy} clickAction={create} />
               </HStack>
@@ -119,7 +119,7 @@ export function EmailSettings() {
       <AlertDialog
         isOpen={replacing}
         onOpenChange={setReplacing}
-        title="Replace the bill inbox address?"
+        title="Replace the email-in address?"
         description={`${current?.address ?? 'The current address'} stops working at once, and mail sent to it is lost. Use this if it's getting spam, then give the new address to your vendors and update any forwarding rules.`}
         actionLabel="Replace"
         isActionLoading={busy}

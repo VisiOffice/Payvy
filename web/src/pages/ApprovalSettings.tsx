@@ -62,7 +62,7 @@ export function ApprovalSettings() {
           <VStack gap={4}>
             <Switch
               label="The person who enters a bill can't approve it"
-              description="Whoever entered a bill or uploaded its document needs someone else to approve it. Bills an agent enters, like those read from the bill inbox, aren't affected."
+              description="Whoever entered a bill or uploaded its document needs someone else to approve it. Bills an agent enters, like those emailed to your email-in address, aren't affected."
               value={rules.submitter_cannot_approve}
               changeAction={change}
             />

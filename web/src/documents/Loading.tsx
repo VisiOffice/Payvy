@@ -5,7 +5,7 @@ import { Link } from '@astryxdesign/core/Link';
 export function DocumentLoading() {
   return <div className="payvy-document-review" aria-busy="true">
     <header className="payvy-review-header">
-      <div><Link href="/documents">← Documents</Link><h1>Review invoice</h1></div>
+      <div><Link href="/documents">← Inbox</Link><h1>Review invoice</h1></div>
       <span className="payvy-document-status">Opening document</span>
     </header>
     <div className="payvy-review-workspace payvy-review-loading">

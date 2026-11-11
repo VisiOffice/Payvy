@@ -127,11 +127,30 @@ pub async fn list(cx: &mut Cx<'_>, input: List) -> Result<Value, CommandError> {
     let docs = store::list_documents(&mut cx.tx, &status, limit).await?;
     let sources: Vec<Uuid> = docs.iter().filter_map(|d| d.derived_from).collect();
     let names = store::document_filenames(&mut cx.tx, &sources).await?;
+    let ids: Vec<Uuid> = docs.iter().map(|d| d.id).collect();
+    let readings = store::latest_extractions(&mut cx.tx, &ids).await?;
+    let arrangements = store::latest_arrangements(&mut cx.tx, &ids).await?;
     let documents: Vec<Value> = docs
         .iter()
         .map(|d| {
             let mut v = json!(d);
             v["split_from"] = split_from(d, &names);
+            v["reading"] = readings
+                .iter()
+                .find(|r| r.document_id == d.id)
+                .map_or(Value::Null, super::extract::glance);
+            let cover = arrangements
+                .iter()
+                .find(|a| a.document_id == d.id)
+                .and_then(|a| a.pages.iter().find(|p| !p.hidden).copied())
+                .unwrap_or(PageRef {
+                    page: 1,
+                    rotation: 0,
+                    hidden: false,
+                });
+            // The first page a person would see, for a thumbnail
+            // (GET /api/documents/{id}/cover?page=).
+            v["cover"] = json!({ "page": cover.page, "rotation": cover.rotation });
             v
         })
         .collect();

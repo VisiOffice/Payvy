@@ -212,6 +212,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/commands", get(list_commands))
         .route("/api/commands/{name}", post(run_command))
         .route("/api/documents/{id}/file", get(document_file))
+        .route("/api/documents/{id}/cover", get(document_cover))
         .route("/mcp", post(mcp::handle))
         // A 25 MB document arrives as about 34 MB of base64 in JSON.
         .layer(axum::extract::DefaultBodyLimit::max(36 * 1024 * 1024))
@@ -397,6 +398,51 @@ async fn document_file(
             (header::CACHE_CONTROL, "private, max-age=3600".to_owned()),
         ],
         bytes,
+    )
+        .into_response())
+}
+
+#[derive(Deserialize)]
+struct CoverQuery {
+    page: Option<u32>,
+}
+
+/// A small image of one page (the first by default), for document lists.
+/// An image document is its own cover.
+async fn document_cover(
+    State(state): State<AppState>,
+    Extension(actor): Extension<Actor>,
+    Path(id): Path<Uuid>,
+    axum::extract::Query(q): axum::extract::Query<CoverQuery>,
+) -> Result<Response, CommandError> {
+    let storage = state
+        .storage
+        .as_deref()
+        .ok_or(CommandError::NotConfigured("document storage"))?;
+    let mut tx = state.store.begin(actor.org_id).await?;
+    let doc = payvy_store::get_document(&mut tx, id)
+        .await?
+        .ok_or(CommandError::NotFound("document"))?;
+    tx.rollback().await.map_err(anyhow::Error::from)?;
+    let bytes = storage.get(&doc.storage_key).await?;
+    let (content_type, body) = if doc.content_type == "application/pdf" {
+        let page = q.page.unwrap_or(1).max(1);
+        let png = source_text::cover(&bytes, page)
+            .await
+            .ok_or(CommandError::NotFound("page"))?;
+        ("image/png".to_owned(), png)
+    } else {
+        (doc.content_type, bytes.to_vec())
+    };
+    Ok((
+        [
+            (header::CONTENT_TYPE, content_type),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_owned()),
+            (header::CONTENT_SECURITY_POLICY, "sandbox".to_owned()),
+            // The file never changes; the page asked for is in the URL.
+            (header::CACHE_CONTROL, "private, max-age=86400".to_owned()),
+        ],
+        body,
     )
         .into_response())
 }

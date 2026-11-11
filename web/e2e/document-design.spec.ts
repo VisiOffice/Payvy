@@ -59,7 +59,7 @@ test('a slow document load keeps context, times out, and can be retried without 
   await page.route('**/api/commands/document.get', async route => { await held; await route.continue(); });
   await page.goto(`/documents/${id}`);
   await expect(page.getByText('Getting the original and its invoice details.')).toBeVisible();
-  await expect(page.getByRole('link', { name: '← Documents', exact: true })).toBeVisible();
+  await expect(page.getByRole('link', { name: '← Inbox', exact: true })).toBeVisible();
   await page.screenshot({ path: info.outputPath('review-loading.png'), animations: 'disabled' });
   await page.clock.runFor(15_100);
   await expect(page.getByText("Couldn't load this document", { exact: true })).toBeVisible();

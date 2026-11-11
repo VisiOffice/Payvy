@@ -1254,6 +1254,23 @@ fn arrangement(r: &PgRow) -> anyhow::Result<Arrangement> {
     })
 }
 
+/// The current arrangement of each of these documents; a document still in
+/// its original order (version 0) is absent.
+pub async fn latest_arrangements(
+    tx: &mut Tx,
+    document_ids: &[Uuid],
+) -> anyhow::Result<Vec<Arrangement>> {
+    let rows = sqlx::query(concat!(
+        "SELECT DISTINCT ON (document_id) ",
+        arrangement_cols!(),
+        " FROM document_arrangements WHERE document_id = ANY($1) ORDER BY document_id, version DESC"
+    ))
+    .bind(document_ids)
+    .fetch_all(&mut **tx)
+    .await?;
+    rows.iter().map(arrangement).collect()
+}
+
 /// Every version of a document's arrangement, newest first. Empty while it
 /// is still the original (version 0).
 pub async fn document_arrangements(
@@ -1679,6 +1696,23 @@ pub async fn document_extractions(
         " FROM extractions WHERE document_id = $1 ORDER BY created_at DESC, id"
     ))
     .bind(document_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    Ok(rows.iter().map(extraction).collect())
+}
+
+/// The newest reading of each of these documents (documents never read are
+/// absent), for lists that show what was read at a glance.
+pub async fn latest_extractions(
+    tx: &mut Tx,
+    document_ids: &[Uuid],
+) -> anyhow::Result<Vec<Extraction>> {
+    let rows = sqlx::query(concat!(
+        "SELECT DISTINCT ON (document_id) ",
+        extraction_cols!(),
+        " FROM extractions WHERE document_id = ANY($1) ORDER BY document_id, created_at DESC, id"
+    ))
+    .bind(document_ids)
     .fetch_all(&mut **tx)
     .await?;
     Ok(rows.iter().map(extraction).collect())

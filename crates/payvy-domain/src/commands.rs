@@ -721,7 +721,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "document.list",
-        summary: "Documents in the inbox (default), oldest first; or filed or trashed ones, or split ones (every page moved to other documents). A document split from another has split_from: its id and filename.",
+        summary: "Documents in the inbox (default), oldest first; or filed or trashed ones, or split ones (every page moved to other documents). A document split from another has split_from: its id and filename. Each says what its latest reading found (reading: vendor and how it matched, invoice_count, invoice_numbers, total_cents, dates, failed_checks, ready; null until read) and its cover: the first page shown, for a thumbnail.",
         tier: RiskTier::Read,
         person_only: false,
         permission: Permission::Read,

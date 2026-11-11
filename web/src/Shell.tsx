@@ -14,7 +14,7 @@ import { NavIcon } from './NavIcon';
 
 const NAV = [
   { href: '/', label: 'Waiting on you', icon: 'inbox' },
-  { href: '/documents', label: 'Documents', icon: 'documents' },
+  { href: '/documents', label: 'Inbox', icon: 'documents' },
   { href: '/bills', label: 'All bills', icon: 'bills' },
   { href: '/vendors', label: 'Vendors', icon: 'vendors' },
   { href: '/purchase-orders', label: 'Purchase orders', icon: 'orders' },
@@ -57,7 +57,7 @@ export function Shell({ children }: { children: ReactNode }) {
             </button>}
             items={[
               ...(can('bank.connect') ? [{ label: 'Bank settings', href: '/settings/bank' }] : []),
-              ...(can('email.new_address') ? [{ label: 'Bill inbox', href: '/settings/email' }] : []),
+              ...(can('email.new_address') ? [{ label: 'Email-in address', href: '/settings/email' }] : []),
               ...(can('notification.configure') ? [{ label: 'Notifications', href: '/settings/notifications' }] : []),
               ...(can('approval_rules.set') ? [{ label: 'Approvals', href: '/settings/approvals' }] : []),
               ...(can('po.configure') ? [{ label: 'Purchase orders', href: '/settings/purchase-orders' }] : []),
@@ -95,7 +95,7 @@ export function Shell({ children }: { children: ReactNode }) {
           </SideNavSection>
           <SideNavSection title="Settings">
             <Allowed command="bank.connect"><SideNavItem label="Bank" href="/settings/bank" isSelected={pathname.startsWith('/settings/bank')} /></Allowed>
-            <Allowed command="email.new_address"><SideNavItem label="Bill inbox" href="/settings/email" isSelected={pathname.startsWith('/settings/email')} /></Allowed>
+            <Allowed command="email.new_address"><SideNavItem label="Email-in address" href="/settings/email" isSelected={pathname.startsWith('/settings/email')} /></Allowed>
             <SideNavItem label="People" href="/settings/people" isSelected={pathname.startsWith('/settings/people')} />
             <Allowed command="org.update"><SideNavItem label="Company" href="/settings/company" isSelected={pathname.startsWith('/settings/company')} /></Allowed>
             <Allowed command="auto_pay.raise_limit"><SideNavItem label="Auto-pay limit" href="/settings/auto-pay" isSelected={pathname.startsWith('/settings/auto-pay')} /></Allowed>
