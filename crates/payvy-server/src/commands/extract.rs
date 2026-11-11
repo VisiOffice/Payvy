@@ -160,7 +160,17 @@ pub async fn extract(cx: &mut Cx<'_>, input: Extract) -> Result<Value, CommandEr
     // agent's name; it can be undone. A person on the page gets the
     // suggestion instead. Only a file that arrived is split this way: a
     // document already split from one never is, so this can't loop.
-    if found.len() > 1 && cx.actor.kind != ActorKind::Person && doc.derived_from.is_none() {
+    // The groups come from the model, and an emailed file is untrusted: a
+    // file claiming hundreds of invoices would become hundreds of documents,
+    // each read again at a model call apiece. Past MAX_AUTO_SPLIT it stays
+    // a suggestion for a person.
+    let automatic = cx.actor.kind != ActorKind::Person && doc.derived_from.is_none();
+    if found.len() > MAX_AUTO_SPLIT && automatic {
+        out["split"] = json!({ "error": format!(
+            "the reader found {} invoices; more than {MAX_AUTO_SPLIT} are left for a person to split",
+            found.len()
+        ) });
+    } else if found.len() > 1 && automatic {
         let groups: Vec<Vec<u32>> = found.iter().map(|f| f.pages.clone()).collect();
         // The split checks everything before it writes, so a refusal
         // leaves the reading as it is, with the reason.
@@ -181,6 +191,9 @@ pub async fn extract(cx: &mut Cx<'_>, input: Extract) -> Result<Value, CommandEr
     }
     Ok(out)
 }
+
+/// The most documents an agent's reading splits a file into on its own.
+pub const MAX_AUTO_SPLIT: usize = 20;
 
 /// Adds the vendor and duplicate checks, which need the database.
 async fn vendor_checks(

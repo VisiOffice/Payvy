@@ -682,7 +682,7 @@ fn invoice(number: &str, total: &str, invoices: Value) -> Value {
 
 /// A model that reads a three-page file as two invoices (pages 1–2 and 3),
 /// and each part as the one invoice on the pages it was told to read.
-async fn fake_model() -> (Asked, String) {
+async fn fake_model(many: bool) -> (Asked, String) {
     let asked: Asked = Arc::default();
     let log = asked.clone();
     let app = axum::Router::new().route(
@@ -695,7 +695,13 @@ async fn fake_model() -> (Asked, String) {
                     .unwrap_or_default()
                     .to_owned();
                 log.lock().unwrap().push(prompt.clone());
-                let answer = if prompt.contains("Read only pages 1, 2 of") {
+                let answer = if many {
+                    // One "invoice" per page of a 21-page file.
+                    let each: Vec<Value> = (1..=21)
+                        .map(|n| json!({ "pages": [n], "invoice_number": format!("9{n:03}"), "total": "1.00" }))
+                        .collect();
+                    invoice("9001", "1.00", json!(each))
+                } else if prompt.contains("Read only pages 1, 2 of") {
                     invoice("85273", "8,034.89", json!([]))
                 } else if prompt.contains("Read only page 3 of") {
                     // A part may still look like two to the model; it is
@@ -732,7 +738,11 @@ async fn fake_model() -> (Asked, String) {
 }
 
 async fn with_model(db: &mut TestDb) -> Asked {
-    let (asked, url) = fake_model().await;
+    with_fake(db, false).await
+}
+
+async fn with_fake(db: &mut TestDb, many: bool) -> Asked {
+    let (asked, url) = fake_model(many).await;
     let extractor = Extractor::new(Config {
         provider: Provider::Anthropic,
         base_url: url,
@@ -873,5 +883,27 @@ async fn a_persons_reading_only_suggests_the_invoices() {
         check["detail"],
         "this file holds 2 invoices: invoice 85273 on pages 1–2; invoice 85274 on page 3"
     );
+    db.drop().await;
+}
+
+#[tokio::test]
+async fn the_reader_leaves_a_file_of_too_many_invoices_for_a_person() {
+    let Some(mut db) = TestDb::with_storage().await else {
+        return;
+    };
+    let asked = with_fake(&mut db, true).await;
+    let robert = person("robert");
+    let id = upload(&db, &agent("email"), &pdf(21)).await;
+
+    // Read once, not split: 21 parts would mean 21 more model calls.
+    assert_eq!(
+        payvy_server::extract_worker::tick(&db.state).await.unwrap(),
+        1
+    );
+    assert_eq!(asked.lock().unwrap().len(), 1);
+    let d = get(&db, &robert, &id).await;
+    assert_eq!(d["document"]["status"], "inbox");
+    assert!(d["split_into"].as_array().unwrap().is_empty());
+    assert_eq!(numbers(&d).len(), 21);
     db.drop().await;
 }
