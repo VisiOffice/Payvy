@@ -17,6 +17,7 @@ mod org;
 mod payee_invites;
 mod payments;
 mod people;
+mod purchase_orders;
 mod ramp;
 mod ramp_health;
 mod vendors;
@@ -280,6 +281,23 @@ async fn execute(cx: &mut Cx<'_>, name: &str, input: &Value) -> Result<Value, Co
         "email.import" => email::import(cx, parse(input)?).await,
         "email.list" => email::list(cx, parse(input)?).await,
         "email.get" => email::get(cx, parse(input)?).await,
+        "po.settings" => purchase_orders::settings(cx, parse(input)?).await,
+        "po.configure" => purchase_orders::configure(cx, parse(input)?).await,
+        "po.create" => purchase_orders::create(cx, parse(input)?).await,
+        "po.update" => purchase_orders::update(cx, parse(input)?).await,
+        "po.activate" => purchase_orders::activate(cx, parse(input)?).await,
+        "po.close" => purchase_orders::close(cx, parse(input)?, "closed").await,
+        "po.cancel" => purchase_orders::close(cx, parse(input)?, "canceled").await,
+        "po.get" => purchase_orders::get(cx, parse(input)?).await,
+        "po.list" => purchase_orders::list(cx, parse(input)?).await,
+        "po.import" => purchase_orders::import(cx, parse(input)?).await,
+        "po.vendor_settings" => purchase_orders::vendor_settings(cx, parse(input)?).await,
+        "po.set_vendor_settings" => purchase_orders::set_vendor_settings(cx, parse(input)?).await,
+        "po.match_preview" => purchase_orders::match_preview(cx, parse(input)?).await,
+        "po.match_apply" => purchase_orders::match_apply(cx, parse(input)?).await,
+        "po.override" => purchase_orders::override_exception(cx, parse(input)?).await,
+        "po.allocation_accept" => purchase_orders::allocation_accept(cx, parse(input)?).await,
+        "po.allocation_reverse" => purchase_orders::allocation_reverse(cx, parse(input)?).await,
         "event.list" => events::list(cx, parse(input)?).await,
         other => Err(CommandError::Unknown(other.to_owned())),
     }

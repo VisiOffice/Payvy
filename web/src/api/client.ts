@@ -38,6 +38,8 @@ export interface Me {
   commands: CommandName[];
   person: { actor: string; name: string; email: string };
   organization: { id: string; name: string };
+  /** Features the company turned on. */
+  features: { purchase_orders: boolean };
 }
 
 export const auth = {

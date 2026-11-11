@@ -322,6 +322,142 @@
     },
     {
       "input_schema": "{\"type\":\"object\",\"properties\":{}}",
+      "name": "po.settings",
+      "permission": "read",
+      "person_only": false,
+      "summary": "Whether purchase orders are on for this company. Off (the default) refuses every po.* write and never blocks a payment; reads still work.",
+      "tier": "read"
+    },
+    {
+      "input_schema": "{\"type\":\"object\",\"required\":[\"enabled\"],\"properties\":{\"enabled\":{\"type\":\"boolean\"}}}",
+      "name": "po.configure",
+      "permission": "admin",
+      "person_only": true,
+      "summary": "Turn purchase orders on or off for the company (person only). When on, each vendor's settings decide whether its bills require a PO, applying at once to bills in flight. Turning them off lifts the payment gate; allocations stay on record.",
+      "tier": "routine"
+    },
+    {
+      "input_schema": "{\"type\":\"object\",\"required\":[\"vendor_id\",\"po_number\"],\"properties\":{\"vendor_id\":{\"type\":\"string\",\"format\":\"uuid\"},\"po_number\":{\"type\":\"string\"},\"owner\":{\"type\":\"string\"},\"authorized_cents\":{\"type\":\"integer\",\"minimum\":1},\"service_address\":{\"type\":\"string\"},\"period_start\":{\"type\":\"string\",\"format\":\"date\"},\"period_end\":{\"type\":\"string\",\"format\":\"date\"},\"external_source\":{\"type\":\"string\"},\"external_id\":{\"type\":\"string\"},\"lines\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"required\":[\"description\",\"amount_cents\"],\"properties\":{\"description\":{\"type\":\"string\"},\"quantity\":{\"type\":\"number\"},\"unit\":{\"type\":\"string\"},\"unit_price_cents\":{\"type\":\"integer\"},\"amount_cents\":{\"type\":\"integer\",\"minimum\":1},\"account\":{\"type\":\"string\"}}}}}}",
+      "name": "po.create",
+      "permission": "prepare",
+      "person_only": false,
+      "summary": "Create a draft purchase order for a vendor. Nothing matches against it until a person activates it with po.activate.",
+      "tier": "routine"
+    },
+    {
+      "input_schema": "{\"type\":\"object\",\"required\":[\"po_id\"],\"properties\":{\"po_id\":{\"type\":\"string\",\"format\":\"uuid\"},\"owner\":{\"type\":[\"string\",\"null\"]},\"authorized_cents\":{\"type\":\"integer\",\"minimum\":1},\"reason\":{\"type\":\"string\"},\"service_address\":{\"type\":[\"string\",\"null\"]},\"period_start\":{\"type\":[\"string\",\"null\"],\"format\":\"date\"},\"period_end\":{\"type\":[\"string\",\"null\"],\"format\":\"date\"},\"lines\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"required\":[\"description\",\"amount_cents\"],\"properties\":{\"description\":{\"type\":\"string\"},\"quantity\":{\"type\":\"number\"},\"unit\":{\"type\":\"string\"},\"unit_price_cents\":{\"type\":\"integer\"},\"amount_cents\":{\"type\":\"integer\",\"minimum\":1},\"account\":{\"type\":\"string\"}}}}}}",
+      "name": "po.update",
+      "permission": "admin",
+      "person_only": true,
+      "summary": "Change a purchase order (person only). Editing a draft sets it up; editing an active PO creates a new revision and never releases existing allocations. Vendor, number and currency cannot change.",
+      "tier": "routine"
+    },
+    {
+      "input_schema": "{\"type\":\"object\",\"required\":[\"po_id\"],\"properties\":{\"po_id\":{\"type\":\"string\",\"format\":\"uuid\"}}}",
+      "name": "po.activate",
+      "permission": "admin",
+      "person_only": true,
+      "summary": "Activate a draft purchase order (person only). Requires an owner and an authorized amount. Imported POs arrive as drafts and are activated this way; an import never activates.",
+      "tier": "routine"
+    },
+    {
+      "input_schema": "{\"type\":\"object\",\"required\":[\"po_id\",\"reason\"],\"properties\":{\"po_id\":{\"type\":\"string\",\"format\":\"uuid\"},\"reason\":{\"type\":\"string\"}}}",
+      "name": "po.close",
+      "permission": "admin",
+      "person_only": true,
+      "summary": "Close an active purchase order (person only), with a reason: fulfilled, expired, settled outside Payvy, or superseded. Refused while allocations are still reserved.",
+      "tier": "routine"
+    },
+    {
+      "input_schema": "{\"type\":\"object\",\"required\":[\"po_id\",\"reason\"],\"properties\":{\"po_id\":{\"type\":\"string\",\"format\":\"uuid\"},\"reason\":{\"type\":\"string\"}}}",
+      "name": "po.cancel",
+      "permission": "admin",
+      "person_only": true,
+      "summary": "Cancel a draft or active purchase order (person only), with a reason. Refused while allocations are still reserved.",
+      "tier": "routine"
+    },
+    {
+      "input_schema": "{\"type\":\"object\",\"required\":[\"po_id\"],\"properties\":{\"po_id\":{\"type\":\"string\",\"format\":\"uuid\"}}}",
+      "name": "po.get",
+      "permission": "read",
+      "person_only": false,
+      "summary": "A purchase order: lifecycle, billing progress, authorized/reserved/consumed/available, its current lines, revisions and allocation history.",
+      "tier": "read"
+    },
+    {
+      "input_schema": "{\"type\":\"object\",\"properties\":{\"vendor_id\":{\"type\":\"string\",\"format\":\"uuid\"}}}",
+      "name": "po.list",
+      "permission": "read",
+      "person_only": false,
+      "summary": "Purchase orders, optionally for one vendor, each with authorized/reserved/consumed/available and billing progress.",
+      "tier": "read"
+    },
+    {
+      "input_schema": "{\"type\":\"object\",\"required\":[\"vendor_id\",\"po_number\",\"external_source\",\"external_id\"],\"properties\":{\"vendor_id\":{\"type\":\"string\",\"format\":\"uuid\"},\"po_number\":{\"type\":\"string\"},\"owner\":{\"type\":\"string\"},\"authorized_cents\":{\"type\":\"integer\",\"minimum\":1},\"opening_consumed_cents\":{\"type\":\"integer\",\"minimum\":0},\"source_allocation_id\":{\"type\":\"string\"},\"service_address\":{\"type\":\"string\"},\"period_start\":{\"type\":\"string\",\"format\":\"date\"},\"period_end\":{\"type\":\"string\",\"format\":\"date\"},\"lines\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"required\":[\"description\",\"amount_cents\"],\"properties\":{\"description\":{\"type\":\"string\"},\"quantity\":{\"type\":\"number\"},\"unit\":{\"type\":\"string\"},\"unit_price_cents\":{\"type\":\"integer\"},\"amount_cents\":{\"type\":\"integer\",\"minimum\":1},\"account\":{\"type\":\"string\"}}}}}}",
+      "name": "po.import",
+      "permission": "prepare",
+      "person_only": false,
+      "summary": "Import a purchase order from another system by external source/id (idempotent). Always lands as a draft: a person activates it with po.activate. opening_consumed_cents records amounts already billed in the source system and is not counted twice on a re-import.",
+      "tier": "routine"
+    },
+    {
+      "input_schema": "{\"type\":\"object\",\"required\":[\"vendor_id\"],\"properties\":{\"vendor_id\":{\"type\":\"string\",\"format\":\"uuid\"}}}",
+      "name": "po.vendor_settings",
+      "permission": "read",
+      "person_only": false,
+      "summary": "A vendor's purchase-order settings: whether its bills require a PO, and its overage caps (dollar and/or percentage in basis points). Caps are pinned onto each PO revision when it is made.",
+      "tier": "read"
+    },
+    {
+      "input_schema": "{\"type\":\"object\",\"required\":[\"vendor_id\",\"require_po\"],\"properties\":{\"vendor_id\":{\"type\":\"string\",\"format\":\"uuid\"},\"require_po\":{\"type\":\"boolean\"},\"require_funding\":{\"type\":\"boolean\",\"description\":\"Explicitly enabled: an unsatisfied customer_funded signal blocks release and auto-pay\"}, \"overage_cents_cap\":{\"type\":[\"integer\",\"null\"],\"minimum\":0},\"overage_percent_bp\":{\"type\":[\"integer\",\"null\"],\"minimum\":0,\"maximum\":10000}}}",
+      "name": "po.set_vendor_settings",
+      "permission": "admin",
+      "person_only": true,
+      "summary": "Set a vendor's purchase-order settings (person only): whether its bills require a PO, and overage caps. Zero overage is the default; an absent cap is not configured, a cap of 0 is zero. Existing PO revisions keep the allowance pinned on them.",
+      "tier": "routine"
+    },
+    {
+      "input_schema": "{\"type\":\"object\",\"required\":[\"bill_id\"],\"properties\":{\"bill_id\":{\"type\":\"string\",\"format\":\"uuid\"},\"po_number\":{\"type\":\"string\",\"description\":\"A PO reference read from the invoice, verified against the vendor's POs\"}}}",
+      "name": "po.match_preview",
+      "permission": "read",
+      "person_only": false,
+      "summary": "Which of a bill's vendor's active POs it could go against: available amounts, a proposed allocation and any exception (no PO, over available). Writes and reserves nothing.",
+      "tier": "read"
+    },
+    {
+      "input_schema": "{\"type\":\"object\",\"required\":[\"bill_id\",\"allocations\"],\"properties\":{\"bill_id\":{\"type\":\"string\",\"format\":\"uuid\"},\"allocations\":{\"type\":\"array\",\"minItems\":1,\"items\":{\"type\":\"object\",\"required\":[\"po_id\",\"amount_cents\"],\"properties\":{\"po_id\":{\"type\":\"string\",\"format\":\"uuid\"},\"amount_cents\":{\"type\":\"integer\",\"minimum\":1}}}}}}",
+      "name": "po.match_apply",
+      "permission": "prepare",
+      "person_only": false,
+      "summary": "Reserve bill amounts against purchase orders. Atomic across every PO in the call: all affected POs are locked in a consistent order, the whole set is validated (active, vendor, available plus the revision's pinned allowance, total not over the bill), then everything reserves together or nothing does. Reserving is preparation, not approval.",
+      "tier": "confirmed"
+    },
+    {
+      "input_schema": "{\"type\":\"object\",\"required\":[\"bill_id\",\"authorized_excess_cents\",\"reason\"],\"properties\":{\"bill_id\":{\"type\":\"string\",\"format\":\"uuid\"},\"authorized_excess_cents\":{\"type\":\"integer\",\"minimum\":0},\"reason\":{\"type\":\"string\"}}}",
+      "name": "po.override",
+      "permission": "admin",
+      "person_only": true,
+      "summary": "Permit one bill's PO exception (person only, separate from vendor approval): bound to this bill, its current POs and allocations, the exception and an authorized excess amount, with a required reason. Relevant changes void it and need a new override. It does not create PO capacity or hide the excess.",
+      "tier": "confirmed"
+    },
+    {
+      "input_schema": "{\"type\":\"object\",\"required\":[\"allocation_id\"],\"properties\":{\"allocation_id\":{\"type\":\"string\",\"format\":\"uuid\"}}}",
+      "name": "po.allocation_accept",
+      "permission": "prepare",
+      "person_only": false,
+      "summary": "Accept a reserved allocation as part of preparing a bill: the amount moves from reserved to consumed. This is not bill approval.",
+      "tier": "routine"
+    },
+    {
+      "input_schema": "{\"type\":\"object\",\"required\":[\"allocation_id\",\"reason\"],\"properties\":{\"allocation_id\":{\"type\":\"string\",\"format\":\"uuid\"},\"reason\":{\"type\":\"string\"}}}",
+      "name": "po.allocation_reverse",
+      "permission": "prepare",
+      "person_only": false,
+      "summary": "Release a reserved or consumed allocation with a reason (match rejected, bill rejected, bill voided). Capacity returns by this reversal record; allocations are never deleted. A PO revision never releases an allocation.",
+      "tier": "routine"
+    },
+    {
+      "input_schema": "{\"type\":\"object\",\"properties\":{}}",
       "name": "inbox.get",
       "permission": "read",
       "person_only": false,

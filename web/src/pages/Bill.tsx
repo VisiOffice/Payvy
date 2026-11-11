@@ -12,16 +12,18 @@ import { HStack } from '@astryxdesign/core/HStack';
 import { MetadataList, MetadataListItem } from '@astryxdesign/core/MetadataList';
 import { Spinner } from '@astryxdesign/core/Spinner';
 import { Text } from '@astryxdesign/core/Text';
+import { TextInput } from '@astryxdesign/core/TextInput';
 import { useToast } from '@astryxdesign/core/Toast';
 import { VStack } from '@astryxdesign/core/VStack';
-import { run } from '../api/client';
+import { preview as previewCommand, run } from '../api/client';
+import type { PoMatchApplyInput } from '../api/commands.gen';
 import { Page } from '../Page';
 import { billStatus, eventLabel } from '../status';
 import { ReasonDialog } from '../inbox/ReasonDialog';
 import { ReleaseDialog } from '../inbox/ReleaseDialog';
 import { METHOD, type Bill as BillT } from '../inbox/types';
 import { DueText } from '../Due';
-import { date, money } from '../money';
+import { date, money, cents as toCents, dollars } from '../money';
 import { DocumentViewer, type PageRef } from '../viewer/DocumentViewer';
 import { highlightsOf, type DocumentDetail, type Read } from '../documents/types';
 import { ReadFields } from '../documents/ReadFields';
@@ -52,6 +54,19 @@ interface Detail {
     created_at: string;
     external_ref?: string | null;
   }[];
+  purchase_orders: {
+    /** Purchase orders are on for the company; off hides this section. */
+    enabled: boolean;
+    /** The caller may permit the exception: an admin who didn't prepare the bill. */
+    can_override: boolean;
+    /** Who permitted the exception that currently makes it payable. */
+    overridden_by: string | null;
+    covered_cents: number;
+    uncovered_cents: number;
+    allocations: { allocation_id: string; po_id: string; po_number: string | null; amount_cents: number; state: string; kind: string }[];
+    exception: { kind: string; excess_cents: number; detail: string } | null;
+    overridden: boolean;
+  };
   documents: { id: string; filename: string; content_type: string }[];
   /** The page arrangement of its document the bill pinned. */
   arrangement: { version: number; pages: PageRef[] | null } | null;
@@ -214,6 +229,8 @@ export function BillPage() {
         </VStack>
       )}
 
+      {detail.purchase_orders.enabled && <PoPanel billId={b.id} po={detail.purchase_orders} onChange={load} />}
+
       {detail.payments.length > 0 && (
         <VStack gap={2}>
           <Heading level={2}>Payments</Heading>
@@ -304,5 +321,154 @@ export function BillPage() {
         />
       )}
     </>
+  );
+}
+
+interface PoPreview {
+  candidates: { po_id: string; po_number: string; available_cents: number; proposed_cents: number; verified_reference: boolean }[];
+}
+
+/** PO matching beside the invoice: identify, reserve, accept, override.
+ * Matching prepares the bill; it never approves or pays it. */
+function PoPanel({ billId, po, onChange }: {
+  billId: string;
+  po: Detail['purchase_orders'];
+  onChange: () => void;
+}) {
+  const [preview, setPreview] = useState<PoPreview | null>(null);
+  const [amounts, setAmounts] = useState<Record<string, string>>({});
+  const [excess, setExcess] = useState('');
+  const [reason, setReason] = useState('');
+  const [reverseId, setReverseId] = useState<string | null>(null);
+  const toast = useToast();
+
+  const loadPreview = useCallback(() => {
+    run<{ result: PoPreview }>('po.match_preview', { bill_id: billId })
+      .then((r) => {
+        setPreview(r.result as unknown as PoPreview);
+        const next: Record<string, string> = {};
+        for (const c of (r.result as unknown as PoPreview).candidates) {
+          if (c.proposed_cents > 0) next[c.po_id] = dollars(c.proposed_cents);
+        }
+        setAmounts(next);
+      })
+      .catch(() => setPreview(null));
+  }, [billId]);
+  useEffect(loadPreview, [loadPreview]);
+  useEffect(() => {
+    if (po.exception) setExcess(dollars(po.exception.excess_cents));
+  }, [po.exception?.excess_cents]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function apply(poId: string) {
+    const amount = toCents(amounts[poId] ?? '');
+    if (amount === null) return;
+    try {
+      // Confirmed: reserve exactly what the preview checked.
+      const input: PoMatchApplyInput = { bill_id: billId, allocations: [{ po_id: poId, amount_cents: amount }] };
+      const p = await previewCommand('po.match_apply', input);
+      await run('po.match_apply', input, p.confirm_token);
+      toast({ body: 'Reserved against the purchase order' });
+      onChange();
+      loadPreview();
+    } catch (e) {
+      toast({ body: e instanceof Error ? e.message : String(e), type: 'error' });
+    }
+  }
+
+  async function accept(allocationId: string) {
+    try {
+      await run('po.allocation_accept', { allocation_id: allocationId });
+      onChange();
+    } catch (e) {
+      toast({ body: e instanceof Error ? e.message : String(e), type: 'error' });
+    }
+  }
+
+  async function override() {
+    const amount = toCents(excess);
+    if (amount === null || !reason.trim()) return;
+    try {
+      // Confirmed: permit exactly the excess the preview checked.
+      const input = { bill_id: billId, authorized_excess_cents: amount, reason: reason.trim() };
+      const p = await previewCommand('po.override', input);
+      await run('po.override', input, p.confirm_token);
+      toast({ body: 'Exception permitted for this bill' });
+      setReason('');
+      onChange();
+    } catch (e) {
+      toast({ body: e instanceof Error ? e.message : String(e), type: 'error' });
+    }
+  }
+
+  const candidates = preview?.candidates ?? [];
+  return (
+    <VStack gap={2}>
+      <Heading level={2}>Purchase order</Heading>
+      <Text>
+        Covered {money(po.covered_cents)} · Uncovered {money(po.uncovered_cents)}
+      </Text>
+      {po.exception && !po.overridden && (
+        <Banner
+          status="warning"
+          title={`Can't be paid yet: ${po.exception.kind.replaceAll('_', ' ')}`}
+          description={po.exception.detail}
+        />
+      )}
+      {po.overridden && <HStack gap={2} vAlign="center" wrap="wrap">
+        <Badge label="Exception permitted by override" variant="warning" />
+        {po.overridden_by && <Text type="supporting">Permitted by {po.overridden_by}, who can't release this bill.</Text>}
+      </HStack>}
+      {po.allocations.map((a) => (
+        <HStack key={a.allocation_id} hAlign="between" gap={3} vAlign="center">
+          <Text>
+            {a.po_number ?? 'PO'} · {money(a.amount_cents)} · {a.state}
+          </Text>
+          <HStack gap={2}>
+            {a.state === 'reserved' && <Button label="Accept" variant="ghost" clickAction={() => accept(a.allocation_id)} />}
+            <Button label="Reverse…" variant="ghost" onClick={() => setReverseId(a.allocation_id)} />
+          </HStack>
+        </HStack>
+      ))}
+      {candidates.map((c) => (
+        <HStack key={c.po_id} gap={2} vAlign="end">
+          <TextInput
+            label={`${c.po_number} (${money(c.available_cents)} available)`}
+            value={amounts[c.po_id] ?? ''}
+            onChange={(v: string) => setAmounts((m) => ({ ...m, [c.po_id]: v }))}
+          />
+          <Button label="Reserve" variant="secondary" onClick={() => apply(c.po_id)} />
+        </HStack>
+      ))}
+      {candidates.length === 0 && po.allocations.length === 0 && !po.exception && (
+        <Text type="supporting">No active purchase order for this vendor.</Text>
+      )}
+      {po.exception && !po.overridden && !po.can_override && (
+        <Text type="supporting">An admin who didn't prepare this bill can permit the exception.</Text>
+      )}
+      {po.exception && !po.overridden && po.can_override && (
+        <VStack gap={2}>
+          <TextInput label="Permit excess ($)" value={excess} onChange={setExcess} />
+          <TextInput label="Reason (required)" value={reason} onChange={setReason} />
+          <Button label="Permit this exception" variant="secondary" onClick={override} isDisabled={!reason.trim()} />
+          <Text type="supporting">
+            Permitting is bound to this bill, its POs and this excess. It does not add PO capacity.
+          </Text>
+        </VStack>
+      )}
+      {reverseId && (
+        <ReasonDialog
+          title="Reverse this allocation"
+          actionLabel="Reverse"
+          isRequired
+          onClose={() => setReverseId(null)}
+          onSubmit={async (r) => {
+            await run('po.allocation_reverse', { allocation_id: reverseId, reason: r });
+            setReverseId(null);
+            onChange();
+            loadPreview();
+          }}
+        />
+      )}
+    </VStack>
   );
 }
