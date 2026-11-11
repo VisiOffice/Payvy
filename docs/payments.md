@@ -213,7 +213,8 @@ auto_pay.limits      {}
 auto_pay.lower_limit { "limit_cents": 250000 }
 auto_pay.raise_limit { "limit_cents": 1000000, "reason": "monthly rent" }   # preview, then commit
 auto_pay.lower_limit { "vendor_id": "…", "limit_cents": 50000 }
-auto_pay.raise_limit { "vendor_id": "…", "limit_cents": null }              # back to the company's
+auto_pay.raise_limit { "vendor_id": "…", "limit_cents": 2000000 }           # above the company's
+auto_pay.lower_limit { "vendor_id": "…", "limit_cents": null }              # back to the company's
 ```
 
 - **Defaults.** Every company, new or existing, starts at **$5,000.00**
@@ -224,13 +225,21 @@ auto_pay.raise_limit { "vendor_id": "…", "limit_cents": null }              # 
   was intended.
 - **There is no "no limit".** The highest limit is $1,000,000,000.00; $0.00 means nothing pays
   automatically.
-- **Vendor limits** are optional and only lower: a vendor's own limit must be below the company's
-  when it is set. The limit in force for a bill is the lower of the two, so lowering the company's
-  later below a vendor's simply makes the company's apply (Settings shows it).
+- **Vendor limits** are optional overrides, higher or lower than the company's, with the same
+  range. The limit in force for a bill is the vendor's own if it has one, else the company's. So
+  changing the company's limit never changes a vendor that has its own (Settings says so, and the
+  vendor page shows which limit it uses and its value). The reason on a held bill names which
+  applied: "Over this vendor's $20,000.00 auto-pay limit" or "Over the company's $5,000.00
+  auto-pay limit".
 - **Only a person changes a limit**, and each change is an event (`auto_pay.limit_lowered`,
   `auto_pay.limit_raised`, with the old and new limits, who, and the bills it moved). Lowering
-  is immediate. Raising, or removing a vendor's own limit, is confirmed like a release: the
-  preview lists the bills that would start paying automatically and commits only with its token.
+  is immediate. Anything that raises the limit in force is confirmed like a release
+  (`auto_pay.raise_limit`): raising the company's (its preview counts only vendors without their
+  own), setting or raising a vendor's above what applies to it now (including above the company's
+  for a vendor that had none), and removing a vendor's own when the company's is higher. Removing
+  one when the company's is lower or equal is routine (`auto_pay.lower_limit`). The preview lists
+  the bills that would start paying automatically and commits only with its token. Vendor changes
+  take the same lock as company changes.
 - **Where it is enforced.** The limit is part of where a bill stands (`workflow::evaluate`), so an
   over-limit bill is never `ready_to_pay` and the payment worker never picks it. `bill.auto_pay`
   re-evaluates the bill, and the payment is checked against the limit in force once more as it is
