@@ -265,7 +265,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     // ── Bills ───────────────────────────────────────────────────────────────
     CommandSpec {
         name: "bill.create",
-        summary: "Enter a bill, optionally from an inbox document, or from some of its pages (pages): those are split into a new document filed with the bill, atomically, and the rest stays in the inbox. It follows the vendor's current workflow from now on. Refused if this vendor already has a bill with the same invoice number (ignoring case, spaces, punctuation and leading zeros) unless allow_duplicate is true.",
+        summary: "Enter a bill, optionally from an inbox document, or from some of its pages (pages): those are split into a new document filed with the bill, atomically, and the rest stays in the inbox. It follows the vendor's current workflow from now on. If this vendor already has a bill with the same invoice number (ignoring case, spaces, punctuation and leading zeros), the copy stacks on that bill instead of becoming a second payable one: same amount is a recorded resend, a different amount is a revision that blocks payment until a person accepts or rejects it. allow_duplicate instead makes a separate bill, and that choice is recorded.",
         tier: RiskTier::Routine,
         person_only: false,
         permission: Permission::Prepare,
@@ -273,18 +273,34 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "bill.list",
-        summary: "List bills, newest first. Filter by state (open, rejected, void, paid), by where open bills stand (status: awaiting_approval, held, waiting_for, awaiting_release, ready_to_pay, released), by vendor, or to bills waiting on you (mine).",
+        summary: "List bills, newest first. Filter by state (open, rejected, void, paid), by where open bills stand (status: awaiting_approval, held, waiting_for, awaiting_release, ready_to_pay, released), by vendor, by invoice_number (compared the way duplicates are: ignoring case, spaces, punctuation and leading zeros), or to bills waiting on you (mine). Each bill says received_count (how many copies of its invoice arrived) and pending_revision_amount_cents when a revised copy awaits a decision.",
         tier: RiskTier::Read,
         person_only: false,
         permission: Permission::Read,
-        input_schema: r#"{"type":"object","properties":{"state":{"type":"string","enum":["open","rejected","void","paid"]},"status":{"type":"string","enum":["awaiting_approval","held","waiting_for","awaiting_release","ready_to_pay","released"]},"vendor_id":{"type":"string","format":"uuid"},"mine":{"type":"boolean","description":"Only bills a step is waiting on you for"},"limit":{"type":"integer","minimum":1,"maximum":500}}}"#,
+        input_schema: r#"{"type":"object","properties":{"state":{"type":"string","enum":["open","rejected","void","paid"]},"status":{"type":"string","enum":["awaiting_approval","held","waiting_for","awaiting_release","ready_to_pay","released"]},"vendor_id":{"type":"string","format":"uuid"},"invoice_number":{"type":"string","description":"Bills with this invoice number, compared the way duplicates are"},"mine":{"type":"boolean","description":"Only bills a step is waiting on you for"},"limit":{"type":"integer","minimum":1,"maximum":500}}}"#,
     },
     CommandSpec {
         name: "bill.get",
-        summary: "A bill with its lines, its workflow progress step by step, approvals, signals and history, and the page arrangement of its document it pinned. While it waits for approval, approval says whether you can give it and, if not, why and who else can.",
+        summary: "A bill with its lines, its workflow progress step by step, approvals, signals and history, every copy of the invoice received for it (arrivals, oldest first, with received_count and any pending_revision awaiting a person's decision), and the page arrangement of its document it pinned. While it waits for approval, approval says whether you can give it and, if not, why and who else can.",
         tier: RiskTier::Read,
         person_only: false,
         permission: Permission::Read,
+        input_schema: r#"{"type":"object","required":["bill_id"],"properties":{"bill_id":{"type":"string","format":"uuid"}}}"#,
+    },
+    CommandSpec {
+        name: "bill.revision_accept",
+        summary: "Accept a revised invoice stacked on this bill (person only): the latest copy's amount and lines become the payable ones, and the bill can be paid again. The prior version stays in the bill's stack, not payable. This prepares the bill; it is not approval.",
+        tier: RiskTier::Routine,
+        person_only: true,
+        permission: Permission::Prepare,
+        input_schema: r#"{"type":"object","required":["bill_id"],"properties":{"bill_id":{"type":"string","format":"uuid"}}}"#,
+    },
+    CommandSpec {
+        name: "bill.revision_reject",
+        summary: "Reject a revised invoice stacked on this bill (person only): the bill keeps the amount it already carries, the revised copy stays in its stack, and the bill can be paid again.",
+        tier: RiskTier::Routine,
+        person_only: true,
+        permission: Permission::Prepare,
         input_schema: r#"{"type":"object","required":["bill_id"],"properties":{"bill_id":{"type":"string","format":"uuid"}}}"#,
     },
     CommandSpec {

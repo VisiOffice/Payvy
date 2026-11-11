@@ -93,6 +93,24 @@ pub fn validate(
     Ok(())
 }
 
+/// What a later copy of an invoice is, against the amount the bill
+/// currently carries: the same amount again (a resend, recorded and never
+/// payable twice) or a different one (a revision a person must decide).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArrivalKind {
+    Resend,
+    Revision,
+}
+
+pub fn arrival_kind(current_cents: Cents, arrived_cents: Cents) -> ArrivalKind {
+    if arrived_cents == current_cents {
+        ArrivalKind::Resend
+    } else {
+        ArrivalKind::Revision
+    }
+}
+
 /// The form of an invoice number used to spot duplicates from one vendor:
 /// case, spaces, punctuation and leading zeros don't make a different
 /// invoice, so "INV-00042" and "inv 42" match. Letters do count: "INV-42"
@@ -130,6 +148,13 @@ pub fn invoice_key(number: &str) -> String {
 mod tests {
     use super::*;
     use chrono::NaiveDate;
+
+    #[test]
+    fn a_copy_is_a_resend_only_at_the_bills_current_amount() {
+        assert_eq!(arrival_kind(8_740, 8_740), ArrivalKind::Resend);
+        assert_eq!(arrival_kind(8_740, 3_749), ArrivalKind::Revision);
+        assert_eq!(arrival_kind(3_749, 8_740), ArrivalKind::Revision);
+    }
 
     #[test]
     fn invoice_keys_ignore_formatting_but_not_letters() {

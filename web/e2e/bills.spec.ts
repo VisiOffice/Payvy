@@ -3,6 +3,7 @@
 // preview and one-use confirmation, rejection, and setting documents aside.
 import { expect, test, type Page } from '@playwright/test';
 import { agent, bill, inboxDocument, vendor } from './api';
+import { pdf } from './pdf';
 
 /** The innermost element holding both the text and the button: one card. */
 function card(page: Page, text: string, button: string) {
@@ -111,20 +112,46 @@ test('a bill is rejected with a reason', async ({ page }) => {
   await expect(page.getByRole('button', { name: 'Pay…' })).toHaveCount(0);
 });
 
-test('a likely duplicate is caught, and entered only on purpose', async ({ page }) => {
+test('a copy the vendor sent again stacks on the bill it belongs to', async ({ page }) => {
   const king = await vendor('King Environmental, LLC');
-  await bill({ vendor_id: king, invoice_number: '189727', invoice_date: '2026-11-01', amount_cents: 45_900 });
+  const existing = await bill({ vendor_id: king, invoice_number: '189727', invoice_date: '2026-11-01', amount_cents: 45_900 });
   const doc = await inboxDocument('king-environmental-189727.pdf');
 
   await page.goto(`/documents/${doc}`);
-  await expect(page.getByText('One thing to check', { exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Create bill' }).click();
-  await expect(page.getByText('This looks like a bill you already have')).toBeVisible();
+  // The pre-check says what Create bill will do before it is pressed, and
+  // which kind of copy this is at the amount on the form.
+  await expect(page.getByText('Create bill will stack this copy on an existing bill')).toBeVisible();
+  await expect(page.getByText(/a resend\. It will be recorded on that bill/)).toBeVisible();
   await expect(page.getByRole('button', { name: "It's a separate bill" })).toBeInViewport();
-  await expect(page).toHaveURL(`/documents/${doc}`);
 
+  // Change the amount and the same notice calls it a revision instead.
+  await page.getByLabel('Amount').fill('400.00');
+  await expect(page.getByText(/That bill carries \$459\.00; this copy carries \$400\.00: a revision/)).toBeVisible();
+
+  await page.getByRole('button', { name: 'Create bill' }).click();
+  await expect(page).toHaveURL(`/bills/${existing}`);
+  await expect(page.getByText('Revised invoice received')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Received 2 times' })).toBeVisible();
+});
+
+test('a copy entered on purpose as a separate bill makes its own bill', async ({ page }) => {
+  const saguaro = await vendor('Saguaro Glass & Mirror');
+  const existing = await bill({ vendor_id: saguaro, invoice_number: 'SG-4120', invoice_date: '2026-10-30', amount_cents: 51_200 });
+  // A file of its own: the server refuses the same file twice.
+  const doc = (
+    await agent<{ id: string }>('document.upload', {
+      filename: 'saguaro-sg-4120.pdf',
+      content_base64: pdf(['Saguaro Glass & Mirror', 'Invoice SG-4120', 'Date 2026-11-04', 'Total 512.00']).toString('base64'),
+    })
+  ).id;
+  await agent('document.extract', { document_id: doc });
+
+  await page.goto(`/documents/${doc}`);
+  await expect(page.getByText('Create bill will stack this copy on an existing bill')).toBeVisible();
   await page.getByRole('button', { name: "It's a separate bill" }).click();
   await expect(page).toHaveURL(/\/bills\/[0-9a-f-]{36}$/);
+  expect(page.url().endsWith(existing)).toBe(false);
+  await expect(page.getByRole('heading', { name: 'Saguaro Glass & Mirror' })).toBeVisible();
 });
 
 test('a statement is set aside as not a bill', async ({ page }) => {

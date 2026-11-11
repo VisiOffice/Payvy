@@ -706,6 +706,7 @@ pub async fn list_bills(
     tx: &mut Tx,
     state: Option<State>,
     vendor_id: Option<Uuid>,
+    invoice_key: Option<&str>,
     limit: i64,
 ) -> anyhow::Result<Vec<Bill>> {
     let rows = sqlx::query(concat!(
@@ -713,10 +714,12 @@ pub async fn list_bills(
         bill_cols!(),
         " FROM bills b JOIN vendors v ON v.id = b.vendor_id
          WHERE ($1::text IS NULL OR b.state = $1) AND ($2::uuid IS NULL OR b.vendor_id = $2)
-         ORDER BY b.received_at DESC, b.id LIMIT $3"
+           AND ($3::text IS NULL OR b.invoice_key = $3)
+         ORDER BY b.received_at DESC, b.id LIMIT $4"
     ))
     .bind(state.map(State::as_str))
     .bind(vendor_id)
+    .bind(invoice_key)
     .bind(limit)
     .fetch_all(&mut **tx)
     .await?;
@@ -2797,6 +2800,7 @@ pub async fn lock_invite_vendor(tx: &mut Tx, vendor_id: Uuid) -> anyhow::Result<
     )
 }
 
+pub mod bill_arrivals;
 pub mod purchase_orders;
 pub mod ramp;
 

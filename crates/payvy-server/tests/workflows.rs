@@ -319,7 +319,7 @@ async fn proposals_wait_for_a_person() {
 }
 
 #[tokio::test]
-async fn duplicates_are_caught_and_voiding_frees_the_number() {
+async fn duplicates_stack_and_voiding_frees_the_number() {
     let Some(db) = TestDb::new().await else {
         return;
     };
@@ -328,13 +328,12 @@ async fn duplicates_are_caught_and_voiding_frees_the_number() {
     let v = vendor(s, &robert, "American Reclamation").await;
     let first = bill(s, &robert, &v, "INV-00086641", 5_000).await;
     let input = json!({"vendor_id": v, "invoice_number": "inv 86641", "invoice_date": "2027-01-15", "amount_cents": 5_000});
-    let e = commit(s, &robert, "bill.create", input.clone())
+    // The same invoice in another formatting stacks on the first bill.
+    let stacked = commit(s, &robert, "bill.create", input.clone())
         .await
-        .unwrap_err();
-    assert!(
-        matches!(&e, CommandError::Conflict(m) if m.contains(&first)),
-        "{e}"
-    );
+        .unwrap();
+    assert_eq!(stacked["result"]["bill"]["id"], json!(first));
+    assert_eq!(stacked["result"]["received_count"], 2);
 
     confirm(
         s,
@@ -344,7 +343,10 @@ async fn duplicates_are_caught_and_voiding_frees_the_number() {
     )
     .await
     .unwrap();
-    commit(s, &robert, "bill.create", input).await.unwrap();
+    // Voiding frees the number: the next copy is a bill of its own.
+    let recreated = commit(s, &robert, "bill.create", input).await.unwrap();
+    assert_ne!(recreated["result"]["bill"]["id"], json!(first));
+    assert_eq!(recreated["result"]["received_count"], 1);
 
     // Lines must add up; due date comes from the vendor's terms.
     let e = commit(

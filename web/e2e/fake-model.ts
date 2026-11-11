@@ -94,6 +94,20 @@ const READS: [string, Read][] = [
   ],
   ['ACME', { ...blank, kind: 'statement', vendor_name: 'Acme Supply' }],
   [
+    // Generated in bills.spec.ts: a vendor's second, genuinely separate bill
+    // that happens to reuse an invoice number.
+    'SG-4120',
+    {
+      ...blank,
+      kind: 'invoice',
+      vendor_name: 'Saguaro Glass & Mirror',
+      invoice_number: 'SG-4120',
+      invoice_date: '2026-11-04',
+      currency: 'USD',
+      total: '512.00',
+    },
+  ],
+  [
     'SR-7781',
     {
       ...blank,
