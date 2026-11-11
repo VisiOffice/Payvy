@@ -970,3 +970,97 @@ async fn customer_funding_blocks_release_until_the_signal_arrives() {
         .unwrap();
     db.drop().await;
 }
+
+#[tokio::test]
+async fn activation_refuses_opening_consumption_over_authorized_plus_allowance() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let robert = person("robert");
+    add_robert(&db).await;
+    commit(
+        &db.state,
+        &robert,
+        "po.configure",
+        json!({ "enabled": true }),
+    )
+    .await
+    .unwrap();
+    let v = vendor(&db.state, &robert, "Imported Services").await;
+    // Opening consumption of $1,100 against a $1,000 PO, no allowance: refuse.
+    let over = commit(
+        &db.state,
+        &agent("importer"),
+        "po.import",
+        json!({
+            "vendor_id": v, "po_number": "EXT-OVER", "external_source": "visibooks",
+            "external_id": "c-over", "owner": "robert", "authorized_cents": 100_000,
+            "opening_consumed_cents": 110_000, "source_allocation_id": "alloc-over",
+        }),
+    )
+    .await
+    .unwrap();
+    let over_id = over["result"]["id"].as_str().unwrap().to_owned();
+    let e = commit(
+        &db.state,
+        &robert,
+        "po.activate",
+        json!({ "po_id": over_id }),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(e, CommandError::Conflict(_)), "{e}");
+    assert!(e.to_string().contains("opening"), "{e}");
+    // Still a draft, and raising the authorized amount by revision fixes it.
+    commit(
+        &db.state,
+        &robert,
+        "po.update",
+        json!({ "po_id": over_id, "authorized_cents": 120_000, "reason": "budget corrected" }),
+    )
+    .await
+    .unwrap();
+    commit(
+        &db.state,
+        &robert,
+        "po.activate",
+        json!({ "po_id": over_id }),
+    )
+    .await
+    .unwrap();
+
+    // With a vendor allowance pinned on the revision, over-authorized history
+    // within the allowance activates: $1,100 consumed, $1,000 + $200 allowance.
+    commit(
+        &db.state,
+        &robert,
+        "po.set_vendor_settings",
+        json!({ "vendor_id": v, "require_po": false, "overage_cents_cap": 20_000 }),
+    )
+    .await
+    .unwrap();
+    let within = commit(
+        &db.state,
+        &agent("importer"),
+        "po.import",
+        json!({
+            "vendor_id": v, "po_number": "EXT-WITHIN", "external_source": "visibooks",
+            "external_id": "c-within", "owner": "robert", "authorized_cents": 100_000,
+            "opening_consumed_cents": 110_000, "source_allocation_id": "alloc-within",
+        }),
+    )
+    .await
+    .unwrap();
+    let within_id = within["result"]["id"].as_str().unwrap().to_owned();
+    let active = commit(
+        &db.state,
+        &robert,
+        "po.activate",
+        json!({ "po_id": within_id }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(active["result"]["status"], "active");
+    assert_eq!(active["result"]["amounts"]["consumed_cents"], 110_000);
+    db.drop().await;
+}
