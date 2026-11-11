@@ -105,6 +105,36 @@ Requires Postgres and an S3-compatible store; `docker compose up -d` starts both
 web app in `web/` is built with Vite and served by the same server (one Docker image).
 See [`CLAUDE.md`](CLAUDE.md) for setup, configuration and tests.
 
+### Self-hosting hardware
+
+For a small production installation, start with **2 vCPUs, 4 GB RAM and 40 GB SSD**
+on an x86-64 Linux server, with invoice files in external S3-compatible storage.
+These are starting estimates, not benchmarked capacity guarantees.
+
+| Use | Suggested resources |
+|---|---|
+| Light testing | 2 vCPUs, 2 GB RAM; limited headroom |
+| Small production installation | 2 vCPUs, 4 GB RAM, 40 GB SSD |
+| Shared server or heavier usage | 4 vCPUs, 8 GB RAM, 80+ GB SSD; size for the other workloads too |
+
+The [deployment configuration](config/deploy.yml) caps the API container at 1 GB RAM
+and Postgres at 512 MB. The API's 128 MB temporary filesystem counts inside its memory
+limit. Leave additional host memory for Linux, Docker, the proxy and deployment overlap.
+If you store invoices locally, add capacity for document retention and backups; the disk
+estimates above assume external document storage.
+
+No GPU is needed when using an external invoice-reading model. Local PDF text extraction
+and OCR run on the CPU, with one source-extraction job at a time per API process. More
+CPU cores alone do not increase that concurrency. Running the model itself locally has
+separate hardware requirements that depend on the model.
+
+Use a prebuilt container image where available, or build on a separate machine; compiling
+Rust needs additional memory and disk space. The Docker image includes the PDF/OCR tools;
+binary-only installations must install them separately. See the
+[richer reader documentation](docs/extraction-v2.md) for limits and evaluation requirements
+before enabling the pilot. Measure memory, latency and queueing with your invoice mix
+before increasing workload or OCR concurrency.
+
 ## License
 
 [AGPL-3.0-only](LICENSE). Part of the [Visi](https://github.com/VisiOffice) suite; works on its
