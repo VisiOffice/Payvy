@@ -9,3 +9,7 @@ web/test-results/
 web/playwright-report/
 .wrangler/
 .dev.vars*
+
+# Private legacy invoice transfer bundles and Python bytecode.
+.legacy-import/
+__pycache__/
