@@ -82,6 +82,21 @@ to `5.78.94.150`; the existing nginx/Kamal host configuration still serves it.
 References: [Workers monorepos](https://developers.cloudflare.com/workers/ci-cd/builds/advanced-setups/),
 [build watch paths](https://developers.cloudflare.com/workers/ci-cd/builds/build-watch-paths/).
 
+## CI (GitHub Actions)
+
+`.github/workflows/ci.yml` runs on every push and pull request. It checks; it never deploys
+and uses no repository secrets.
+
+- **Rust:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -D warnings` and
+  `cargo test --workspace`, with `.env.example` loaded and the stores from `docker-compose.yml`
+  (Postgres with the non-superuser `payvy` role, so RLS is enforced; SeaweedFS for S3). The job
+  fails if any database or S3 test printed `skipping:`, so tests can't pass by not running.
+- **Web:** `pnpm install --frozen-lockfile`, `pnpm --dir web gen:api` must leave
+  `web/src/api` unchanged, `pnpm -r check`, then the full Playwright suite (`pnpm --dir web e2e`)
+  through the Worker in local workerd (`PAYVY_E2E_EDGE_PORT`), against the same stores and the
+  fake model and banks. On failure the HTML report, traces and
+  the server log are uploaded as the `playwright-report` artifact.
+
 ## How the API runs
 
 - **App:** the `app` target of the `Dockerfile`, read-only with no capabilities. It applies

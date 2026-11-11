@@ -4,6 +4,8 @@ import type { Me } from './api/client';
 export interface Session {
   me: Me;
   signOut: () => Promise<void>;
+  /** Replaces the signed-in state, e.g. after the organization is renamed. */
+  setMe: (me: Me) => void;
 }
 
 export const SessionContext = createContext<Session | null>(null);

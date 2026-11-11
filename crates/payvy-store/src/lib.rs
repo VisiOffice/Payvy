@@ -1026,6 +1026,72 @@ pub async fn bill_documents(tx: &mut Tx, bill_id: Uuid) -> anyhow::Result<Vec<Do
     Ok(rows.iter().map(document).collect())
 }
 
+/// Who uploaded the documents filed with these bills: (bill, actor).
+pub async fn bill_uploaders(tx: &mut Tx, bill_ids: &[Uuid]) -> anyhow::Result<Vec<(Uuid, String)>> {
+    let rows = sqlx::query(
+        "SELECT DISTINCT bill_id, created_by FROM documents WHERE bill_id = ANY($1) ORDER BY 1, 2",
+    )
+    .bind(bill_ids)
+    .fetch_all(&mut **tx)
+    .await?;
+    Ok(rows
+        .iter()
+        .map(|r| (r.get("bill_id"), r.get("created_by")))
+        .collect())
+}
+
+// ── Approval rules ──────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ApprovalRules {
+    pub submitter_cannot_approve: bool,
+    /// None until a person first changes a rule.
+    pub updated_by: Option<String>,
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
+/// The organization's approval rules; all off when none were ever set.
+pub async fn approval_rules(tx: &mut Tx) -> anyhow::Result<ApprovalRules> {
+    let row = sqlx::query(
+        "SELECT submitter_cannot_approve, updated_by, updated_at FROM approval_rules FOR SHARE",
+    )
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(match row {
+        Some(r) => ApprovalRules {
+            submitter_cannot_approve: r.get("submitter_cannot_approve"),
+            updated_by: Some(r.get("updated_by")),
+            updated_at: Some(r.get("updated_at")),
+        },
+        None => ApprovalRules {
+            submitter_cannot_approve: false,
+            updated_by: None,
+            updated_at: None,
+        },
+    })
+}
+
+pub async fn set_approval_rules(
+    tx: &mut Tx,
+    org_id: Uuid,
+    submitter_cannot_approve: bool,
+    by: &str,
+    at: DateTime<Utc>,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "INSERT INTO approval_rules (org_id, submitter_cannot_approve, updated_by, updated_at)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (org_id) DO UPDATE SET submitter_cannot_approve = $2, updated_by = $3, updated_at = $4",
+    )
+    .bind(org_id)
+    .bind(submitter_cannot_approve)
+    .bind(by)
+    .bind(at)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
 pub async fn file_document(tx: &mut Tx, id: Uuid, bill_id: Uuid) -> anyhow::Result<()> {
     sqlx::query("UPDATE documents SET status = 'filed', bill_id = $2 WHERE id = $1")
         .bind(id)
@@ -2170,6 +2236,67 @@ pub async fn remove_person(
     Ok(id)
 }
 
+/// Actors of everyone who can sign in, locked until the transaction ends so
+/// two removals at once can't leave nobody.
+pub async fn lock_people(tx: &mut Tx, org_id: Uuid) -> anyhow::Result<Vec<String>> {
+    Ok(sqlx::query_scalar(
+        "SELECT actor FROM people WHERE org_id = $1 AND removed_at IS NULL ORDER BY actor FOR UPDATE",
+    )
+    .bind(org_id)
+    .fetch_all(&mut **tx)
+    .await?)
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Organization {
+    pub id: Uuid,
+    pub name: String,
+    pub created_at: DateTime<Utc>,
+}
+
+fn organization_from(r: &PgRow) -> Organization {
+    Organization {
+        id: r.get("id"),
+        name: r.get("name"),
+        created_at: r.get("created_at"),
+    }
+}
+
+/// The organization itself. Like people, it has no row-level security (it is
+/// what the policy names), so the query names it.
+pub async fn organization(tx: &mut Tx, org_id: Uuid) -> anyhow::Result<Option<Organization>> {
+    let row = sqlx::query("SELECT id, name, created_at FROM organizations WHERE id = $1")
+        .bind(org_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+    Ok(row.as_ref().map(organization_from))
+}
+
+/// The organization, its row locked until the transaction ends.
+pub async fn lock_organization(tx: &mut Tx, org_id: Uuid) -> anyhow::Result<Option<Organization>> {
+    let row =
+        sqlx::query("SELECT id, name, created_at FROM organizations WHERE id = $1 FOR UPDATE")
+            .bind(org_id)
+            .fetch_optional(&mut **tx)
+            .await?;
+    Ok(row.as_ref().map(organization_from))
+}
+
+pub async fn rename_organization(
+    tx: &mut Tx,
+    org_id: Uuid,
+    name: &str,
+) -> anyhow::Result<Organization> {
+    let row = sqlx::query(
+        "UPDATE organizations SET name = $2 WHERE id = $1 RETURNING id, name, created_at",
+    )
+    .bind(org_id)
+    .bind(name)
+    .fetch_one(&mut **tx)
+    .await?;
+    Ok(organization_from(&row))
+}
+
 impl Store {
     /// Every organization this email can sign in to.
     pub async fn people_by_email(&self, email: &str) -> anyhow::Result<Vec<SignedIn>> {
@@ -2447,5 +2574,117 @@ pub async fn lock_bank(tx: &mut Tx, org: Uuid) -> anyhow::Result<()> {
         .bind(format!("bank:{org}"))
         .execute(&mut **tx)
         .await?;
+    Ok(())
+}
+
+// ── Auto-pay limits ─────────────────────────────────────────────────────────
+
+/// The company's auto-pay limit (None: the default applies) and every
+/// vendor's own.
+#[derive(Debug, Clone, Default)]
+pub struct AutoPayLimits {
+    pub company: Option<Cents>,
+    pub vendors: std::collections::HashMap<Uuid, Cents>,
+}
+
+impl AutoPayLimits {
+    pub fn for_vendor(&self, vendor_id: Uuid) -> payvy_domain::workflow::AutoPayLimit {
+        payvy_domain::workflow::AutoPayLimit::effective(
+            self.company,
+            self.vendors.get(&vendor_id).copied(),
+        )
+    }
+}
+
+/// Every limit in the organization. A small table: one row per vendor that
+/// has its own limit, plus the company's.
+pub async fn auto_pay_limits(tx: &mut Tx) -> anyhow::Result<AutoPayLimits> {
+    let rows = sqlx::query("SELECT vendor_id, limit_cents FROM auto_pay_limits")
+        .fetch_all(&mut **tx)
+        .await?;
+    let mut out = AutoPayLimits::default();
+    for r in rows {
+        match r.get::<Option<Uuid>, _>("vendor_id") {
+            Some(v) => {
+                out.vendors.insert(v, r.get("limit_cents"));
+            }
+            None => out.company = Some(r.get("limit_cents")),
+        }
+    }
+    Ok(out)
+}
+
+/// The company's and this vendor's limits, for a payment about to be sent.
+/// Holds the organization's limit lock (shared) until the transaction ends,
+/// so a limit changed at the same moment waits for a payment being decided
+/// under the old one instead of racing it, even where no row exists yet.
+pub async fn auto_pay_limits_for_payment(
+    tx: &mut Tx,
+    org_id: Uuid,
+    vendor_id: Uuid,
+) -> anyhow::Result<(Option<Cents>, Option<Cents>)> {
+    sqlx::query(
+        "SELECT pg_advisory_xact_lock_shared(hashtextextended('payvy.auto_pay_limits.' || $1::text, 0))",
+    )
+    .bind(org_id)
+    .execute(&mut **tx)
+    .await?;
+    let rows = sqlx::query(
+        "SELECT vendor_id, limit_cents FROM auto_pay_limits
+         WHERE vendor_id IS NULL OR vendor_id = $1",
+    )
+    .bind(vendor_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    let (mut company, mut vendor) = (None, None);
+    for r in rows {
+        match r.get::<Option<Uuid>, _>("vendor_id") {
+            Some(_) => vendor = Some(r.get("limit_cents")),
+            None => company = Some(r.get("limit_cents")),
+        }
+    }
+    Ok((company, vendor))
+}
+
+/// Sets the company's limit (vendor None) or a vendor's; `limit` None
+/// removes a vendor's own limit so it follows the company's.
+pub async fn set_auto_pay_limit(
+    tx: &mut Tx,
+    org_id: Uuid,
+    vendor_id: Option<Uuid>,
+    limit: Option<Cents>,
+    actor: &str,
+    now: DateTime<Utc>,
+) -> anyhow::Result<()> {
+    sqlx::query("DELETE FROM auto_pay_limits WHERE vendor_id IS NOT DISTINCT FROM $1")
+        .bind(vendor_id)
+        .execute(&mut **tx)
+        .await?;
+    if let Some(cents) = limit {
+        sqlx::query(
+            "INSERT INTO auto_pay_limits (id, org_id, vendor_id, limit_cents, set_by, set_at)
+             VALUES ($1, $2, $3, $4, $5, $6)",
+        )
+        .bind(Uuid::new_v4())
+        .bind(org_id)
+        .bind(vendor_id)
+        .bind(cents)
+        .bind(actor)
+        .bind(now)
+        .execute(&mut **tx)
+        .await?;
+    }
+    Ok(())
+}
+
+/// Serializes changes to auto-pay limits within one organization, and with
+/// automatic payments being sent (`auto_pay_limits_for_payment`).
+pub async fn lock_auto_pay_limits(tx: &mut Tx, org_id: Uuid) -> anyhow::Result<()> {
+    sqlx::query(
+        "SELECT pg_advisory_xact_lock(hashtextextended('payvy.auto_pay_limits.' || $1::text, 0))",
+    )
+    .bind(org_id)
+    .execute(&mut **tx)
+    .await?;
     Ok(())
 }

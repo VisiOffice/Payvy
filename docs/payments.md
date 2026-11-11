@@ -192,10 +192,64 @@ automatically. It needs:
 
 In `request` mode the payment still waits for a Mercury admin's approval.
 
+A bill over the auto-pay limit (below) waits for a person instead.
+
 A payment that fails, is cancelled or rejected, or comes back as an ACH return sets the bill's
 `release_by_person`: from then on its automatic pay step waits for a person to release it
 (`awaiting_release`, shown in Waiting on you). Auto-pay never retries a bill. This matters for
 recurring identical bills, which Mercury's 24-hour duplicate rule refuses (below).
+
+### The auto-pay limit
+
+A workflow saying "pay automatically" is never enough on its own for a large bill. Every company has
+an **auto-pay limit**: a bill above it waits for a person to release it (`awaiting_release`, in
+Waiting on you, with the reason, e.g. "Over the $5,000.00 auto-pay limit"), whatever its workflow
+says. It is a safety net against a bad extraction or a fraudulent invoice. Nothing fails: the bill
+just needs a person, exactly like a manual pay step. A bill exactly at the limit still pays
+automatically.
+
+```
+auto_pay.limits      {}
+auto_pay.lower_limit { "limit_cents": 250000 }
+auto_pay.raise_limit { "limit_cents": 1000000, "reason": "monthly rent" }   # preview, then commit
+auto_pay.lower_limit { "vendor_id": "…", "limit_cents": 50000 }
+auto_pay.raise_limit { "vendor_id": "…", "limit_cents": 2000000 }           # above the company's
+auto_pay.lower_limit { "vendor_id": "…", "limit_cents": null }              # back to the company's
+```
+
+- **Defaults.** Every company, new or existing, starts at **$5,000.00**
+  (`workflow::DEFAULT_AUTO_PAY_LIMIT_CENTS`) until a person sets its own. Companies that already
+  had automatic workflows get the same ceiling when they upgrade: a bill above it waits for a
+  release instead of paying, which delays a payment but never makes a wrong one. Look at Waiting on
+  you after upgrading if you pay larger recurring bills automatically, and raise the limit if that
+  was intended.
+- **There is no "no limit".** The highest limit is $1,000,000,000.00; $0.00 means nothing pays
+  automatically.
+- **Vendor limits** are optional overrides, higher or lower than the company's, with the same
+  range. The limit in force for a bill is the vendor's own if it has one, else the company's. So
+  changing the company's limit never changes a vendor that has its own (Settings says so, and the
+  vendor page shows which limit it uses and its value). The reason on a held bill names which
+  applied: "Over this vendor's $20,000.00 auto-pay limit" or "Over the company's $5,000.00
+  auto-pay limit".
+- **Only a person changes a limit**, and each change is an event (`auto_pay.limit_lowered`,
+  `auto_pay.limit_raised`, with the old and new limits, who, and the bills it moved). Lowering
+  is immediate. Anything that raises the limit in force is confirmed like a release
+  (`auto_pay.raise_limit`): raising the company's (its preview counts only vendors without their
+  own), setting or raising a vendor's above what applies to it now (including above the company's
+  for a vendor that had none), and removing a vendor's own when the company's is higher. Removing
+  one when the company's is lower or equal is routine (`auto_pay.lower_limit`). The preview lists
+  the bills that would start paying automatically and commits only with its token. Vendor changes
+  take the same lock as company changes.
+- **Where it is enforced.** The limit is part of where a bill stands (`workflow::evaluate`), so an
+  over-limit bill is never `ready_to_pay` and the payment worker never picks it. `bill.auto_pay`
+  re-evaluates the bill, and the payment is checked against the limit in force once more as it is
+  created and sent (`payments::submit`), under a lock that limit changes also take: a limit
+  lowered while the worker is mid-way through a batch applies to every bill not yet sent, and a
+  change made while one payment is in flight waits for it.
+- **Resends are not new payments.** An automatic payment whose first answer was unclear
+  (`submitting`) is resent with the same idempotency key even if the limit was lowered meanwhile.
+  It was decided under the limit then in force, and the bank may already have it; refusing to ask
+  again would only leave its state unknown. A person's release is never capped by the limit.
 
 ## Never paying twice
 
@@ -235,8 +289,6 @@ built yet — reads are live from Rho each time.
 
 ## Not yet
 
-- An amount ceiling on automatic payments (today the controls are the workflow a person accepted,
-  any approval steps before it, and Mercury's own approval in `request` mode).
 - Bills in other currencies, and Wise and Airwallex for international payments.
 - Ramp and Brex.
 - Paying through Rho (its current API doesn't offer it to us), and stored

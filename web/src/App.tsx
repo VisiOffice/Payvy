@@ -16,6 +16,10 @@ const BillPage = lazy(() => import('./pages/Bill').then((m) => ({ default: m.Bil
 const Workflows = lazy(() => import('./pages/Workflows').then((m) => ({ default: m.Workflows })));
 const Bank = lazy(() => import('./pages/Bank').then((m) => ({ default: m.Bank })));
 const EmailSettings = lazy(() => import('./pages/EmailSettings').then((m) => ({ default: m.EmailSettings })));
+const PeopleSettings = lazy(() => import('./pages/PeopleSettings').then((m) => ({ default: m.PeopleSettings })));
+const CompanySettings = lazy(() => import('./pages/CompanySettings').then((m) => ({ default: m.CompanySettings })));
+const AutoPaySettings = lazy(() => import('./pages/AutoPaySettings').then((m) => ({ default: m.AutoPaySettings })));
+const ApprovalSettings = lazy(() => import('./pages/ApprovalSettings').then((m) => ({ default: m.ApprovalSettings })));
 const VendorPage = lazy(() => import('./pages/Vendor').then((m) => ({ default: m.VendorPage })));
 const DocumentReview = lazy(() =>
   import('./pages/DocumentReview').then((m) => ({ default: m.DocumentReview })),
@@ -72,7 +76,7 @@ export function App() {
   }
 
   return (
-    <SessionContext value={{ me: state.me, signOut }}>
+    <SessionContext value={{ me: state.me, signOut, setMe: (me) => setState({ kind: 'signed_in', me }) }}>
       <Shell>
         <Routes>
           <Route path="/" element={<Inbox />} />
@@ -125,6 +129,17 @@ export function App() {
             element={
               <Suspense fallback={<Spinner label="Loading" />}>
                 <EmailSettings />
+              </Suspense>
+            }
+          />
+          <Route path="/settings/people" element={<Suspense fallback={<Spinner label="Loading" />}><PeopleSettings /></Suspense>} />
+          <Route path="/settings/company" element={<Suspense fallback={<Spinner label="Loading" />}><CompanySettings /></Suspense>} />
+          <Route path="/settings/auto-pay" element={<Suspense fallback={<Spinner label="Loading" />}><AutoPaySettings /></Suspense>} />
+          <Route
+            path="/settings/approvals"
+            element={
+              <Suspense fallback={<Spinner label="Loading" />}>
+                <ApprovalSettings />
               </Suspense>
             }
           />

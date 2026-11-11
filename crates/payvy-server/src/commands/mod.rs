@@ -2,6 +2,8 @@
 //! same validation, risk tiers, events and errors. Handlers live one module
 //! per area; the registry itself is `payvy_domain::commands::COMMANDS`.
 
+mod approval_rules;
+mod auto_pay;
 mod bank;
 mod bills;
 mod documents;
@@ -9,6 +11,7 @@ mod email;
 mod events;
 mod extract;
 mod inbox;
+mod org;
 mod payee_invites;
 mod payments;
 mod people;
@@ -191,10 +194,17 @@ async fn execute(cx: &mut Cx<'_>, name: &str, input: &Value) -> Result<Value, Co
         "vendor.create_recipient" => bank::create_recipient(cx, parse(input)?).await,
         "vendor.accept_payee" => bank::decide_payee(cx, parse(input)?, true).await,
         "vendor.decline_payee" => bank::decide_payee(cx, parse(input)?, false).await,
+        "auto_pay.limits" => auto_pay::limits(cx, parse(input)?).await,
+        "auto_pay.lower_limit" => auto_pay::set(cx, parse(input)?, auto_pay::Way::Lower).await,
+        "auto_pay.raise_limit" => auto_pay::set(cx, parse(input)?, auto_pay::Way::Raise).await,
         "inbox.get" => inbox::get(cx).await,
+        "approval_rules.get" => approval_rules::get(cx).await,
+        "approval_rules.set" => approval_rules::set(cx, parse(input)?).await,
         "person.list" => people::list(cx).await,
         "person.add" => people::add(cx, parse(input)?).await,
         "person.remove" => people::remove(cx, parse(input)?).await,
+        "org.get" => org::get(cx).await,
+        "org.update" => org::update(cx, parse(input)?).await,
         "bank.authorize" => {
             let _: bank::Accounts = parse(input)?;
             ramp::authorize(cx).await
