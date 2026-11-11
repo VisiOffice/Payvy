@@ -432,28 +432,42 @@ async fn a_bill_from_some_pages_splits_them_off_in_the_same_change() {
     assert_eq!(numbers(&rest), [4, 5, 6]);
     assert_eq!(rest["pages"]["version"], 1);
 
-    // A bill that is refused leaves no split behind: a duplicate invoice
-    // number, a stale version, or pages the document doesn't have.
-    let before = inbox_ids(&db, &robert, "inbox").await;
-    let e = create("85273", json!([4]), 1).await.unwrap_err();
+    // The vendor sends invoice 85273 again, as page 4: it is no longer
+    // refused. The page splits off and stacks on the first bill.
+    let b2 = create("85273", json!([4]), 1).await.unwrap();
+    assert_eq!(b2["result"]["bill"]["id"], bill["bill"]["id"]);
+    assert_eq!(b2["result"]["arrival"]["kind"], "resend");
+    assert_eq!(b2["result"]["received_count"], 2);
     assert!(
-        matches!(&e, CommandError::Conflict(m) if m.contains("possible duplicate")),
-        "{e}"
+        b2["events"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("bill.invoice_received")),
+        "{b2}"
     );
-    let e = create("85274", json!([4]), 0).await.unwrap_err();
+    assert_eq!(b2["result"]["documents"].as_array().unwrap().len(), 2);
+    let rest = get(&db, &robert, &id).await;
+    assert_eq!(numbers(&rest), [5, 6]);
+    assert_eq!(rest["pages"]["version"], 2);
+    assert_eq!(rest["split_into"].as_array().unwrap().len(), 2);
+
+    // A bill that is refused leaves no split behind: a stale version, or
+    // pages the document doesn't have.
+    let before = inbox_ids(&db, &robert, "inbox").await;
+    let e = create("85274", json!([5]), 0).await.unwrap_err();
     assert!(
         matches!(&e, CommandError::Conflict(m) if m.contains("version 0")),
         "{e}"
     );
-    let e = create("85274", json!([2]), 1).await.unwrap_err();
+    let e = create("85274", json!([2]), 2).await.unwrap_err();
     assert!(matches!(e, CommandError::Invalid(_)), "{e}");
     assert_eq!(inbox_ids(&db, &robert, "inbox").await, before);
     let rest = get(&db, &robert, &id).await;
-    assert_eq!(rest["pages"]["version"], 1);
-    assert_eq!(rest["split_into"].as_array().unwrap().len(), 1);
+    assert_eq!(rest["pages"]["version"], 2);
+    assert_eq!(rest["split_into"].as_array().unwrap().len(), 2);
 
     // Every page left: the document itself is filed, as without pages.
-    let b = create("85275", json!([4, 5, 6]), 1).await.unwrap();
+    let b = create("85275", json!([5, 6]), 2).await.unwrap();
     assert_eq!(b["events"], json!(["bill.created", "document.filed"]));
     assert_eq!(b["result"]["documents"][0]["id"], json!(id));
     let e = commit(

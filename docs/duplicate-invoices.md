@@ -3,7 +3,7 @@
 A vendor sending the same invoice again never creates a second payable bill,
 and the resend is never silently discarded. Every arrival is kept and stacked
 on the bill it belongs to (`bill_arrivals`, migration
-`0023_bill_arrivals.sql`; store: `payvy-store::bill_arrivals`; pure rule:
+`0024_bill_arrivals.sql`; store: `payvy-store::bill_arrivals`; pure rule:
 `payvy_domain::bills::arrival_kind`).
 
 ## How a copy is recognized
