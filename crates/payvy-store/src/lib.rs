@@ -5,6 +5,7 @@
 use chrono::{DateTime, NaiveDate, Utc};
 use payvy_domain::Cents;
 use payvy_domain::bills::{Line, State};
+use payvy_domain::pages::PageRef;
 use payvy_domain::workflow::{Approval, Signal, Workflow};
 use serde::Serialize;
 use sqlx::postgres::{PgPool, PgPoolOptions, PgRow};
@@ -535,13 +536,15 @@ pub struct Bill {
     pub paid_reference: Option<String>,
     pub closed_reason: Option<String>,
     pub created_by: String,
+    /// The page arrangement of its document it uses; None for the original.
+    pub arrangement_id: Option<Uuid>,
 }
 
 macro_rules! bill_cols {
     () => {
         "b.id, b.vendor_id, v.name AS vendor_name, b.workflow_id, b.invoice_number, b.invoice_date,
     b.due_date, b.amount_cents, b.memo, b.external_ref, b.state, b.received_at, b.released_at, b.released_by,
-    b.release_by_person, b.paid_on, b.paid_method, b.paid_reference, b.closed_reason, b.created_by"
+    b.release_by_person, b.paid_on, b.paid_method, b.paid_reference, b.closed_reason, b.created_by, b.arrangement_id"
     };
 }
 
@@ -568,6 +571,7 @@ fn bill(r: &PgRow) -> anyhow::Result<Bill> {
         paid_reference: r.get("paid_reference"),
         closed_reason: r.get("closed_reason"),
         created_by: r.get("created_by"),
+        arrangement_id: r.get("arrangement_id"),
     })
 }
 
@@ -584,6 +588,7 @@ pub struct NewBill<'a> {
     pub lines: &'a [Line],
     pub created_by: &'a str,
     pub received_at: DateTime<Utc>,
+    pub arrangement_id: Option<Uuid>,
 }
 
 #[derive(Debug)]
@@ -627,8 +632,8 @@ pub async fn insert_bill(
     let id = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO bills (id, org_id, vendor_id, workflow_id, invoice_number, invoice_key, invoice_date, due_date,
-                            amount_cents, memo, external_ref, created_by, received_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+                            amount_cents, memo, external_ref, created_by, received_at, arrangement_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
     )
     .bind(id)
     .bind(org_id)
@@ -643,6 +648,7 @@ pub async fn insert_bill(
     .bind(new.external_ref)
     .bind(new.created_by)
     .bind(new.received_at)
+    .bind(new.arrangement_id)
     .execute(&mut **tx)
     .await?;
     for (i, line) in new.lines.iter().enumerate() {
@@ -891,11 +897,13 @@ pub struct Document {
     pub trashed_reason: Option<String>,
     pub received_at: DateTime<Utc>,
     pub created_by: String,
+    /// None: not counted yet. 0: the file can't be read as a PDF.
+    pub page_count: Option<i32>,
 }
 
 macro_rules! document_cols {
     () => {
-        "id, sha256, content_type, size_bytes, filename, storage_key, source, status, bill_id, email_id, trashed_reason, received_at, created_by"
+        "id, sha256, content_type, size_bytes, filename, storage_key, source, status, bill_id, email_id, trashed_reason, received_at, created_by, page_count"
     };
 }
 
@@ -914,6 +922,7 @@ fn document(r: &PgRow) -> Document {
         trashed_reason: r.get("trashed_reason"),
         received_at: r.get("received_at"),
         created_by: r.get("created_by"),
+        page_count: r.get("page_count"),
     }
 }
 
@@ -928,6 +937,8 @@ pub struct NewDocument<'a> {
     pub email_id: Option<Uuid>,
     pub received_at: DateTime<Utc>,
     pub created_by: &'a str,
+    /// Counted on arrival: 0 when the file can't be read as a PDF.
+    pub page_count: Option<i32>,
 }
 
 pub async fn document_by_hash(tx: &mut Tx, sha256: &str) -> anyhow::Result<Option<Document>> {
@@ -950,8 +961,8 @@ pub async fn insert_document(
 ) -> anyhow::Result<Option<Document>> {
     let row = sqlx::query(concat!(
         "INSERT INTO documents (id, org_id, sha256, content_type, size_bytes, filename, storage_key, source,
-                                email_id, received_at, created_by)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                                email_id, received_at, created_by, page_count)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
          ON CONFLICT (org_id, sha256) DO NOTHING RETURNING ",
         document_cols!()
     ))
@@ -966,6 +977,7 @@ pub async fn insert_document(
     .bind(new.email_id)
     .bind(new.received_at)
     .bind(new.created_by)
+    .bind(new.page_count)
     .fetch_optional(&mut **tx)
     .await?;
     Ok(row.as_ref().map(document))
@@ -1105,6 +1117,116 @@ pub async fn trash_document(tx: &mut Tx, id: Uuid, reason: &str) -> anyhow::Resu
     sqlx::query("UPDATE documents SET status = 'trashed', trashed_reason = $2 WHERE id = $1")
         .bind(id)
         .bind(reason)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
+// ── Page arrangements ───────────────────────────────────────────────────────
+
+/// Records how many pages a document's file has, the first time it is read.
+pub async fn set_page_count(tx: &mut Tx, id: Uuid, page_count: i32) -> anyhow::Result<()> {
+    sqlx::query("UPDATE documents SET page_count = $2 WHERE id = $1 AND page_count IS NULL")
+        .bind(id)
+        .bind(page_count)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
+/// One version of a document's page arrangement. Never updated.
+#[derive(Debug, Clone, Serialize)]
+pub struct Arrangement {
+    pub id: Uuid,
+    pub document_id: Uuid,
+    pub version: i32,
+    pub pages: Vec<PageRef>,
+    pub created_at: DateTime<Utc>,
+    pub created_by: String,
+}
+
+macro_rules! arrangement_cols {
+    () => {
+        "id, document_id, version, pages, created_at, created_by"
+    };
+}
+
+fn arrangement(r: &PgRow) -> anyhow::Result<Arrangement> {
+    let pages: serde_json::Value = r.get("pages");
+    Ok(Arrangement {
+        id: r.get("id"),
+        document_id: r.get("document_id"),
+        version: r.get("version"),
+        pages: serde_json::from_value(pages)?,
+        created_at: r.get("created_at"),
+        created_by: r.get("created_by"),
+    })
+}
+
+/// Every version of a document's arrangement, newest first. Empty while it
+/// is still the original (version 0).
+pub async fn document_arrangements(
+    tx: &mut Tx,
+    document_id: Uuid,
+) -> anyhow::Result<Vec<Arrangement>> {
+    let rows = sqlx::query(concat!(
+        "SELECT ",
+        arrangement_cols!(),
+        " FROM document_arrangements WHERE document_id = $1 ORDER BY version DESC"
+    ))
+    .bind(document_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    rows.iter().map(arrangement).collect()
+}
+
+pub async fn get_arrangement(tx: &mut Tx, id: Uuid) -> anyhow::Result<Option<Arrangement>> {
+    let row = sqlx::query(concat!(
+        "SELECT ",
+        arrangement_cols!(),
+        " FROM document_arrangements WHERE id = $1"
+    ))
+    .bind(id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    row.as_ref().map(arrangement).transpose()
+}
+
+pub async fn insert_arrangement(
+    tx: &mut Tx,
+    org_id: Uuid,
+    document_id: Uuid,
+    version: i32,
+    pages: &[PageRef],
+    at: DateTime<Utc>,
+    by: &str,
+) -> anyhow::Result<Arrangement> {
+    let row = sqlx::query(concat!(
+        "INSERT INTO document_arrangements (id, org_id, document_id, version, pages, created_at, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING ",
+        arrangement_cols!()
+    ))
+    .bind(Uuid::new_v4())
+    .bind(org_id)
+    .bind(document_id)
+    .bind(version)
+    .bind(serde_json::to_value(pages)?)
+    .bind(at)
+    .bind(by)
+    .fetch_one(&mut **tx)
+    .await?;
+    arrangement(&row)
+}
+
+/// Moves a bill's pin to another arrangement of its document.
+pub async fn pin_arrangement(
+    tx: &mut Tx,
+    bill_id: Uuid,
+    arrangement_id: Uuid,
+) -> anyhow::Result<()> {
+    sqlx::query("UPDATE bills SET arrangement_id = $2 WHERE id = $1")
+        .bind(bill_id)
+        .bind(arrangement_id)
         .execute(&mut **tx)
         .await?;
     Ok(())
@@ -1354,11 +1476,13 @@ pub struct Extraction {
     pub error: Option<String>,
     pub created_at: DateTime<Utc>,
     pub created_by: String,
+    /// The document's page arrangement version when it was read.
+    pub arrangement_version: i32,
 }
 
 macro_rules! extraction_cols {
     () => {
-        "id, document_id, status, provider, model, answer, draft, checks, vendor_match, error, created_at, created_by"
+        "id, document_id, status, provider, model, answer, draft, checks, vendor_match, error, created_at, created_by, arrangement_version"
     };
 }
 
@@ -1376,6 +1500,7 @@ fn extraction(r: &PgRow) -> Extraction {
         error: r.get("error"),
         created_at: r.get("created_at"),
         created_by: r.get("created_by"),
+        arrangement_version: r.get("arrangement_version"),
     }
 }
 
@@ -1387,6 +1512,7 @@ pub struct NewExtraction<'a> {
     pub outcome: Result<ExtractionRead<'a>, &'a str>,
     pub created_at: DateTime<Utc>,
     pub created_by: &'a str,
+    pub arrangement_version: i32,
 }
 
 pub struct ExtractionRead<'a> {
@@ -1407,8 +1533,8 @@ pub async fn insert_extraction(
     };
     let row = sqlx::query(concat!(
         "INSERT INTO extractions (id, org_id, document_id, status, provider, model, answer, draft, checks,
-                                  vendor_match, error, created_at, created_by)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING ",
+                                  vendor_match, error, created_at, created_by, arrangement_version)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING ",
         extraction_cols!()
     ))
     .bind(Uuid::new_v4())
@@ -1424,6 +1550,7 @@ pub async fn insert_extraction(
     .bind(error)
     .bind(new.created_at)
     .bind(new.created_by)
+    .bind(new.arrangement_version)
     .fetch_one(&mut **tx)
     .await?;
     Ok(extraction(&row))

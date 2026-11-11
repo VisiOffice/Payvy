@@ -113,7 +113,7 @@
       "tier": "routine"
     },
     {
-      "input_schema": "{\"type\":\"object\",\"required\":[\"vendor_id\",\"invoice_number\",\"invoice_date\",\"amount_cents\"],\"properties\":{\"vendor_id\":{\"type\":\"string\",\"format\":\"uuid\"},\"invoice_number\":{\"type\":\"string\"},\"invoice_date\":{\"type\":\"string\",\"format\":\"date\"},\"due_date\":{\"type\":\"string\",\"format\":\"date\",\"description\":\"Defaults to invoice_date plus the vendor's terms\"},\"amount_cents\":{\"type\":\"integer\",\"minimum\":1},\"memo\":{\"type\":\"string\"},\"external_ref\":{\"type\":\"string\",\"description\":\"Your own id for this bill (a PO or order number), so other systems can signal it\"},\"lines\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"required\":[\"description\",\"amount_cents\"],\"properties\":{\"description\":{\"type\":\"string\"},\"amount_cents\":{\"type\":\"integer\",\"minimum\":1},\"account\":{\"type\":\"string\"}}},\"description\":\"If given, they must add up to amount_cents\"},\"allow_duplicate\":{\"type\":\"boolean\"},\"document_id\":{\"type\":\"string\",\"format\":\"uuid\",\"description\":\"The inbox document this bill was read from; it is filed with the bill\"},\"extraction_id\":{\"type\":\"string\",\"format\":\"uuid\",\"description\":\"The document.extract result this bill was entered from (its bill_input carries it). The audit log records which fields were corrected.\"}}}",
+      "input_schema": "{\"type\":\"object\",\"required\":[\"vendor_id\",\"invoice_number\",\"invoice_date\",\"amount_cents\"],\"properties\":{\"vendor_id\":{\"type\":\"string\",\"format\":\"uuid\"},\"invoice_number\":{\"type\":\"string\"},\"invoice_date\":{\"type\":\"string\",\"format\":\"date\"},\"due_date\":{\"type\":\"string\",\"format\":\"date\",\"description\":\"Defaults to invoice_date plus the vendor's terms\"},\"amount_cents\":{\"type\":\"integer\",\"minimum\":1},\"memo\":{\"type\":\"string\"},\"external_ref\":{\"type\":\"string\",\"description\":\"Your own id for this bill (a PO or order number), so other systems can signal it\"},\"lines\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"required\":[\"description\",\"amount_cents\"],\"properties\":{\"description\":{\"type\":\"string\"},\"amount_cents\":{\"type\":\"integer\",\"minimum\":1},\"account\":{\"type\":\"string\"}}},\"description\":\"If given, they must add up to amount_cents\"},\"allow_duplicate\":{\"type\":\"boolean\"},\"document_id\":{\"type\":\"string\",\"format\":\"uuid\",\"description\":\"The inbox document this bill was read from; it is filed with the bill, which pins its current page arrangement\"},\"extraction_id\":{\"type\":\"string\",\"format\":\"uuid\",\"description\":\"The document.extract result this bill was entered from (its bill_input carries it). The audit log records which fields were corrected.\"}}}",
       "name": "bill.create",
       "person_only": false,
       "summary": "Enter a bill, optionally from an inbox document. It follows the vendor's current workflow from now on. Refused if this vendor already has a bill with the same invoice number (ignoring case, spaces, punctuation and leading zeros) unless allow_duplicate is true.",
@@ -130,7 +130,7 @@
       "input_schema": "{\"type\":\"object\",\"required\":[\"bill_id\"],\"properties\":{\"bill_id\":{\"type\":\"string\",\"format\":\"uuid\"}}}",
       "name": "bill.get",
       "person_only": false,
-      "summary": "A bill with its lines, its workflow progress step by step, approvals, signals and history. While it waits for approval, approval says whether you can give it and, if not, why and who else can.",
+      "summary": "A bill with its lines, its workflow progress step by step, approvals, signals and history, and the page arrangement of its document it pinned. While it waits for approval, approval says whether you can give it and, if not, why and who else can.",
       "tier": "read"
     },
     {
@@ -375,14 +375,21 @@
       "input_schema": "{\"type\":\"object\",\"required\":[\"document_id\"],\"properties\":{\"document_id\":{\"type\":\"string\",\"format\":\"uuid\"}}}",
       "name": "document.get",
       "person_only": false,
-      "summary": "A document's details, every time a model read it (newest first, with checks and the suggested bill_input), and a download link valid for 15 minutes.",
+      "summary": "A document's details, every time a model read it (newest first, with checks, the suggested bill_input, and out_of_date when its pages were rearranged since), its pages (page count, the current arrangement and version, every earlier version, and whether they are locked and why), its history, and a download link to the original valid for 15 minutes.",
       "tier": "read"
     },
     {
       "input_schema": "{\"type\":\"object\",\"required\":[\"document_id\"],\"properties\":{\"document_id\":{\"type\":\"string\",\"format\":\"uuid\"},\"again\":{\"type\":\"boolean\",\"description\":\"Read it again even though it was already read, e.g. after adding the vendor\"}}}",
       "name": "document.extract",
       "person_only": false,
-      "summary": "Read an inbox document with the configured model: vendor, invoice number, dates, lines and total, checked against each other and matched to a vendor on file. Returns the checks, whether it is ready, and bill_input: the bill.create input it suggests, to enter as is or corrected. Nothing becomes a bill until bill.create. New documents are read automatically when the server's reader is on. Refused if the document was already read, unless again is true.",
+      "summary": "Read an inbox document with the configured model: vendor, invoice number, dates, lines and total, checked against each other and matched to a vendor on file. Returns the checks, whether it is ready, and bill_input: the bill.create input it suggests, to enter as is or corrected. Nothing becomes a bill until bill.create. New documents are read automatically when the server's reader is on. Refused if the document was already read, unless again is true. The model reads the original file, whatever the page arrangement.",
+      "tier": "routine"
+    },
+    {
+      "input_schema": "{\"type\":\"object\",\"required\":[\"document_id\",\"expected_version\",\"pages\"],\"properties\":{\"document_id\":{\"type\":\"string\",\"format\":\"uuid\"},\"expected_version\":{\"type\":\"integer\",\"minimum\":0,\"description\":\"pages.version from document.get; 0 while the pages were never arranged\"},\"pages\":{\"type\":\"array\",\"minItems\":1,\"description\":\"Every page of the original, once each, in the order to show them\",\"items\":{\"type\":\"object\",\"required\":[\"page\"],\"additionalProperties\":false,\"properties\":{\"page\":{\"type\":\"integer\",\"minimum\":1,\"description\":\"The page number in the original file\"},\"rotation\":{\"type\":\"integer\",\"enum\":[0,90,180,270],\"description\":\"Degrees clockwise; default 0\"},\"hidden\":{\"type\":\"boolean\",\"description\":\"Left out of the view; it can be restored. Default false\"}}}}}}",
+      "name": "document.arrange",
+      "person_only": false,
+      "summary": "Set a document's page order, rotation and hidden pages in one change, as a new version of its arrangement; the original file never changes. List every page of the original once, by its page number, in the order to show them; at least one must stay visible. expected_version is the version from document.get: if someone changed the pages since, it is refused and you get the document again. Refused for a document set aside as not a bill, and once its bill has an approval or is no longer open (pages lock after approval). A bill still waiting for its first approval moves to the new version, and its history says so.",
       "tier": "routine"
     },
     {

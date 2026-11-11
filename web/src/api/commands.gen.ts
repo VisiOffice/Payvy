@@ -254,7 +254,7 @@ export interface BillCreateInput {
   }[];
   allow_duplicate?: boolean;
   /**
-   * The inbox document this bill was read from; it is filed with the bill
+   * The inbox document this bill was read from; it is filed with the bill, which pins its current page arrangement
    */
   document_id?: string;
   /**
@@ -494,6 +494,49 @@ export interface DocumentExtractInput {
   again?: boolean;
 }
 
+export interface DocumentArrangeInput {
+  document_id: string;
+  /**
+   * pages.version from document.get; 0 while the pages were never arranged
+   */
+  expected_version: number;
+  /**
+   * Every page of the original, once each, in the order to show them
+   *
+   * @minItems 1
+   */
+  pages: [
+    {
+      /**
+       * The page number in the original file
+       */
+      page: number;
+      /**
+       * Degrees clockwise; default 0
+       */
+      rotation?: 0 | 90 | 180 | 270;
+      /**
+       * Left out of the view; it can be restored. Default false
+       */
+      hidden?: boolean;
+    },
+    ...{
+      /**
+       * The page number in the original file
+       */
+      page: number;
+      /**
+       * Degrees clockwise; default 0
+       */
+      rotation?: 0 | 90 | 180 | 270;
+      /**
+       * Left out of the view; it can be restored. Default false
+       */
+      hidden?: boolean;
+    }[]
+  ];
+}
+
 export interface DocumentTrashInput {
   document_id: string;
   reason: string;
@@ -583,6 +626,7 @@ export interface CommandInputs {
   "document.list": DocumentListInput;
   "document.get": DocumentGetInput;
   "document.extract": DocumentExtractInput;
+  "document.arrange": DocumentArrangeInput;
   "document.trash": DocumentTrashInput;
   "email.address": EmailAddressInput;
   "email.new_address": EmailNewAddressInput;
@@ -615,7 +659,7 @@ export const COMMANDS: Record<CommandName, { tier: Tier; personOnly: boolean; su
   "workflow.decline": { tier: "routine", personOnly: true, summary: "Decline a workflow proposal." },
   "bill.create": { tier: "routine", personOnly: false, summary: "Enter a bill, optionally from an inbox document. It follows the vendor's current workflow from now on. Refused if this vendor already has a bill with the same invoice number (ignoring case, spaces, punctuation and leading zeros) unless allow_duplicate is true." },
   "bill.list": { tier: "read", personOnly: false, summary: "List bills, newest first. Filter by state (open, rejected, void, paid), by where open bills stand (status: awaiting_approval, held, waiting_for, awaiting_release, ready_to_pay, released), by vendor, or to bills waiting on you (mine)." },
-  "bill.get": { tier: "read", personOnly: false, summary: "A bill with its lines, its workflow progress step by step, approvals, signals and history. While it waits for approval, approval says whether you can give it and, if not, why and who else can." },
+  "bill.get": { tier: "read", personOnly: false, summary: "A bill with its lines, its workflow progress step by step, approvals, signals and history, and the page arrangement of its document it pinned. While it waits for approval, approval says whether you can give it and, if not, why and who else can." },
   "bill.approve": { tier: "routine", personOnly: true, summary: "Approve a bill at its current approval step. You must be one of that step's approvers. One person gives a bill one approval, so you can't approve a second step, or a step a later one needs you for; and when approval_rules has submitter_cannot_approve on, whoever entered the bill or uploaded its document can't approve it. A refusal says who else can. bill.get shows it in approval before you try." },
   "bill.reject": { tier: "routine", personOnly: true, summary: "Reject a bill: it will not be paid. Final." },
   "bill.signal": { tier: "routine", personOnly: false, summary: "Report that something outside Payvy happened for a bill, e.g. customer_funded when the customer has paid for this cost. A workflow's wait_for step waits for its signal. Name the bill by bill_id or by the external_ref it was created with." },
@@ -650,8 +694,9 @@ export const COMMANDS: Record<CommandName, { tier: Tier; personOnly: boolean; su
   "payment.refresh": { tier: "routine", personOnly: false, summary: "Ask the bank where a payment stands now and record it: sent marks the bill paid; failed, cancelled or rejected sends the bill back for release; returned reopens a paid bill. Payvy does this on its own every minute or two." },
   "document.upload": { tier: "routine", personOnly: false, summary: "Add a file to the inbox: a PDF or image (PNG, JPEG, GIF, WebP, TIFF) of a bill, up to 25 MB, as base64. Its type is read from the file itself. Refused if the same file is already here, naming the existing document." },
   "document.list": { tier: "read", personOnly: false, summary: "Documents in the inbox (default), oldest first; or filed or trashed ones." },
-  "document.get": { tier: "read", personOnly: false, summary: "A document's details, every time a model read it (newest first, with checks and the suggested bill_input), and a download link valid for 15 minutes." },
-  "document.extract": { tier: "routine", personOnly: false, summary: "Read an inbox document with the configured model: vendor, invoice number, dates, lines and total, checked against each other and matched to a vendor on file. Returns the checks, whether it is ready, and bill_input: the bill.create input it suggests, to enter as is or corrected. Nothing becomes a bill until bill.create. New documents are read automatically when the server's reader is on. Refused if the document was already read, unless again is true." },
+  "document.get": { tier: "read", personOnly: false, summary: "A document's details, every time a model read it (newest first, with checks, the suggested bill_input, and out_of_date when its pages were rearranged since), its pages (page count, the current arrangement and version, every earlier version, and whether they are locked and why), its history, and a download link to the original valid for 15 minutes." },
+  "document.extract": { tier: "routine", personOnly: false, summary: "Read an inbox document with the configured model: vendor, invoice number, dates, lines and total, checked against each other and matched to a vendor on file. Returns the checks, whether it is ready, and bill_input: the bill.create input it suggests, to enter as is or corrected. Nothing becomes a bill until bill.create. New documents are read automatically when the server's reader is on. Refused if the document was already read, unless again is true. The model reads the original file, whatever the page arrangement." },
+  "document.arrange": { tier: "routine", personOnly: false, summary: "Set a document's page order, rotation and hidden pages in one change, as a new version of its arrangement; the original file never changes. List every page of the original once, by its page number, in the order to show them; at least one must stay visible. expected_version is the version from document.get: if someone changed the pages since, it is refused and you get the document again. Refused for a document set aside as not a bill, and once its bill has an approval or is no longer open (pages lock after approval). A bill still waiting for its first approval moves to the new version, and its history says so." },
   "document.trash": { tier: "routine", personOnly: false, summary: "Take a document out of the inbox because it isn't a bill (a statement, a marketing email, a duplicate). The file is kept." },
   "email.address": { tier: "read", personOnly: false, summary: "This organization's inbound address. Bills emailed or forwarded to it land in the document inbox; a +tag after the token is allowed (token+fuel@...). Null until a person creates one with email.new_address." },
   "email.new_address": { tier: "routine", personOnly: true, summary: "Create the inbound address, or replace it if it is getting spam. The old address stops working at once, so anyone forwarding to it must switch." },

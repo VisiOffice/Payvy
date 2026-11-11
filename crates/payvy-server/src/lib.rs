@@ -7,6 +7,7 @@ pub mod inbound;
 pub mod mailer;
 pub mod mcp;
 pub mod mercury_webhook;
+pub mod page_count;
 pub mod payment_worker;
 pub mod secrets;
 pub mod sigv4;
