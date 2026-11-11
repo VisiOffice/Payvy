@@ -1,3 +1,4 @@
+import { Access } from './permissions';
 import { lazy, Suspense, useCallback, useEffect, useState } from 'react';
 import { Navigate, Route, Routes, useLocation, useParams } from 'react-router';
 import { Center } from '@astryxdesign/core/Center';
@@ -41,6 +42,18 @@ export function App() {
         setState({ kind: 'signed_out' });
       });
   }, []);
+
+  useEffect(() => {
+    if (state.kind !== 'signed_in') return;
+    let live = true;
+    const refresh = () => { void auth.me().then(me => { if (live) setState({ kind: 'signed_in', me }); }).catch(e => { if (live && e instanceof ApiError && e.status === 401) setState({ kind: 'signed_out' }); }); };
+    refresh();
+    window.addEventListener('focus', refresh);
+    window.addEventListener('payvy:changed', refresh);
+    window.addEventListener('payvy:access-changed', refresh);
+    const timer = window.setInterval(refresh, 30_000);
+    return () => { live = false; clearInterval(timer); window.removeEventListener('focus', refresh); window.removeEventListener('payvy:changed', refresh); window.removeEventListener('payvy:access-changed', refresh); };
+  }, [state.kind, location.pathname]);
 
   const signOut = useCallback(async () => {
     await auth.signOut();
@@ -121,7 +134,7 @@ export function App() {
             path="/settings/bank"
             element={
               <Suspense fallback={<Spinner label="Loading" />}>
-                <Bank />
+                <Access command="bank.connect"><Bank /></Access>
               </Suspense>
             }
           />
@@ -129,18 +142,18 @@ export function App() {
             path="/settings/email"
             element={
               <Suspense fallback={<Spinner label="Loading" />}>
-                <EmailSettings />
+                <Access command="email.new_address"><EmailSettings /></Access>
               </Suspense>
             }
           />
           <Route path="/settings/people" element={<Suspense fallback={<Spinner label="Loading" />}><PeopleSettings /></Suspense>} />
-          <Route path="/settings/company" element={<Suspense fallback={<Spinner label="Loading" />}><CompanySettings /></Suspense>} />
-          <Route path="/settings/auto-pay" element={<Suspense fallback={<Spinner label="Loading" />}><AutoPaySettings /></Suspense>} />
+          <Route path="/settings/company" element={<Suspense fallback={<Spinner label="Loading" />}><Access command="org.update"><CompanySettings /></Access></Suspense>} />
+          <Route path="/settings/auto-pay" element={<Suspense fallback={<Spinner label="Loading" />}><Access command="auto_pay.raise_limit"><AutoPaySettings /></Access></Suspense>} />
           <Route
             path="/settings/approvals"
             element={
               <Suspense fallback={<Spinner label="Loading" />}>
-                <ApprovalSettings />
+                <Access command="approval_rules.set"><ApprovalSettings /></Access>
               </Suspense>
             }
           />

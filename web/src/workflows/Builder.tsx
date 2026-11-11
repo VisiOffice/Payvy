@@ -1,3 +1,4 @@
+import { useCan, type Role } from '../permissions';
 // Builds the workflow for one vendor (on its page) or the organization
 // default (on the Workflows page). Saving proposes it and, since the person
 // saving can accept it, accepts it at once; "Propose" leaves it for someone
@@ -23,8 +24,8 @@ import { StepEditor, type PersonOption } from './StepEditor';
 
 /** Everyone who can be named in a step, from person.list. */
 export async function loadPeople(): Promise<PersonOption[]> {
-  const r = await run<{ people: { actor: string; name: string }[] }>('person.list', {});
-  return r.result.people.map((x) => ({ value: x.actor, label: x.name }));
+  const r = await run<{ people: { actor: string; name: string; roles: Role[] }[] }>('person.list', {});
+  return r.result.people.map((x) => ({ value: x.actor, label: x.name, roles: x.roles }));
 }
 
 export function Builder({
@@ -40,6 +41,7 @@ export function Builder({
   /** Reload `current` after a change. */
   onSaved: () => Promise<void>;
 }) {
+  const can = useCan();
   const [steps, setSteps] = useState<Step[]>(current.workflow.steps);
   const [selected, setSelected] = useState<string | undefined>();
   const [reason, setReason] = useState('');
@@ -121,6 +123,7 @@ export function Builder({
     }
   }
 
+  if (!can('workflow.propose')) return <Chart steps={current.workflow.steps} names={names} label="Workflow" />;
   return (
     <VStack gap={4}>
       <Card>

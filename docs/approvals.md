@@ -1,6 +1,6 @@
 # Approvals and separation of duties
 
-Who may approve the step a bill is waiting on. The rules live in
+Who may approve the step a bill is waiting on. The caller also needs the Approver or Admin role; see [Company roles](roles.md). The rules live in
 `crates/payvy-domain/src/duties.rs` (pure, tested) and are applied by `bill.approve`
 (`crates/payvy-server/src/commands/bills.rs`). `bill.get`, `bill.list` and `inbox.get` report the
 same answer before anyone tries, so the web app only offers Approve when it will work.
@@ -8,7 +8,7 @@ same answer before anyone tries, so the web app only offers Approve when it will
 ## What was enforced before
 
 - `bill.approve` is `person_only`: agent keys are refused and don't see the tool.
-- On a step with named approvers, only they may approve; an empty list means any person.
+- On a step with named approvers, only they may approve; an empty list means any person with approval permission.
 - The `approvals` table is unique on `(bill_id, step_id, actor)`, so a person couldn't approve the
   *same* step twice (which matters for `require: all`).
 - Nothing else. The person who entered a bill, or uploaded its invoice, could approve it, and one
@@ -67,5 +67,5 @@ message?, others, anyone }`. `inbox.get` keeps a bill you can't approve in `bill
   restricts who releases. Extending separation to release is a possible later rule.
 - **Removed people still count as submitters.** A bill entered by someone since removed still
   can't be approved by them (they can't sign in anyway); they aren't offered as "others".
-- **The "anyone" pool is the `people` table.** Person API keys without a sign-in aren't listed as
+- **The "anyone" pool is active people with the Approver or Admin role.** Person API keys without a sign-in aren't listed as
   "others", but they may still approve.

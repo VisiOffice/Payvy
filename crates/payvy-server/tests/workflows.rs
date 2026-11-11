@@ -372,7 +372,7 @@ async fn organizations_cannot_see_each_other() {
     let s = &db.state;
     let v = vendor(s, &person("robert"), "Ours").await;
     let b = bill(s, &person("robert"), &v, "1", 100).await;
-    let other = payvy_server::Actor::person(db.add_org().await, "eve");
+    let other = payvy_server::Actor::administrator(db.add_org().await, "eve");
     let e = commit(s, &other, "bill.get", json!({"bill_id": b}))
         .await
         .unwrap_err();

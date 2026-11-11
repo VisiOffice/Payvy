@@ -12,6 +12,8 @@ pub mod payment_worker;
 pub mod secrets;
 pub mod sigv4;
 
+mod permissions;
+
 use std::sync::Arc;
 
 use axum::extract::{Path, Request, State};
@@ -21,7 +23,6 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use chrono::{DateTime, Utc};
-use payvy_domain::commands::COMMANDS;
 use payvy_domain::email;
 use payvy_store::{ActorKind, Store};
 use serde::Deserialize;
@@ -39,14 +40,26 @@ pub struct Actor {
     pub org_id: Uuid,
     pub name: String,
     pub kind: ActorKind,
+    bootstrap: bool,
 }
 
 impl Actor {
+    /// Trusted server/CLI operator only. Never derive this from an actor name.
+    pub fn administrator(org_id: Uuid, name: impl Into<String>) -> Self {
+        Self {
+            org_id,
+            name: name.into(),
+            kind: ActorKind::Person,
+            bootstrap: true,
+        }
+    }
+
     pub fn person(org_id: Uuid, name: impl Into<String>) -> Self {
         Self {
             org_id,
             name: name.into(),
             kind: ActorKind::Person,
+            bootstrap: false,
         }
     }
 
@@ -55,6 +68,7 @@ impl Actor {
             org_id,
             name: name.into(),
             kind: ActorKind::Agent,
+            bootstrap: false,
         }
     }
 }
@@ -250,10 +264,15 @@ async fn authenticate(State(state): State<AppState>, mut req: Request, next: Nex
         .map(str::to_owned);
     let actor = match given {
         Some(k) if constant_time_eq(k.as_bytes(), state.admin_key.as_bytes()) => {
-            Some(Actor::person(payvy_store::DEFAULT_ORG, "admin"))
+            Some(Actor::administrator(payvy_store::DEFAULT_ORG, "admin"))
         }
         Some(k) => match state.store.actor_for_key_hash(&hash_key(&k)).await {
-            Ok(found) => found.map(|(org_id, name, kind)| Actor { org_id, name, kind }),
+            Ok(found) => found.map(|(org_id, name, kind)| Actor {
+                org_id,
+                name,
+                kind,
+                bootstrap: false,
+            }),
             Err(e) => {
                 tracing::error!("api key lookup: {e:#}");
                 return StatusCode::SERVICE_UNAVAILABLE.into_response();
@@ -274,6 +293,13 @@ async fn authenticate(State(state): State<AppState>, mut req: Request, next: Nex
     };
     match actor {
         Some(actor) => {
+            if actor.kind == ActorKind::Person {
+                match permissions::visible(&state, &actor).await {
+                    Ok(commands) if !commands.is_empty() => {},
+                    Ok(_) => return (StatusCode::FORBIDDEN, Json(json!({ "error": { "code": "forbidden", "message": "No company roles are assigned to this person" } }))).into_response(),
+                    Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+                }
+            }
             req.extensions_mut().insert(actor);
             next.run(req).await
         }
@@ -290,12 +316,14 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 }
 
 /// The commands this caller may run: an agent doesn't see person-only ones.
-async fn list_commands(Extension(actor): Extension<Actor>) -> Json<Value> {
-    let visible: Vec<_> = COMMANDS
-        .iter()
-        .filter(|c| actor.kind == ActorKind::Person || !c.person_only)
-        .collect();
-    Json(json!({ "commands": visible }))
+async fn list_commands(
+    State(state): State<AppState>,
+    Extension(actor): Extension<Actor>,
+) -> Result<Json<Value>, StatusCode> {
+    let visible = permissions::visible(&state, &actor)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(json!({ "commands": visible })))
 }
 
 #[derive(Deserialize)]

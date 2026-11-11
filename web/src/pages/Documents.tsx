@@ -1,3 +1,4 @@
+import { Allowed } from '../permissions';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { Banner } from '@astryxdesign/core/Banner';
@@ -73,13 +74,13 @@ export function Documents() {
   }
   const visible = docs?.filter(d => d.filename.toLocaleLowerCase().includes(search.toLocaleLowerCase()));
   return <Page title="Documents" eyebrow="Invoice intake" description="A place for every invoice. Review the details, then create a bill.">
-    <section className="payvy-document-upload" aria-label="Add invoices">
+    <Allowed command="document.upload"><section className="payvy-document-upload" aria-label="Add invoices">
       <div className="payvy-upload-intro"><span className="payvy-file-glyph" aria-hidden="true">↑</span><div><h2>Add your invoices</h2><p>PDFs, scans, or photos · up to 25 MB each</p></div></div>
       <FileInput label="Add invoices" isLabelHidden mode="dropzone" isMultiple accept={ACCEPT} maxSize={MAX_BYTES}
         placeholder="Drop invoices here, or choose files" value={files}
         onChange={f => setFiles(f ? (Array.isArray(f) ? f : [f]) : [])} changeAction={upload} isDisabled={!!uploading} />
       {uploading && <div role="status" className="payvy-upload-progress"><Spinner size="sm" /><div><strong>{uploading.title}</strong><p>{uploading.detail}</p></div></div>}
-    </section>
+    </section></Allowed>
     <div className="payvy-documents-toolbar">
       <SegmentedControl label="Show" value={status} onChange={v => { setStatus(v as Status); setSearch(''); }}>
         <SegmentedControlItem value="inbox" label="To review" /><SegmentedControlItem value="filed" label="Filed" /><SegmentedControlItem value="trashed" label="Not bills" />

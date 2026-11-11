@@ -1,3 +1,4 @@
+import type { Role } from '../permissions';
 // Edits one step of a workflow. Mount it with key={step.id} so its local text
 // (an amount being typed) starts over for each step.
 import { useState } from 'react';
@@ -15,6 +16,7 @@ import { cents, dollars } from '../money';
 import { KIND, signalKey, type Step } from '../workflow';
 
 export interface PersonOption {
+  roles?: Role[];
   value: string;
   label: string;
 }
@@ -40,11 +42,12 @@ export function StepEditor({
 }) {
   const set = (patch: Partial<Step>) => onChange({ ...step, ...patch });
   // People who were chosen but have since left still show, so they can be removed.
+  const eligible = people.filter(p => p.roles?.includes('admin') || p.roles?.includes(step.type === 'pay' ? 'payment_releaser' : 'approver'));
   const options = (chosen: string[] | undefined) => [
-    ...people,
+    ...eligible,
     ...(chosen ?? [])
-      .filter((a) => !people.some((p) => p.value === a))
-      .map((a) => ({ value: a, label: `${a} (no longer here)` })),
+      .filter((a) => !eligible.some((p) => p.value === a))
+      .map((a) => ({ value: a, label: `${a} (not currently eligible)` })),
   ];
   const isPay = step.type === 'pay';
 
@@ -135,7 +138,7 @@ export function StepEditor({
           ) : (
             <MultiSelector
               label="Released by"
-              description="Leave empty for anyone in your organization."
+              description="Leave empty for any eligible payment releaser in your company."
               placeholder="Anyone"
               triggerDisplay="badges"
               options={options(step.by)}
@@ -166,7 +169,7 @@ function ApproveFields({
     <VStack gap={3}>
       <MultiSelector
         label="Approved by"
-        description="Leave empty for anyone in your organization."
+        description="Leave empty for any eligible approver in your company."
         placeholder="Anyone"
         triggerDisplay="badges"
         options={options}

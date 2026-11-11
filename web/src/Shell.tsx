@@ -1,3 +1,4 @@
+import { Allowed, useCan, useAccessVersion } from './permissions';
 import { useEffect, useState, type ReactNode } from 'react';
 import { useLocation } from 'react-router';
 import { run } from './api/client';
@@ -21,6 +22,8 @@ const NAV = [
 
 export function Shell({ children }: { children: ReactNode }) {
   const { me, signOut } = useSession();
+  const can = useCan();
+  const access = useAccessVersion();
   const { pathname } = useLocation();
   const [waiting, setWaiting] = useState<number | null>(null);
 
@@ -36,7 +39,7 @@ export function Shell({ children }: { children: ReactNode }) {
     refresh();
     window.addEventListener('payvy:changed', refresh);
     return () => { live = false; window.removeEventListener('payvy:changed', refresh); };
-  }, [pathname]);
+  }, [pathname, access]);
   return (
     <AppShell
       contentPadding={0}
@@ -51,12 +54,12 @@ export function Shell({ children }: { children: ReactNode }) {
               <svg width="14" height="18" viewBox="0 0 14 18" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m4 6 3-3 3 3m-6 6 3 3 3-3" /></svg>
             </button>}
             items={[
-              { label: 'Bank settings', href: '/settings/bank' },
-              { label: 'Bill inbox', href: '/settings/email' },
-              { label: 'Approvals', href: '/settings/approvals' },
+              ...(can('bank.connect') ? [{ label: 'Bank settings', href: '/settings/bank' }] : []),
+              ...(can('email.new_address') ? [{ label: 'Bill inbox', href: '/settings/email' }] : []),
+              ...(can('approval_rules.set') ? [{ label: 'Approvals', href: '/settings/approvals' }] : []),
               { label: 'Default workflow', href: '/workflows' },
               { label: 'People', href: '/settings/people' },
-              { label: 'Company', href: '/settings/company' },
+              ...(can('org.update') ? [{ label: 'Company', href: '/settings/company' }] : []),
               { type: 'divider' },
               { label: 'Sign out', onClick: signOut },
             ]}
@@ -87,12 +90,12 @@ export function Shell({ children }: { children: ReactNode }) {
             ))}
           </SideNavSection>
           <SideNavSection title="Settings">
-            <SideNavItem label="Bank" href="/settings/bank" isSelected={pathname.startsWith('/settings/bank')} />
-            <SideNavItem label="Bill inbox" href="/settings/email" isSelected={pathname.startsWith('/settings/email')} />
+            <Allowed command="bank.connect"><SideNavItem label="Bank" href="/settings/bank" isSelected={pathname.startsWith('/settings/bank')} /></Allowed>
+            <Allowed command="email.new_address"><SideNavItem label="Bill inbox" href="/settings/email" isSelected={pathname.startsWith('/settings/email')} /></Allowed>
             <SideNavItem label="People" href="/settings/people" isSelected={pathname.startsWith('/settings/people')} />
-            <SideNavItem label="Company" href="/settings/company" isSelected={pathname.startsWith('/settings/company')} />
-            <SideNavItem label="Auto-pay limit" href="/settings/auto-pay" isSelected={pathname.startsWith('/settings/auto-pay')} />
-            <SideNavItem label="Approvals" href="/settings/approvals" isSelected={pathname.startsWith('/settings/approvals')} />
+            <Allowed command="org.update"><SideNavItem label="Company" href="/settings/company" isSelected={pathname.startsWith('/settings/company')} /></Allowed>
+            <Allowed command="auto_pay.raise_limit"><SideNavItem label="Auto-pay limit" href="/settings/auto-pay" isSelected={pathname.startsWith('/settings/auto-pay')} /></Allowed>
+            <Allowed command="approval_rules.set"><SideNavItem label="Approvals" href="/settings/approvals" isSelected={pathname.startsWith('/settings/approvals')} /></Allowed>
           </SideNavSection>
         </SideNav>
       }

@@ -1,3 +1,4 @@
+import { Allowed } from '../permissions';
 // Settings > Auto-pay limit: the most a workflow may pay without a person.
 // A bill over it waits for a release, whatever its workflow says. Changing a
 // limit is a person's act (both commands are person_only); lowering runs at
@@ -217,7 +218,7 @@ export function AutoPaySettings() {
                   </Text>
                 </MetadataListItem>
               </MetadataList>
-              <LimitEditor current={limits.company.limit_cents} company={limits.company.limit_cents} onSaved={load} />
+              <Allowed command="auto_pay.raise_limit"><LimitEditor current={limits.company.limit_cents} company={limits.company.limit_cents} onSaved={load} /></Allowed>
               <Text type="supporting">
                 Vendors with their own limit keep it: changing the company limit doesn't change theirs. Lowering takes
                 effect at once. Raising shows which bills would start paying automatically, and asks you to confirm.
@@ -286,7 +287,7 @@ export function VendorAutoPayLimit({
               workflow pays automatically. A limit for this vendor replaces the company limit, higher or lower;
               changes to the company limit don't affect it.
             </Text>
-            <LimitEditor vendorId={vendorId} current={limit.own_cents ?? null} company={limit.company_cents} onSaved={onSaved} />
+            <Allowed command="auto_pay.raise_limit"><LimitEditor vendorId={vendorId} current={limit.own_cents ?? null} company={limit.company_cents} onSaved={onSaved} /></Allowed>
           </VStack>
         </Card>
       </VStack>

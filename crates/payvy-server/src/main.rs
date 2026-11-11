@@ -268,6 +268,10 @@ enum PersonCommand {
         /// Defaults to the part of the email before @.
         #[arg(long)]
         actor: Option<String>,
+        /// Comma-separated roles. The trusted operator CLI defaults to Admin
+        /// for initial setup/recovery; adding someone in the app defaults to AP clerk.
+        #[arg(long, value_delimiter = ',', default_value = "admin")]
+        roles: Vec<String>,
     },
 }
 
@@ -456,16 +460,22 @@ async fn main() -> anyhow::Result<()> {
             );
         }
         Command::Person {
-            command: PersonCommand::Add { email, name, actor },
+            command:
+                PersonCommand::Add {
+                    email,
+                    name,
+                    actor,
+                    roles,
+                },
         } => {
             let store = payvy_store::Store::connect(&database_url()?).await?;
             let (unused, _) = payvy_server::new_api_key()?;
             let state = payvy_server::AppState::new(store, &unused);
             let out = payvy_server::commands::run(
                 &state,
-                &payvy_server::Actor::person(payvy_store::DEFAULT_ORG, "admin"),
+                &payvy_server::Actor::administrator(payvy_store::DEFAULT_ORG, "admin"),
                 "person.add",
-                serde_json::json!({ "email": email, "name": name, "actor": actor }),
+                serde_json::json!({ "email": email, "name": name, "actor": actor, "roles": roles }),
                 payvy_server::commands::Mode::Commit {
                     confirm_token: None,
                 },
@@ -484,6 +494,15 @@ async fn main() -> anyhow::Result<()> {
                 Kind::Person => ActorKind::Person,
                 Kind::Agent => ActorKind::Agent,
             };
+            if kind == ActorKind::Person {
+                let mut tx = store.begin(payvy_store::DEFAULT_ORG).await?;
+                anyhow::ensure!(
+                    !payvy_store::actor_roles(&mut tx, payvy_store::DEFAULT_ORG, actor)
+                        .await?
+                        .is_empty(),
+                    "this person has no company roles; add them with person add first"
+                );
+            }
             store
                 .insert_api_key(payvy_store::DEFAULT_ORG, actor, kind, &hash)
                 .await?;

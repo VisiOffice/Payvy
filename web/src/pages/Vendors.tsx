@@ -1,3 +1,4 @@
+import { Allowed } from '../permissions';
 import { useEffect, useState } from 'react';
 import { Badge } from '@astryxdesign/core/Badge';
 import { Banner } from '@astryxdesign/core/Banner';
@@ -76,7 +77,7 @@ export function Vendors() {
     <Page
       title="Vendors"
       description="Who you pay, what's open with each, and how their bills are approved."
-      actions={vendors && <Button label="Add vendor" variant="primary" onClick={() => setAdding(true)} />}
+      actions={vendors && <Allowed command="vendor.create"><Button label="Add vendor" variant="primary" onClick={() => setAdding(true)} /></Allowed>}
     >
       {error && <Banner status="error" title="Couldn't load vendors" description={error} />}
       {!vendors && !error && <Spinner label="Loading vendors" />}

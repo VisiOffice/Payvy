@@ -1,3 +1,4 @@
+import { useCan } from '../permissions';
 import { useEffect, useRef, useState, type SVGProps } from 'react';
 import { Button } from '@astryxdesign/core/Button';
 import { Icon } from '@astryxdesign/core/Icon';
@@ -66,6 +67,7 @@ export function PageStrip({
   /** Someone else changed the pages first: load them again. */
   onStale: () => void;
 }) {
+  const can = useCan();
   const loaded = useDocumentPages(documentId, contentType);
   const toast = useToast();
   const [saving, setSaving] = useState(false);
@@ -117,7 +119,7 @@ export function PageStrip({
     }
   }
 
-  const disabled = locked || saving;
+  const disabled = locked || saving || !can('document.arrange');
 
   return (
     <section className="payvy-pages" aria-label="Pages" aria-busy={saving}>

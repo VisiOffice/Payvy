@@ -14,7 +14,7 @@ async fn add_person(db: &TestDb, actor: &str) {
         &db.state,
         &person("robert"),
         "person.add",
-        json!({ "email": format!("{actor}@example.com"), "name": actor, "actor": actor }),
+        json!({ "email": format!("{actor}@example.com"), "name": actor, "actor": actor, "roles": ["approver"] }),
     )
     .await
     .unwrap();
@@ -100,7 +100,7 @@ async fn the_rule_is_off_by_default_and_only_a_person_changes_it() {
     let other = db.add_org().await;
     let theirs = commit(
         s,
-        &payvy_server::Actor::person(other, "robert"),
+        &payvy_server::Actor::administrator(other, "robert"),
         "approval_rules.get",
         json!({}),
     )

@@ -21,6 +21,7 @@ const toast = (page: Page, text: string) =>
 const RULE = "The person who enters a bill can't approve it";
 
 test('whoever enters a bill waits for someone else to approve it', async ({ page }) => {
+  await asPerson(page, 'person.add', { name: 'Maria', email: 'maria@example.com', roles: ['approver'] });
   const v = await vendor('Saguaro Landscaping');
   const proposal = await agent<{ proposal_id: string }>('workflow.propose', {
     vendor_id: v,
@@ -94,6 +95,7 @@ test('whoever enters a bill waits for someone else to approve it', async ({ page
     // The browser tests share one database: leave the rule off.
     const now = await agent<{ submitter_cannot_approve: boolean }>('approval_rules.get', {});
     if (now.submitter_cannot_approve) await asPerson(page, 'approval_rules.set', { submitter_cannot_approve: false });
+    await asPerson(page, 'person.remove', { actor: 'maria' });
   }
 });
 

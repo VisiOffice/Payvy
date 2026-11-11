@@ -109,6 +109,13 @@ Conventions follow Visirent (`~/Code/visirent`).
   on the record like an agent's. Its checks (`problems` in `web/src/workflow.ts`) mirror
   `Workflow::validate` for quick feedback; change both together, and the server still decides.
   Workflows are one line of steps, so the chart is CSS, not a graph library.
+- **Company roles authorize every person command** (registry `permission`, `actor_roles`).
+  Admin is full access, not a workflow bypass. AP clerk, Approver, and Payment releaser
+  combine. Read roles on every invocation, including confirmed commits; never trust UI
+  capabilities or an actor name as authorization. Membership/role changes take the roles
+  lock before checking the caller, protect the last sign-in admin, and emit old/new roles.
+  Removing someone revokes their person keys as well as sessions. Agent person-only gates
+  remain unchanged. See `docs/roles.md` for migration and operator recovery.
 - **People sign in with a link sent by email** (`auth.rs`, `people` table). No passwords. The
   token travels after `#` and is posted by the app, so mail scanners can't use it up; only
   hashes of link and session tokens are stored; asking for a link answers the same for unknown
@@ -129,8 +136,8 @@ cp .env.example .env                      # set PAYVY_API_KEY
 set -a; . ./.env; set +a
 cargo test                                # integration tests need PAYVY_TEST_* from .env
 cargo run -- serve                        # http://127.0.0.1:7430, MCP at /mcp
-cargo run -- key create --actor robert --kind person
-cargo run -- person add --email you@example.com --name You   # someone who signs in to the app
+cargo run -- person add --email you@example.com --name You --actor robert --roles admin
+cargo run -- key create --actor robert --kind person        # optional API access for that person
 pnpm install                              # once: the web app and the email worker
 pnpm web                                  # the app on http://127.0.0.1:5173; the sign-in link
                                           # is printed in the server's log
