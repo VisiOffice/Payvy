@@ -322,6 +322,22 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     // ── Purchase orders ─────────────────────────────────────────────────
     CommandSpec {
+        name: "po.settings",
+        summary: "Whether purchase orders are on for this company. Off (the default) refuses every po.* write and never blocks a payment; reads still work.",
+        tier: RiskTier::Read,
+        person_only: false,
+        permission: Permission::Read,
+        input_schema: r#"{"type":"object","properties":{}}"#,
+    },
+    CommandSpec {
+        name: "po.configure",
+        summary: "Turn purchase orders on or off for the company (person only). When on, each vendor's settings decide whether its bills require a PO, applying at once to bills in flight. Turning them off lifts the payment gate; allocations stay on record.",
+        tier: RiskTier::Routine,
+        person_only: true,
+        permission: Permission::Admin,
+        input_schema: r#"{"type":"object","required":["enabled"],"properties":{"enabled":{"type":"boolean"}}}"#,
+    },
+    CommandSpec {
         name: "po.create",
         summary: "Create a draft purchase order for a vendor. Nothing matches against it until a person activates it with po.activate.",
         tier: RiskTier::Routine,

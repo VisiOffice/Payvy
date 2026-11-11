@@ -145,6 +145,67 @@ async fn must_po(cx: &mut Cx<'_>, id: Uuid) -> Result<po_store::PurchaseOrder, C
         .ok_or(CommandError::NotFound("purchase order"))
 }
 
+// ── The company-wide switch ────────────────────────────────────────────────
+
+pub const TURNED_OFF: &str = "Purchase orders are turned off for this company. An admin can turn them on in Settings > Purchase orders.";
+
+/// Whether this company uses purchase orders. Off until an admin turns it on.
+pub async fn enabled(cx: &mut Cx<'_>) -> Result<bool, CommandError> {
+    Ok(po_store::company_settings(&mut cx.tx).await?.enabled)
+}
+
+/// Every po.* write starts here; reads work either way.
+async fn ensure_enabled(cx: &mut Cx<'_>) -> Result<(), CommandError> {
+    if enabled(cx).await? {
+        Ok(())
+    } else {
+        Err(CommandError::Conflict(TURNED_OFF.into()))
+    }
+}
+
+fn settings_view(s: &po_store::CompanySettings) -> Value {
+    json!({ "enabled": s.enabled, "updated_at": s.updated_at, "updated_by": s.updated_by })
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NoInput {}
+
+pub async fn settings(cx: &mut Cx<'_>, _input: NoInput) -> Result<Value, CommandError> {
+    Ok(settings_view(
+        &po_store::company_settings(&mut cx.tx).await?,
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Configure {
+    enabled: bool,
+}
+
+/// Turn purchase orders on or off for the company. Off never blocks a
+/// payment: the gate does nothing, and allocations already made stay on
+/// record (rejecting or voiding a bill still releases them).
+pub async fn configure(cx: &mut Cx<'_>, input: Configure) -> Result<Value, CommandError> {
+    po_store::lock_company_settings(&mut cx.tx, cx.org).await?;
+    let cur = po_store::company_settings(&mut cx.tx).await?;
+    if cur.enabled == input.enabled {
+        return Err(CommandError::Conflict(format!(
+            "purchase orders are already {}",
+            if cur.enabled { "on" } else { "off" }
+        )));
+    }
+    po_store::set_company_settings(&mut cx.tx, cx.org, input.enabled, &cx.actor.name, cx.now)
+        .await?;
+    cx.emit(
+        "po.settings_changed",
+        cx.org,
+        json!({ "from": { "enabled": cur.enabled }, "to": { "enabled": input.enabled } }),
+    )
+    .await?;
+    settings(cx, NoInput {}).await
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Create {
@@ -162,6 +223,7 @@ pub struct Create {
 }
 
 pub async fn create(cx: &mut Cx<'_>, input: Create) -> Result<Value, CommandError> {
+    ensure_enabled(cx).await?;
     let number = input.po_number.trim().to_owned();
     if number.is_empty() {
         return Err(CommandError::Invalid("po_number is required".into()));
@@ -229,6 +291,7 @@ pub struct Update {
 }
 
 pub async fn update(cx: &mut Cx<'_>, input: Update) -> Result<Value, CommandError> {
+    ensure_enabled(cx).await?;
     let po = must_po(cx, input.po_id).await?;
     if po.status == "closed" || po.status == "canceled" {
         return Err(CommandError::Conflict(format!(
@@ -298,6 +361,7 @@ pub struct PoId {
 }
 
 pub async fn activate(cx: &mut Cx<'_>, input: PoId) -> Result<Value, CommandError> {
+    ensure_enabled(cx).await?;
     let po = must_po(cx, input.po_id).await?;
     if po.status != "draft" {
         return Err(CommandError::Conflict(format!(
@@ -353,6 +417,7 @@ pub async fn close(
     input: Close,
     status: &'static str,
 ) -> Result<Value, CommandError> {
+    ensure_enabled(cx).await?;
     let reason = text(Some(input.reason))
         .ok_or_else(|| CommandError::Invalid("a reason is required".to_owned()))?;
     let po = must_po(cx, input.po_id).await?;
@@ -428,6 +493,7 @@ pub struct Import {
 
 /// Imports always land as drafts; recording an owner is not activation.
 pub async fn import(cx: &mut Cx<'_>, input: Import) -> Result<Value, CommandError> {
+    ensure_enabled(cx).await?;
     if let Some(po) = po_store::po_by_external(
         &mut cx.tx,
         input.external_source.trim(),
@@ -513,6 +579,7 @@ pub async fn set_vendor_settings(
     cx: &mut Cx<'_>,
     input: VendorSettingsIn,
 ) -> Result<Value, CommandError> {
+    ensure_enabled(cx).await?;
     store::get_vendor(&mut cx.tx, input.vendor_id)
         .await?
         .ok_or(CommandError::NotFound("vendor"))?;
@@ -621,6 +688,7 @@ pub struct AllocIn {
 /// Atomic across POs: lock in sorted order, validate the whole set, then
 /// reserve everything or nothing (the transaction rolls back on any error).
 pub async fn match_apply(cx: &mut Cx<'_>, input: Apply) -> Result<Value, CommandError> {
+    ensure_enabled(cx).await?;
     if input.allocations.is_empty() {
         return Err(CommandError::Invalid(
             "allocations must not be empty".into(),
@@ -724,6 +792,7 @@ pub struct AllocId {
 }
 
 pub async fn allocation_accept(cx: &mut Cx<'_>, input: AllocId) -> Result<Value, CommandError> {
+    ensure_enabled(cx).await?;
     let a = po_store::get_allocation(&mut cx.tx, input.allocation_id)
         .await?
         .ok_or(CommandError::NotFound("allocation"))?;
@@ -748,6 +817,7 @@ pub async fn allocation_accept(cx: &mut Cx<'_>, input: AllocId) -> Result<Value,
 }
 
 pub async fn allocation_reverse(cx: &mut Cx<'_>, input: AllocId) -> Result<Value, CommandError> {
+    ensure_enabled(cx).await?;
     let reason = text(input.reason)
         .ok_or_else(|| CommandError::Invalid("a reason is required".to_owned()))?;
     let a = po_store::get_allocation(&mut cx.tx, input.allocation_id)
@@ -798,11 +868,15 @@ fn fingerprint(bill: &store::Bill, kind: &str, allocs: &[po_store::Allocation]) 
 }
 
 /// The bill's current PO exception, if any. Only vendors with PO or funding
-/// requirements can raise one; everyone else's bills are untouched.
+/// requirements can raise one; everyone else's bills are untouched, and
+/// with purchase orders turned off for the company nobody's bill has one.
 pub async fn bill_exception(
     cx: &mut Cx<'_>,
     bill: &store::Bill,
 ) -> Result<Option<Exception>, CommandError> {
+    if !enabled(cx).await? {
+        return Ok(None);
+    }
     let settings = po_store::vendor_settings(&mut cx.tx, bill.vendor_id).await?;
     let allocs = po_store::allocations_for_bill(&mut cx.tx, bill.id).await?;
     let covered: Cents = allocs.iter().map(|a| a.amount_cents).sum();
@@ -846,19 +920,62 @@ pub async fn bill_exception(
     Ok(None)
 }
 
+/// The override that currently permits this exception, if one does.
 async fn valid_override(
     cx: &mut Cx<'_>,
     bill: &store::Bill,
     ex: &Exception,
-) -> Result<bool, CommandError> {
+) -> Result<Option<po_store::Override>, CommandError> {
     let allocs = po_store::allocations_for_bill(&mut cx.tx, bill.id).await?;
     let Some(o) = po_store::latest_override(&mut cx.tx, bill.id).await? else {
-        return Ok(false);
+        return Ok(None);
     };
-    Ok(o.exception_kind == ex.kind
+    let valid = o.exception_kind == ex.kind
         && o.bill_amount_cents == bill.amount_cents
         && o.authorized_excess_cents >= ex.excess_cents
-        && o.fingerprint == fingerprint(bill, ex.kind, &allocs))
+        && o.fingerprint == fingerprint(bill, ex.kind, &allocs);
+    Ok(valid.then_some(o))
+}
+
+/// Who permitted the exception this bill is payable only because of: the
+/// author of the currently valid override. None when the bill has no
+/// exception (or POs are off), or no override holds.
+pub async fn overridden_by(
+    cx: &mut Cx<'_>,
+    bill: &store::Bill,
+) -> Result<Option<String>, CommandError> {
+    let Some(ex) = bill_exception(cx, bill).await? else {
+        return Ok(None);
+    };
+    Ok(valid_override(cx, bill, &ex).await?.map(|o| o.created_by))
+}
+
+/// Separation of duties for releasing: whoever permitted the exception
+/// can't release the bill it makes payable. Called by bill.release.
+pub async fn ensure_not_overrider(cx: &mut Cx<'_>, bill: &store::Bill) -> Result<(), CommandError> {
+    let by = overridden_by(cx, bill).await?;
+    match payvy_domain::duties::release_refusal(by.as_deref(), &cx.actor.name) {
+        Some(why) => Err(CommandError::Forbidden(why.into())),
+        None => Ok(()),
+    }
+}
+
+/// Whether the caller prepared this bill: entered it, or uploaded a
+/// document filed with it (the same people the approval rule names).
+async fn preparer_refusal(
+    cx: &mut Cx<'_>,
+    bill: &store::Bill,
+) -> Result<Option<&'static str>, CommandError> {
+    let uploaded_by: Vec<String> = store::bill_uploaders(&mut cx.tx, &[bill.id])
+        .await?
+        .into_iter()
+        .map(|(_, a)| a)
+        .collect();
+    Ok(payvy_domain::duties::override_refusal(
+        &bill.created_by,
+        &uploaded_by,
+        &cx.actor.name,
+    ))
 }
 
 /// Refuse payment while a PO-required (or funding-required) bill has an
@@ -868,7 +985,7 @@ pub async fn ensure_payable(cx: &mut Cx<'_>, bill: &store::Bill) -> Result<(), C
     let Some(ex) = bill_exception(cx, bill).await? else {
         return Ok(());
     };
-    if valid_override(cx, bill, &ex).await? {
+    if valid_override(cx, bill, &ex).await?.is_some() {
         return Ok(());
     }
     Err(CommandError::Conflict(format!(
@@ -879,6 +996,7 @@ pub async fn ensure_payable(cx: &mut Cx<'_>, bill: &store::Bill) -> Result<(), C
 
 /// What bill.get shows beside the invoice, and what the web app renders.
 pub async fn bill_po_view(cx: &mut Cx<'_>, bill: &store::Bill) -> Result<Value, CommandError> {
+    let on = enabled(cx).await?;
     let allocs = po_store::allocations_for_bill(&mut cx.tx, bill.id).await?;
     let covered: Cents = allocs.iter().map(|a| a.amount_cents).sum();
     let mut rows = Vec::new();
@@ -889,16 +1007,21 @@ pub async fn bill_po_view(cx: &mut Cx<'_>, bill: &store::Bill) -> Result<Value, 
             "amount_cents": a.amount_cents, "state": a.state, "kind": a.kind }));
     }
     let ex = bill_exception(cx, bill).await?;
-    let overridden = match &ex {
+    let holding = match &ex {
         Some(e) => valid_override(cx, bill, e).await?,
-        None => false,
+        None => None,
     };
+    let can_override =
+        on && ex.is_some() && cx.can("po.override") && preparer_refusal(cx, bill).await?.is_none();
     Ok(json!({
+        "enabled": on,
+        "can_override": can_override,
+        "overridden_by": holding.as_ref().map(|o| o.created_by.clone()),
         "covered_cents": covered,
         "uncovered_cents": bill.amount_cents - covered,
         "allocations": rows,
         "exception": ex.as_ref().map(|e| json!({ "kind": e.kind, "excess_cents": e.excess_cents, "detail": e.detail })),
-        "overridden": overridden,
+        "overridden": holding.is_some(),
     }))
 }
 
@@ -911,11 +1034,15 @@ pub struct OverrideIn {
 }
 
 pub async fn override_exception(cx: &mut Cx<'_>, input: OverrideIn) -> Result<Value, CommandError> {
+    ensure_enabled(cx).await?;
     let reason = text(Some(input.reason))
         .ok_or_else(|| CommandError::Invalid("a reason is required".to_owned()))?;
     let bill = store::get_bill(&mut cx.tx, input.bill_id)
         .await?
         .ok_or(CommandError::NotFound("bill"))?;
+    if let Some(why) = preparer_refusal(cx, &bill).await? {
+        return Err(CommandError::Forbidden(why.into()));
+    }
     let Some(ex) = bill_exception(cx, &bill).await? else {
         return Err(CommandError::Conflict(
             "this bill has no PO exception to override".into(),
@@ -954,7 +1081,8 @@ pub async fn override_exception(cx: &mut Cx<'_>, input: OverrideIn) -> Result<Va
     bill_po_view(cx, &bill).await
 }
 
-/// Release a bill's allocations when it is rejected or voided.
+/// Release a bill's allocations when it is rejected or voided. Runs whether
+/// or not purchase orders are on, so turning them off never strands capacity.
 pub async fn release_bill_allocations(
     cx: &mut Cx<'_>,
     bill_id: Uuid,

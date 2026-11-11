@@ -336,6 +336,27 @@ fn list(names: &[String]) -> String {
     }
 }
 
+/// Purchase-order exceptions, always on (PO Matching Spec, Q2): whoever
+/// prepared a bill — entered it or uploaded its document — can't permit its
+/// PO exception (`po.override`). The refusal, for people, if `who` did.
+pub fn override_refusal(
+    entered_by: &str,
+    uploaded_by: &[String],
+    who: &str,
+) -> Option<&'static str> {
+    (entered_by == who || uploaded_by.iter().any(|u| u == who)).then_some(
+        "You prepared this bill (entered it or uploaded its document), so someone else must permit its PO exception.",
+    )
+}
+
+/// Purchase-order exceptions, always on: whoever permitted the exception a
+/// bill is payable only because of can't release it. `overridden_by` is
+/// the author of the override that currently makes the bill payable, if any.
+pub fn release_refusal(overridden_by: Option<&str>, who: &str) -> Option<&'static str> {
+    (overridden_by == Some(who))
+        .then_some("You permitted this bill's PO exception, so someone else must release it.")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -584,5 +605,16 @@ mod tests {
         assert_eq!(l(&["a"]), "a");
         assert_eq!(l(&["a", "b"]), "a or b");
         assert_eq!(l(&["a", "b", "c"]), "a, b or c");
+    }
+
+    #[test]
+    fn the_preparer_cannot_override_and_the_overrider_cannot_release() {
+        let up = vec!["uma".to_owned()];
+        assert!(override_refusal("ed", &up, "ed").is_some());
+        assert!(override_refusal("ed", &up, "uma").is_some());
+        assert!(override_refusal("ed", &up, "olga").is_none());
+        assert!(release_refusal(Some("olga"), "olga").is_some());
+        assert!(release_refusal(Some("olga"), "rita").is_none());
+        assert!(release_refusal(None, "olga").is_none());
     }
 }

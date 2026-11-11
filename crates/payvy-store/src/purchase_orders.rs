@@ -489,3 +489,54 @@ pub async fn reverse_allocations_for_bill(
     }
     Ok(allocs)
 }
+
+/// The company-wide purchase-orders switch. No row means off.
+#[derive(Debug, Clone, Serialize)]
+pub struct CompanySettings {
+    pub enabled: bool,
+    pub updated_at: Option<DateTime<Utc>>,
+    pub updated_by: Option<String>,
+}
+
+pub async fn company_settings(tx: &mut Tx) -> anyhow::Result<CompanySettings> {
+    let row = sqlx::query("SELECT enabled, updated_at, updated_by FROM po_company_settings")
+        .fetch_optional(&mut **tx)
+        .await?;
+    Ok(match row {
+        Some(r) => CompanySettings {
+            enabled: r.get("enabled"),
+            updated_at: Some(r.get("updated_at")),
+            updated_by: Some(r.get("updated_by")),
+        },
+        None => CompanySettings {
+            enabled: false,
+            updated_at: None,
+            updated_by: None,
+        },
+    })
+}
+
+pub async fn set_company_settings(
+    tx: &mut Tx,
+    org: Uuid,
+    enabled: bool,
+    by: &str,
+    now: DateTime<Utc>,
+) -> anyhow::Result<()> {
+    sqlx::query("INSERT INTO po_company_settings (org_id, enabled, updated_at, updated_by) VALUES ($1, $2, $3, $4) ON CONFLICT (org_id) DO UPDATE SET enabled = $2, updated_at = $3, updated_by = $4")
+        .bind(org).bind(enabled).bind(now).bind(by)
+        .execute(&mut **tx).await?;
+    Ok(())
+}
+
+/// Serializes changes to the switch, so a no-op is judged against the
+/// value that is really there.
+pub async fn lock_company_settings(tx: &mut Tx, org: Uuid) -> anyhow::Result<()> {
+    sqlx::query(
+        "SELECT pg_advisory_xact_lock(hashtextextended('payvy.po_settings.' || $1::text, 0))",
+    )
+    .bind(org)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}

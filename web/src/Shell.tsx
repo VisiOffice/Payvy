@@ -26,6 +26,7 @@ export function Shell({ children }: { children: ReactNode }) {
   const can = useCan();
   const access = useAccessVersion();
   const { pathname } = useLocation();
+  const nav = NAV.filter(n => n.href !== '/purchase-orders' || me.features.purchase_orders);
   const [waiting, setWaiting] = useState<number | null>(null);
 
   useEffect(() => {
@@ -59,6 +60,7 @@ export function Shell({ children }: { children: ReactNode }) {
               ...(can('email.new_address') ? [{ label: 'Bill inbox', href: '/settings/email' }] : []),
               ...(can('notification.configure') ? [{ label: 'Notifications', href: '/settings/notifications' }] : []),
               ...(can('approval_rules.set') ? [{ label: 'Approvals', href: '/settings/approvals' }] : []),
+              ...(can('po.configure') ? [{ label: 'Purchase orders', href: '/settings/purchase-orders' }] : []),
               { label: 'Default workflow', href: '/workflows' },
               { label: 'People', href: '/settings/people' },
               ...(can('org.update') ? [{ label: 'Company', href: '/settings/company' }] : []),
@@ -80,7 +82,7 @@ export function Shell({ children }: { children: ReactNode }) {
           }
         >
           <SideNavSection title="Workspace">
-            {NAV.map((n) => (
+            {nav.map((n) => (
               <SideNavItem
                 key={n.href}
                 label={n.label}
@@ -99,6 +101,7 @@ export function Shell({ children }: { children: ReactNode }) {
             <Allowed command="auto_pay.raise_limit"><SideNavItem label="Auto-pay limit" href="/settings/auto-pay" isSelected={pathname.startsWith('/settings/auto-pay')} /></Allowed>
             <Allowed command="notification.configure"><SideNavItem label="Notifications" href="/settings/notifications" isSelected={pathname.startsWith('/settings/notifications')} /></Allowed>
             <Allowed command="approval_rules.set"><SideNavItem label="Approvals" href="/settings/approvals" isSelected={pathname.startsWith('/settings/approvals')} /></Allowed>
+            <Allowed command="po.configure"><SideNavItem label="Purchase orders" href="/settings/purchase-orders" isSelected={pathname.startsWith('/settings/purchase-orders')} /></Allowed>
           </SideNavSection>
         </SideNav>
       }

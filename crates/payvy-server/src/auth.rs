@@ -204,10 +204,15 @@ async fn me(state: &AppState, s: &SignedIn) -> anyhow::Result<Value> {
         .filter(|c| crate::permissions::allowed(&actor, &roles, c))
         .map(|c| c.name)
         .collect();
+    // Features the company turned on, so the app shows only what is in use.
+    let purchase_orders = payvy_store::purchase_orders::company_settings(&mut tx)
+        .await?
+        .enabled;
     Ok(json!({
         "roles": roles, "commands": commands,
         "person": { "actor": s.person.actor, "name": s.person.name, "email": s.person.email },
         "organization": { "id": s.person.org_id, "name": s.org_name },
+        "features": { "purchase_orders": purchase_orders },
     }))
 }
 

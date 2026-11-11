@@ -173,6 +173,14 @@ async fn detail(cx: &mut Cx<'_>, bill_id: Uuid) -> Result<Value, CommandError> {
     };
     let lines = store::bill_lines(&mut cx.tx, bill.id).await?;
     let purchase_orders = super::purchase_orders::bill_po_view(cx, &bill).await?;
+    // Whoever permitted a PO exception can't release the bill it makes payable.
+    let release_blocked = match &progress {
+        Some(p) if can_release(cx, &p.status) => {
+            let by = super::purchase_orders::overridden_by(cx, &bill).await?;
+            duties::release_refusal(by.as_deref(), &cx.actor.name).is_some()
+        }
+        _ => false,
+    };
     let history = store::list_events(&mut cx.tx, Some(bill.id), 200).await?;
     let documents = store::bill_documents(&mut cx.tx, bill.id).await?;
     let arrangement = match documents.first() {
@@ -186,7 +194,7 @@ async fn detail(cx: &mut Cx<'_>, bill_id: Uuid) -> Result<Value, CommandError> {
         "lines": lines,
         "progress": progress,
         "approval": approval,
-        "can_release": progress.as_ref().is_some_and(|p| can_release(cx, &p.status)),
+        "can_release": !release_blocked && progress.as_ref().is_some_and(|p| can_release(cx, &p.status)),
         "workflow": { "id": bill.workflow_id, "mermaid": wf.mermaid() },
         "auto_pay_limit": limit,
         "purchase_orders": purchase_orders,
@@ -626,6 +634,7 @@ pub async fn release(cx: &mut Cx<'_>, input: Release) -> Result<Value, CommandEr
         }
     }
     super::purchase_orders::ensure_payable(cx, &bill).await?;
+    super::purchase_orders::ensure_not_overrider(cx, &bill).await?;
     // With a paying bank connected, a release pays through it, to the payee a
     // person accepted for this vendor. With no paying bank — Rho connected
     // or none — a release records that it will be paid elsewhere, exactly
@@ -903,6 +912,7 @@ pub(super) async fn notification_targets(
     let step = progress.active_step().unwrap_or_default().to_owned();
     let d = duties(cx, &[bill.id]).await?;
     let uploaded_by: Vec<_> = d.uploaders.iter().map(|(_, a)| a.clone()).collect();
+    let overrider = super::purchase_orders::overridden_by(cx, &bill).await?;
     let mut recipients = vec![];
     for person in store::people(&mut cx.tx, cx.org).await? {
         let roles = store::actor_roles(&mut cx.tx, cx.org, &person.actor).await?;
@@ -926,7 +936,9 @@ pub(super) async fn notification_targets(
                     .is_some_and(|t| t.can_approve)
             }
             Status::AwaitingRelease { by, .. } => {
-                Permission::Pay.allows(&roles) && (by.is_empty() || by.contains(&person.actor))
+                Permission::Pay.allows(&roles)
+                    && (by.is_empty() || by.contains(&person.actor))
+                    && duties::release_refusal(overrider.as_deref(), &person.actor).is_none()
             }
             _ => false,
         };

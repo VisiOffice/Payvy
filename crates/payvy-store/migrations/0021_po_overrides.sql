@@ -26,3 +26,19 @@ ALTER TABLE vendor_po_settings
 
 ALTER TABLE po_overrides ADD CONSTRAINT po_overrides_bill_org
     FOREIGN KEY (org_id, bill_id) REFERENCES bills (org_id, id);
+
+-- The company-wide purchase-orders switch. No row means off: every po.*
+-- write is refused and the payment gate does nothing, so turning POs off
+-- never blocks a payment. When on, "PO required" and overage caps stay per
+-- vendor in vendor_po_settings.
+CREATE TABLE po_company_settings (
+    org_id uuid PRIMARY KEY REFERENCES organizations(id),
+    enabled boolean NOT NULL DEFAULT false,
+    updated_at timestamptz NOT NULL,
+    updated_by text NOT NULL
+);
+ALTER TABLE po_company_settings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE po_company_settings FORCE ROW LEVEL SECURITY;
+CREATE POLICY org_isolation ON po_company_settings
+    USING (org_id = current_setting('payvy.org_id', true)::uuid)
+    WITH CHECK (org_id = current_setting('payvy.org_id', true)::uuid);

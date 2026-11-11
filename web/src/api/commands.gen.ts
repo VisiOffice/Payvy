@@ -380,6 +380,12 @@ export interface AutoPayRaiseLimitInput {
   reason?: string;
 }
 
+export interface PoSettingsInput {}
+
+export interface PoConfigureInput {
+  enabled: boolean;
+}
+
 export interface PoCreateInput {
   vendor_id: string;
   po_number: string;
@@ -832,6 +838,8 @@ export interface CommandInputs {
   "auto_pay.limits": AutoPayLimitsInput;
   "auto_pay.lower_limit": AutoPayLowerLimitInput;
   "auto_pay.raise_limit": AutoPayRaiseLimitInput;
+  "po.settings": PoSettingsInput;
+  "po.configure": PoConfigureInput;
   "po.create": PoCreateInput;
   "po.update": PoUpdateInput;
   "po.activate": PoActivateInput;
@@ -925,6 +933,8 @@ export const COMMANDS: Record<CommandName, { tier: Tier; personOnly: boolean; su
   "auto_pay.limits": { tier: "read", personOnly: false, summary: "The ceiling on automatic payments: the company's limit (the $5,000.00 default until a person sets one) and each vendor's own limit, which overrides the company's in either direction. A bill over the limit in force (the vendor's if set, else the company's) never pays automatically: it waits for a person to release it, whatever its workflow says." },
   "auto_pay.lower_limit": { tier: "routine", personOnly: true, summary: "Lower the company's auto-pay limit, or with vendor_id set, lower or remove one vendor's own limit, as long as the limit in force for it doesn't go up (removing an override is allowed here when the company's limit is no higher). Lowering the company's limit doesn't change vendors with their own. Bills over the new limit wait for a person to release them. Only a person may change a limit. Anything that raises the limit in force needs auto_pay.raise_limit." },
   "auto_pay.raise_limit": { tier: "confirmed", personOnly: true, summary: "Raise the company's auto-pay limit (vendors with their own limit keep it), or with vendor_id set a vendor's own limit above what applies to it now (it may be above the company's), or remove a vendor's own limit when the company's is higher (limit_cents null). Only a person may change a limit. The preview lists the bills that would start paying automatically; commit with the returned token." },
+  "po.settings": { tier: "read", personOnly: false, summary: "Whether purchase orders are on for this company. Off (the default) refuses every po.* write and never blocks a payment; reads still work." },
+  "po.configure": { tier: "routine", personOnly: true, summary: "Turn purchase orders on or off for the company (person only). When on, each vendor's settings decide whether its bills require a PO, applying at once to bills in flight. Turning them off lifts the payment gate; allocations stay on record." },
   "po.create": { tier: "routine", personOnly: false, summary: "Create a draft purchase order for a vendor. Nothing matches against it until a person activates it with po.activate." },
   "po.update": { tier: "routine", personOnly: true, summary: "Change a purchase order (person only). Editing a draft sets it up; editing an active PO creates a new revision and never releases existing allocations. Vendor, number and currency cannot change." },
   "po.activate": { tier: "routine", personOnly: true, summary: "Activate a draft purchase order (person only). Requires an owner and an authorized amount. Imported POs arrive as drafts and are activated this way; an import never activates." },

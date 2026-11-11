@@ -273,6 +273,22 @@
       "tier": "confirmed"
     },
     {
+      "input_schema": "{\"type\":\"object\",\"properties\":{}}",
+      "name": "po.settings",
+      "permission": "read",
+      "person_only": false,
+      "summary": "Whether purchase orders are on for this company. Off (the default) refuses every po.* write and never blocks a payment; reads still work.",
+      "tier": "read"
+    },
+    {
+      "input_schema": "{\"type\":\"object\",\"required\":[\"enabled\"],\"properties\":{\"enabled\":{\"type\":\"boolean\"}}}",
+      "name": "po.configure",
+      "permission": "admin",
+      "person_only": true,
+      "summary": "Turn purchase orders on or off for the company (person only). When on, each vendor's settings decide whether its bills require a PO, applying at once to bills in flight. Turning them off lifts the payment gate; allocations stay on record.",
+      "tier": "routine"
+    },
+    {
       "input_schema": "{\"type\":\"object\",\"required\":[\"vendor_id\",\"po_number\"],\"properties\":{\"vendor_id\":{\"type\":\"string\",\"format\":\"uuid\"},\"po_number\":{\"type\":\"string\"},\"owner\":{\"type\":\"string\"},\"authorized_cents\":{\"type\":\"integer\",\"minimum\":1},\"service_address\":{\"type\":\"string\"},\"period_start\":{\"type\":\"string\",\"format\":\"date\"},\"period_end\":{\"type\":\"string\",\"format\":\"date\"},\"external_source\":{\"type\":\"string\"},\"external_id\":{\"type\":\"string\"},\"lines\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"required\":[\"description\",\"amount_cents\"],\"properties\":{\"description\":{\"type\":\"string\"},\"quantity\":{\"type\":\"number\"},\"unit\":{\"type\":\"string\"},\"unit_price_cents\":{\"type\":\"integer\"},\"amount_cents\":{\"type\":\"integer\",\"minimum\":1},\"account\":{\"type\":\"string\"}}}}}}",
       "name": "po.create",
       "permission": "prepare",

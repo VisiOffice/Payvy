@@ -272,6 +272,8 @@ async fn execute(cx: &mut Cx<'_>, name: &str, input: &Value) -> Result<Value, Co
         "email.import" => email::import(cx, parse(input)?).await,
         "email.list" => email::list(cx, parse(input)?).await,
         "email.get" => email::get(cx, parse(input)?).await,
+        "po.settings" => purchase_orders::settings(cx, parse(input)?).await,
+        "po.configure" => purchase_orders::configure(cx, parse(input)?).await,
         "po.create" => purchase_orders::create(cx, parse(input)?).await,
         "po.update" => purchase_orders::update(cx, parse(input)?).await,
         "po.activate" => purchase_orders::activate(cx, parse(input)?).await,

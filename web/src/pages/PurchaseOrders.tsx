@@ -17,6 +17,8 @@ import { run } from '../api/client';
 import { Page } from '../Page';
 import { cents as toCents, dollars, money } from '../money';
 import { ReasonDialog } from '../inbox/ReasonDialog';
+import { useSession } from '../session';
+import { useCan } from '../permissions';
 
 export interface PoAmounts {
   authorized_cents: number;
@@ -67,6 +69,26 @@ const columns: TableColumn<PurchaseOrder>[] = [
 ];
 
 export function PurchaseOrders() {
+  const { me } = useSession();
+  const can = useCan();
+  if (!me.features.purchase_orders) {
+    return (
+      <Page title="Purchase orders">
+        <Banner
+          status="info"
+          title="Purchase orders are turned off"
+          description={can('po.configure')
+            ? 'Turn them on in Settings > Purchase orders.'
+            : 'An admin can turn them on in Settings > Purchase orders.'}
+        />
+        {can('po.configure') && <Link href="/settings/purchase-orders">Purchase order settings</Link>}
+      </Page>
+    );
+  }
+  return <PurchaseOrderList />;
+}
+
+function PurchaseOrderList() {
   const [pos, setPos] = useState<PurchaseOrder[] | null>(null);
   const [selected, setSelected] = useState<PurchaseOrder | null>(null);
   const [error, setError] = useState<string | null>(null);

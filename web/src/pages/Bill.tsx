@@ -54,6 +54,12 @@ interface Detail {
     external_ref?: string | null;
   }[];
   purchase_orders: {
+    /** Purchase orders are on for the company; off hides this section. */
+    enabled: boolean;
+    /** The caller may permit the exception: an admin who didn't prepare the bill. */
+    can_override: boolean;
+    /** Who permitted the exception that currently makes it payable. */
+    overridden_by: string | null;
     covered_cents: number;
     uncovered_cents: number;
     allocations: { allocation_id: string; po_id: string; po_number: string | null; amount_cents: number; state: string; kind: string }[];
@@ -216,7 +222,7 @@ export function BillPage() {
         </VStack>
       )}
 
-      <PoPanel billId={b.id} po={detail.purchase_orders} onChange={load} />
+      {detail.purchase_orders.enabled && <PoPanel billId={b.id} po={detail.purchase_orders} onChange={load} />}
 
       {detail.payments.length > 0 && (
         <VStack gap={2}>
@@ -401,7 +407,10 @@ function PoPanel({ billId, po, onChange }: {
           description={po.exception.detail}
         />
       )}
-      {po.overridden && <Badge label="Exception permitted by override" variant="warning" />}
+      {po.overridden && <HStack gap={2} vAlign="center" wrap="wrap">
+        <Badge label="Exception permitted by override" variant="warning" />
+        {po.overridden_by && <Text type="supporting">Permitted by {po.overridden_by}, who can't release this bill.</Text>}
+      </HStack>}
       {po.allocations.map((a) => (
         <HStack key={a.allocation_id} hAlign="between" gap={3} vAlign="center">
           <Text>
@@ -426,7 +435,10 @@ function PoPanel({ billId, po, onChange }: {
       {candidates.length === 0 && po.allocations.length === 0 && !po.exception && (
         <Text type="supporting">No active purchase order for this vendor.</Text>
       )}
-      {po.exception && !po.overridden && (
+      {po.exception && !po.overridden && !po.can_override && (
+        <Text type="supporting">An admin who didn't prepare this bill can permit the exception.</Text>
+      )}
+      {po.exception && !po.overridden && po.can_override && (
         <VStack gap={2}>
           <TextInput label="Permit excess ($)" value={excess} onChange={setExcess} />
           <TextInput label="Reason (required)" value={reason} onChange={setReason} />
