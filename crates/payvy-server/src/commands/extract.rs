@@ -43,6 +43,12 @@ pub async fn extract(cx: &mut Cx<'_>, input: Extract) -> Result<Value, CommandEr
         )));
     }
     let provider = extractor.provider_label();
+    // Step 1 of page arrangement: the model still reads the original file,
+    // but the reading records which arrangement it was made under, so a
+    // later change marks it out of date (docs/document-pages.md).
+    let arrangement_version = super::documents::current_arrangement(cx, doc.id)
+        .await?
+        .map_or(0, |a| a.version);
     if cx.preview {
         // Reading costs money and takes a while, so a preview says what
         // would happen instead.
@@ -76,6 +82,7 @@ pub async fn extract(cx: &mut Cx<'_>, input: Extract) -> Result<Value, CommandEr
                     outcome: Err(&error),
                     created_at: cx.now,
                     created_by: &cx.actor.name,
+                    arrangement_version,
                 },
             )
             .await?;
@@ -113,6 +120,7 @@ pub async fn extract(cx: &mut Cx<'_>, input: Extract) -> Result<Value, CommandEr
                     }),
                     created_at: cx.now,
                     created_by: &cx.actor.name,
+                    arrangement_version,
                 },
             )
             .await?;

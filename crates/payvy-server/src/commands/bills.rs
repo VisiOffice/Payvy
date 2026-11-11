@@ -159,6 +159,10 @@ async fn detail(cx: &mut Cx<'_>, bill_id: Uuid) -> Result<Value, CommandError> {
     let lines = store::bill_lines(&mut cx.tx, bill.id).await?;
     let history = store::list_events(&mut cx.tx, Some(bill.id), 200).await?;
     let documents = store::bill_documents(&mut cx.tx, bill.id).await?;
+    let arrangement = match documents.first() {
+        Some(doc) => Some(documents::pinned(cx, doc, bill.arrangement_id).await?),
+        None => None,
+    };
     let payments = store::bill_payments(&mut cx.tx, bill.id).await?;
     Ok(json!({
         "payments": payments,
@@ -171,6 +175,7 @@ async fn detail(cx: &mut Cx<'_>, bill_id: Uuid) -> Result<Value, CommandError> {
         "approvals": approvals,
         "signals": signals,
         "documents": documents,
+        "arrangement": arrangement,
         "history": history,
     }))
 }
@@ -237,6 +242,11 @@ pub async fn create(cx: &mut Cx<'_>, input: Create) -> Result<Value, CommandErro
     let workflow_id = store::effective_workflow(&mut cx.tx, vendor.id)
         .await?
         .map(|w| w.id);
+    // A bill from a document pins the page arrangement it was entered from.
+    let arrangement_id = match input.document_id {
+        Some(doc) => documents::current_arrangement(cx, doc).await?.map(|a| a.id),
+        None => None,
+    };
     let new = NewBill {
         vendor_id: vendor.id,
         workflow_id,
@@ -250,6 +260,7 @@ pub async fn create(cx: &mut Cx<'_>, input: Create) -> Result<Value, CommandErro
         lines: &input.lines,
         created_by: &cx.actor.name,
         received_at: cx.now,
+        arrangement_id,
     };
     let id = match store::insert_bill(&mut cx.tx, cx.org, &new, input.allow_duplicate).await? {
         InsertBill::Inserted(id) => id,
@@ -271,7 +282,8 @@ pub async fn create(cx: &mut Cx<'_>, input: Create) -> Result<Value, CommandErro
         id,
         json!({ "bill_id": id, "vendor_id": vendor.id, "invoice_number": invoice_number,
                 "amount_cents": input.amount_cents, "workflow_id": workflow_id, "duplicate_allowed": input.allow_duplicate,
-                "extraction_id": input.extraction_id, "corrected": corrected }),
+                "extraction_id": input.extraction_id, "corrected": corrected,
+                "arrangement_id": arrangement_id }),
     )
     .await?;
     if let Some(doc) = input.document_id {
