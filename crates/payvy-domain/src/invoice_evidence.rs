@@ -243,10 +243,15 @@ pub fn ground(
         .collect()
 }
 fn contains_value(quote: &str, value: &str) -> bool {
+    let numeric = value.chars().any(|c| c.is_ascii_digit())
+        && value
+            .chars()
+            .all(|c| c.is_ascii_digit() || c.is_whitespace() || "$.,-/()%".contains(c));
+    let joins_token = |c: char| c.is_alphanumeric() || (numeric && ".,-/%".contains(c));
     quote.match_indices(value).any(|(i, _)| {
         let before = quote[..i].chars().next_back();
         let after = quote[i + value.len()..].chars().next();
-        !before.is_some_and(|c| c.is_alphanumeric()) && !after.is_some_and(|c| c.is_alphanumeric())
+        !before.is_some_and(joins_token) && !after.is_some_and(joins_token)
     })
 }
 
@@ -296,6 +301,10 @@ mod tests {
     }
     #[test]
     fn unsupported_precision_and_grouping_need_review() {
+        assert!(!contains_value("Service 0.50", "0"));
+        assert!(!contains_value("Service 10.50", "10"));
+        assert!(!contains_value("Service -10.50", "10.50"));
+        assert!(contains_value("Service $10.50", "10.50"));
         assert_eq!(product_cents("1,000", "0.015"), Some(1500));
         assert_eq!(product_cents("2", "-5.00"), Some(-1000));
         for q in ["", "NaN", "1,00", "1.0000001", "1e2", "1.2.3"] {
