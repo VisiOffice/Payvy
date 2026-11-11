@@ -907,3 +907,66 @@ async fn turning_purchase_orders_off_lifts_the_gate_and_reject_still_releases() 
     assert_eq!(amounts(&db, &po).await["available_cents"], 100_000);
     db.drop().await;
 }
+
+#[tokio::test]
+async fn customer_funding_blocks_release_until_the_signal_arrives() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let robert = person("robert");
+    commit(
+        &db.state,
+        &robert,
+        "po.configure",
+        json!({ "enabled": true }),
+    )
+    .await
+    .unwrap();
+    let v = vendor(&db.state, &robert, "Funded Hauler").await;
+    common::set_workflow(
+        &db.state,
+        &robert,
+        Some(&v),
+        json!([{ "id": "pay", "type": "pay", "release": "manual" }]),
+    )
+    .await;
+    commit(
+        &db.state,
+        &robert,
+        "po.set_vendor_settings",
+        json!({ "vendor_id": v, "require_po": false, "require_funding": true }),
+    )
+    .await
+    .unwrap();
+    let b = bill(&db.state, &agent("claude-ap"), &v, "fund-1", 25_000).await;
+    // Without the signal: the exception shows beside the bill and release is refused.
+    let got = commit(&db.state, &robert, "bill.get", json!({ "bill_id": b }))
+        .await
+        .unwrap();
+    assert_eq!(
+        got["result"]["purchase_orders"]["exception"]["kind"],
+        "funding_not_verified"
+    );
+    let e = common::confirm(&db.state, &robert, "bill.release", json!({ "bill_id": b }))
+        .await
+        .unwrap_err();
+    assert!(matches!(e, CommandError::Conflict(_)), "{e}");
+    assert!(e.to_string().contains("funding_not_verified"), "{e}");
+    // The customer_funded signal is a signal, not verified payment; with it, release goes.
+    commit(
+        &db.state,
+        &agent("claude-ap"),
+        "bill.signal",
+        json!({ "bill_id": b, "signal": "customer_funded" }),
+    )
+    .await
+    .unwrap();
+    let got = commit(&db.state, &robert, "bill.get", json!({ "bill_id": b }))
+        .await
+        .unwrap();
+    assert_eq!(got["result"]["purchase_orders"]["exception"], Value::Null);
+    common::confirm(&db.state, &robert, "bill.release", json!({ "bill_id": b }))
+        .await
+        .unwrap();
+    db.drop().await;
+}
