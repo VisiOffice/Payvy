@@ -42,16 +42,16 @@ test('an uploaded invoice is read and opened for review', async ({ page }) => {
 });
 
 test('dropping a PDF on the inbox adds it, and a file over 25 MB is refused by name', async ({ page }) => {
-  const number = `DR-${String(Date.now()).slice(-6)}`;
+  // The fake reader knows DR-4410; the reference keeps each run's file new, so it isn't refused as a copy.
   await vendor('Dropped Hauling');
-  const file = pdf(['Dropped Hauling', `Invoice ${number}`, 'Date 11/03/2026', 'Total 42.00']);
+  const file = pdf(['Dropped Hauling', 'Invoice DR-4410', `Ref ${Date.now()}`, 'Date 11/03/2026', 'Total 42.00']);
   await page.goto('/inbox');
 
   await dragFile(page, 'dragenter', { name: 'dropped.pdf', type: 'application/pdf', base64: file.toString('base64') });
   await expect(page.getByText('Drop to add invoices')).toBeVisible();
   await dragFile(page, 'drop', { name: 'dropped.pdf', type: 'application/pdf', base64: file.toString('base64') });
   await expect(page).toHaveURL(/\/inbox\/[0-9a-f-]{36}$/);
-  await expect(page.getByLabel('Invoice number')).toHaveValue(number);
+  await expect(page.getByLabel('Invoice number')).toHaveValue('DR-4410');
 
   await page.goto('/inbox');
   await dragFile(page, 'dragenter', { name: 'too-big.pdf', type: 'application/pdf', bytes: 26 * 1024 * 1024 });

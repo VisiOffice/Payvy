@@ -108,6 +108,18 @@ const READS: [string, Read][] = [
     },
   ],
   [
+    'DR-4410',
+    {
+      ...blank,
+      kind: 'invoice',
+      vendor_name: 'Dropped Hauling',
+      invoice_number: 'DR-4410',
+      invoice_date: '2026-11-03',
+      currency: 'USD',
+      total: '42.00',
+    },
+  ],
+  [
     'SR-7781',
     {
       ...blank,
