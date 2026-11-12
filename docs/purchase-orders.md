@@ -143,6 +143,17 @@ Quantity findings under an enforcing policy are computed by the server, not
 stored; check bills on vendors whose policy enforces `quantity_matching`
 separately in the app after deploy.
 
+## Overrides and automatic payment
+
+A bill payable only because of overrides is never `ready_to_pay`, even at a
+workflow's automatic pay step: `workflow::evaluate` gets `payable_by_override`
+as a fact (like `release_by_person`) and the bill sits at `awaiting_release`
+with the reason "a PO exception was overridden; someone other than the
+overrider releases it". The payment worker, which only picks up
+`ready_to_pay` bills, never sees it, and `bill.auto_pay` run directly refuses
+and names the person step. This is what keeps one person's override from
+becoming a payment with no second person involved.
+
 ## Overrides and separation of duties
 
 `po.override` permits one bill's PO exception (Confirmed tier, person only, Admin), bound to the

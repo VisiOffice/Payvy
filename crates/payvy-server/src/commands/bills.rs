@@ -29,15 +29,18 @@ async fn workflow_of(cx: &mut Cx<'_>, bill: &Bill) -> Result<Workflow, CommandEr
     })
 }
 
-fn evaluate(
-    cx: &Cx<'_>,
+async fn evaluate(
+    cx: &mut Cx<'_>,
     bill: &Bill,
     workflow: &Workflow,
     approvals: &[Approval],
     signals: &[Signal],
     auto_pay_limit: AutoPayLimit,
-) -> Progress {
-    workflow::evaluate(
+) -> Result<Progress, CommandError> {
+    // A bill payable only by override waits for a person even at an
+    // automatic pay step, so it is never ready_to_pay.
+    let payable_by_override = super::purchase_orders::payable_by_override(cx, bill).await?;
+    Ok(workflow::evaluate(
         workflow,
         &Facts {
             amount_cents: bill.amount_cents,
@@ -46,10 +49,11 @@ fn evaluate(
             signals,
             released_at: bill.released_at,
             release_by_person: bill.release_by_person,
+            payable_by_override,
             auto_pay_limit,
             now: cx.now,
         },
-    )
+    ))
 }
 
 /// What the separation-of-duties rules need besides a bill and its facts:
@@ -145,7 +149,7 @@ async fn open_bill(
     let limit = store::auto_pay_limits(&mut cx.tx)
         .await?
         .for_vendor(bill.vendor_id);
-    let p = evaluate(cx, &bill, &wf, &a, &s, limit);
+    let p = evaluate(cx, &bill, &wf, &a, &s, limit).await?;
     Ok((bill, wf, p))
 }
 
@@ -162,8 +166,10 @@ async fn detail(cx: &mut Cx<'_>, bill_id: Uuid) -> Result<Value, CommandError> {
     let limit = store::auto_pay_limits(&mut cx.tx)
         .await?
         .for_vendor(bill.vendor_id);
-    let progress =
-        (bill.state == State::Open).then(|| evaluate(cx, &bill, &wf, &approvals, &signals, limit));
+    let progress = match bill.state {
+        State::Open => Some(evaluate(cx, &bill, &wf, &approvals, &signals, limit).await?),
+        _ => None,
+    };
     let approval = match &progress {
         Some(p) if matches!(p.status, Status::AwaitingApproval { .. }) => {
             let d = duties(cx, &[bill.id]).await?;
@@ -606,7 +612,7 @@ pub async fn list(cx: &mut Cx<'_>, input: List) -> Result<Value, CommandError> {
     let mut out = Vec::new();
     for bill in &bills {
         let mut approval = None;
-        let progress = (bill.state == State::Open).then(|| {
+        let progress = if bill.state == State::Open {
             let wf = bill
                 .workflow_id
                 .and_then(|id| workflows.get(&id))
@@ -621,10 +627,12 @@ pub async fn list(cx: &mut Cx<'_>, input: List) -> Result<Value, CommandError> {
                 .filter(|(b, _)| *b == bill.id)
                 .map(|(_, s)| s.clone())
                 .collect();
-            let p = evaluate(cx, bill, wf, &a, &s, limits.for_vendor(bill.vendor_id));
+            let p = evaluate(cx, bill, wf, &a, &s, limits.for_vendor(bill.vendor_id)).await?;
             approval = turn(cx, &d, bill, wf, &p, &a);
-            p
-        });
+            Some(p)
+        } else {
+            None
+        };
         // The separation-of-duties rule in the lists: whoever permitted a
         // PO exception can't release that bill, so it never waits on them.
         let overridden_by = match &progress {
@@ -1256,7 +1264,7 @@ pub(super) async fn notification_targets(
     let limit = store::auto_pay_limits(&mut cx.tx)
         .await?
         .for_vendor(bill.vendor_id);
-    let progress = evaluate(cx, &bill, &wf, &approvals, &signals, limit);
+    let progress = evaluate(cx, &bill, &wf, &approvals, &signals, limit).await?;
     let action = match progress.status {
         Status::AwaitingApproval { .. } => "approve",
         Status::AwaitingRelease { .. } => "release",
