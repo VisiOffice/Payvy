@@ -7,7 +7,7 @@ import { EmptyState } from '@astryxdesign/core/EmptyState';
 import { HStack } from '@astryxdesign/core/HStack';
 import { Link } from '@astryxdesign/core/Link';
 import { Spinner } from '@astryxdesign/core/Spinner';
-import { Table, type TableColumn } from '@astryxdesign/core/Table';
+import { Table, pixel, proportional, type TableColumn } from '@astryxdesign/core/Table';
 import { Text } from '@astryxdesign/core/Text';
 import { useNavigate } from 'react-router';
 import { Page } from '../Page';
@@ -44,21 +44,24 @@ const columns: TableColumn<VendorSummary>[] = [
   {
     key: 'name',
     header: 'Vendor',
+    width: proportional(3),
     renderCell: (row) => <Link href={`/vendors/${row.id}`}>{row.name}</Link>,
   },
   {
     key: 'open_bills',
     header: 'Open bills',
+    width: pixel(120),
     align: 'end',
     renderCell: (row) => (row.open_bills ? String(row.open_bills) : '—'),
   },
   {
     key: 'open_cents',
     header: 'Open amount',
+    width: pixel(150),
     align: 'end',
     renderCell: (row) => (row.open_bills ? money(row.open_cents) : '—'),
   },
-  { key: 'own_workflow', header: 'Workflow', renderCell: (row) => <WorkflowCell v={row} /> },
+  { key: 'own_workflow', header: 'Workflow', width: proportional(2), renderCell: (row) => <WorkflowCell v={row} /> },
 ];
 
 export function Vendors() {
@@ -75,6 +78,7 @@ export function Vendors() {
 
   return (
     <Page
+      wide
       title="Vendors"
       description="Who you pay, what's open with each, and how their bills are approved."
       actions={vendors && <Allowed command="vendor.create"><Button label="Add vendor" variant="primary" onClick={() => setAdding(true)} /></Allowed>}
