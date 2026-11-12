@@ -136,7 +136,7 @@ function Needs({ d }: { d: Row }) {
 function FileCell({ d, undoSplit }: { d: Row; undoSplit: (d: Row) => void }) {
   return (
     <span className="payvy-inbox-file">
-      <Link href={`/documents/${d.id}`}>{d.filename}</Link>
+      <Link href={`/inbox/${d.id}`}>{d.filename}</Link>
       {d.split_from && (
         <span className="payvy-split-from">
           <span>Split from {d.split_from.filename ?? 'another document'}</span>

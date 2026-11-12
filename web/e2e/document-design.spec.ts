@@ -14,7 +14,7 @@ test('document workspace keeps actions visible, fits the original, and works in 
   if (!existing.vendors.some(v => v.name === 'King Environmental, LLC')) await vendor('King Environmental, LLC');
   const id = await sample('design');
   await page.emulateMedia({ colorScheme: 'dark' });
-  await page.goto(`/documents/${id}`);
+  await page.goto(`/inbox/${id}`);
   await expect(page.getByLabel('Invoice number')).toHaveValue('189727');
   await expect(page.locator('canvas')).toBeVisible();
   const action = page.getByRole('button', { name: 'Create bill', exact: true });
@@ -40,7 +40,7 @@ test('document workspace keeps actions visible, fits the original, and works in 
   await action.scrollIntoViewIfNeeded();
   await expect(action).toBeInViewport();
   await page.screenshot({ path: info.outputPath('review-mobile-details.png'), animations: 'disabled' });
-  await page.goto('/documents');
+  await page.goto('/inbox');
   await page.getByLabel('Search documents').fill('king-environmental-design');
   await expect(page.getByRole('link', { name: 'king-environmental-design.pdf', exact: true })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
@@ -57,7 +57,7 @@ test('a slow document load keeps context, times out, and can be retried without 
   const held = new Promise<void>(resolve => { release = resolve; });
   // Delay transport only. The response still comes from the real command API.
   await page.route('**/api/commands/document.get', async route => { await held; await route.continue(); });
-  await page.goto(`/documents/${id}`);
+  await page.goto(`/inbox/${id}`);
   await expect(page.getByText('Getting the original and its invoice details.')).toBeVisible();
   await expect(page.getByRole('link', { name: '← Inbox', exact: true })).toBeVisible();
   await page.screenshot({ path: info.outputPath('review-loading.png'), animations: 'disabled' });

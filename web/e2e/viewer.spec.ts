@@ -24,7 +24,7 @@ const noSideScroll = (page: Page) => page.evaluate(() => document.documentElemen
 test('one page at a time, turned with the buttons, arrows and J K', async ({ page }, info) => {
   const doc = await manyPages(`keys-${Date.now()}`, 8);
   await page.setViewportSize({ width: 1497, height: 1029 });
-  await page.goto(`/documents/${doc}`);
+  await page.goto(`/inbox/${doc}`);
 
   // Many pages: the thumbnails start hidden, leaving one slim row.
   await expect(counter(page)).toHaveText('Page 1 of 8');
@@ -140,7 +140,7 @@ test('one page at a time, turned with the buttons, arrows and J K', async ({ pag
 test('on a phone the original turns with Previous and Next, without side scroll', async ({ page }, info) => {
   const doc = await manyPages(`phone-${Date.now()}`, 5);
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto(`/documents/${doc}`);
+  await page.goto(`/inbox/${doc}`);
   await expect(page.getByRole('radiogroup', { name: 'Document view' })).toBeVisible();
   await page.getByRole('radio', { name: 'Original document', exact: true }).click();
   // A few pages: thumbnails shown at first.
@@ -180,7 +180,7 @@ test('a photo is one page, with nothing to turn', async ({ page }) => {
     return c.toDataURL('image/png').split(',')[1]!;
   }, String(Date.now()));
   const doc = await agent<{ id: string }>('document.upload', { filename: `receipt-${Date.now()}.png`, content_base64: png });
-  await page.goto(`/documents/${doc.id}`);
+  await page.goto(`/inbox/${doc.id}`);
   await expect(page.locator('.payvy-viewer-canvas canvas')).toBeVisible();
   await expect(toolbar(page).getByText('1 page', { exact: true })).toBeVisible();
   await expect(page.getByRole('group', { name: 'Pages of the document' })).toHaveCount(0);

@@ -19,7 +19,7 @@ test('discount lines can be corrected, saved, reloaded and carried to the bill',
     const id = await vendor('Line review electric');
     const doc = await agent<{id:string}>('document.upload',{filename:'line-review.pdf',content_base64:pdf(['Invoice 30117','Line review pilot','12/2 Romex, 250 ft (2) 238.00','20A breakers (10) 112.50','Contractor discount 10% -35.05','Tax 26.18','Total 341.63']).toString('base64')});
     await agent('document.extract',{document_id:doc.id});
-    await page.goto(`/documents/${doc.id}`);
+    await page.goto(`/inbox/${doc.id}`);
     await expect(page.getByLabel('Line amount 3',{exact:true})).toHaveValue('-35.05');
     await page.getByRole('button',{name:/^Vendor/}).click();
     await page.getByRole('option',{name:'Line review electric',exact:true}).click();
@@ -79,7 +79,7 @@ test('summary-only is an explicit person decision and editing invalidates it', a
     await vendor('Summary review vendor');
     const doc=await agent<{id:string}>('document.upload',{filename:'summary-review.pdf',content_base64:pdf(['Sonoran Pest Control','Invoice SR-7781','summary-review-test','Total 185.00']).toString('base64')});
     await agent('document.extract',{document_id:doc.id});
-    await page.goto(`/documents/${doc.id}`);
+    await page.goto(`/inbox/${doc.id}`);
     await page.getByRole('button',{name:/^Vendor/}).click();
     await page.getByRole('option',{name:'Summary review vendor',exact:true}).click();
     await expect(page.getByText('No line items captured',{exact:true})).toBeVisible();
@@ -108,7 +108,7 @@ test('multi-invoice review splits the selected pages before creating a bill', as
     ['American Reclamation','Invoice 85274','Total $1,200.00','review-split'],
     ['American Reclamation','Account balance $26,923.52','review-split'],
   ]).toString('base64')});
-  await page.goto(`/documents/${doc.id}`);
+  await page.goto(`/inbox/${doc.id}`);
   await page.getByRole('button',{name:'Read it',exact:true}).click();
   await expect(page.getByText('This file has 2 invoices')).toBeVisible();
   await expect(page.getByRole('button',{name:/^Create bill/})).toBeDisabled();
@@ -127,7 +127,7 @@ test('richer reader checks source and quantity and pins reviewed metadata', asyn
   await vendor('Richer review vendor');
   const doc=await agent<{id:string}>('document.upload',{filename:'richer.pdf',content_base64:pdf(['Richer review vendor','Invoice V2-UI','Date 2026-11-11','USD','Disposal 2.5 ton 12.345 30.86','Total 30.86']).toString('base64')});
   await agent('document.extract',{document_id:doc.id});
-  await page.goto(`/documents/${doc.id}`);
+  await page.goto(`/inbox/${doc.id}`);
   await page.getByText('Details and source · line 1',{exact:true}).click();
   await expect(page.getByLabel('Quantity 1',{exact:true})).toHaveValue('2.5');
   await expect(page.getByLabel('Unit price 1',{exact:true})).toHaveValue('12.345');

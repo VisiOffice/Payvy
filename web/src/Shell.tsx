@@ -14,7 +14,7 @@ import { NavIcon } from './NavIcon';
 
 const NAV = [
   { href: '/', label: 'Waiting on you', icon: 'inbox' },
-  { href: '/documents', label: 'Inbox', icon: 'documents' },
+  { href: '/inbox', label: 'Inbox', icon: 'documents' },
   { href: '/bills', label: 'All bills', icon: 'bills' },
   { href: '/vendors', label: 'Vendors', icon: 'vendors' },
   { href: '/purchase-orders', label: 'Purchase orders', icon: 'orders' },

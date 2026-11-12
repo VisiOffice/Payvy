@@ -54,7 +54,7 @@ const history = (page: Page) => page.getByRole('list', { name: 'Page history' })
 
 test('pages are reordered, rotated, hidden and restored, then lock once the bill is approved', async ({ page }) => {
   const doc = await threePages('desk');
-  await page.goto(`/documents/${doc}`);
+  await page.goto(`/inbox/${doc}`);
   await expect(strip(page).getByText('3 pages')).toBeVisible();
   await expect(strip(page).getByRole('img', { name: 'Page 3' })).toBeVisible();
   await expect.poll(() => shown(page)).toEqual([1, 2, 3]);
@@ -119,7 +119,7 @@ test('pages are reordered, rotated, hidden and restored, then lock once the bill
 
   // Approved: the pages lock, saying why, and the controls are off.
   await personCommand(page, 'bill.approve', { bill_id: bill.bill.id });
-  await page.goto(`/documents/${doc}`);
+  await page.goto(`/inbox/${doc}`);
   await expect(strip(page).getByText('Pages are locked after approval')).toBeVisible();
   for (const name of ['Move page 1 earlier', 'Rotate page 2', 'Hide page 3']) {
     await expect(strip(page).getByRole('button', { name })).toBeDisabled();
@@ -132,7 +132,7 @@ test('pages are reordered, rotated, hidden and restored, then lock once the bill
 test('pages can be arranged on a phone, inside the original document tab', async ({ page }, info) => {
   const doc = await threePages('phone');
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto(`/documents/${doc}`);
+  await page.goto(`/inbox/${doc}`);
   await page.getByRole('radio', { name: 'Original document', exact: true }).click();
   await expect(strip(page).getByRole('img', { name: 'Page 2' })).toBeVisible();
   await expect(page.locator('.payvy-viewer-canvas canvas').first()).toBeVisible();

@@ -76,7 +76,7 @@ export function Documents() {
       if (added.length === 1) {
         setUploading({ title: 'Invoice uploaded. Reading the details…', detail: 'We’ll open it for review when the reading finishes.' });
         await run('document.extract', { document_id: added[0]! }).catch(() => undefined);
-        navigate(`/documents/${added[0]}`);
+        navigate(`/inbox/${added[0]}`);
         return;
       }
       toast({ body: `Added ${added.length} documents. They're read in the background.` });

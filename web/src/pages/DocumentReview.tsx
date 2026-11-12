@@ -314,7 +314,7 @@ export function DocumentReview() {
   };
   const copying = useClickToCopy(editable, fill);
 
-  if (error) return <div className="payvy-review-error"><Link href="/documents">← Inbox</Link><h1>Review invoice</h1><Banner status="error" title="Couldn't load this document" description={error} /><Button label="Try again" variant="secondary" onClick={() => void load()} /></div>;
+  if (error) return <div className="payvy-review-error"><Link href="/inbox">← Inbox</Link><h1>Review invoice</h1><Banner status="error" title="Couldn't load this document" description={error} /><Button label="Try again" variant="secondary" onClick={() => void load()} /></div>;
   if (!detail) return <DocumentLoading />;
 
   const doc = detail.document;
@@ -403,7 +403,7 @@ export function DocumentReview() {
     if (reviewDirty) await saveReview();
     const r = await run<{documents:{id:string}[]}>('document.split', {document_id:doc.id, expected_version:detail!.pages.version, groups:[picked]});
     const child = r.result.documents[0];
-    if (child) navigate(`/documents/${child.id}`);
+    if (child) navigate(`/inbox/${child.id}`);
   }
 
   async function addVendor() {
@@ -463,7 +463,7 @@ export function DocumentReview() {
     try {
       await run('document.unsplit', { document_id: doc.id });
       toast({ body: `Pages put back in ${from.filename ?? 'the document they came from'}` });
-      navigate(`/documents/${from.id}`);
+      navigate(`/inbox/${from.id}`);
     } catch (e) {
       toast({ body: e instanceof Error ? e.message : String(e), type: 'error' });
     }
@@ -500,7 +500,7 @@ export function DocumentReview() {
   return (
     <div className="payvy-document-review" data-mobile-view={mobileView}>
       <header className="payvy-review-header">
-        <Link href="/documents">← Inbox</Link>
+        <Link href="/inbox">← Inbox</Link>
         <h1>Review invoice</h1>
         <p className="payvy-review-filename" title={doc.filename}>{doc.filename}</p>
         <span className="payvy-document-status">
@@ -549,7 +549,7 @@ export function DocumentReview() {
               title={`Split from ${detail.split_from.filename ?? 'another document'}`}
               description={
                 <>
-                  <Link href={`/documents/${detail.split_from.id}`}>Open the rest of the file</Link>
+                  <Link href={`/inbox/${detail.split_from.id}`}>Open the rest of the file</Link>
                   {doc.status === 'inbox' && (
                     <span className="payvy-split-note">Undo puts these pages back where they came from.</span>
                   )}
@@ -598,7 +598,7 @@ export function DocumentReview() {
               <ul className="payvy-split-list" aria-label="Split into">
                 {parts.map((p) => (
                   <li key={p.id}>
-                    <Link href={`/documents/${p.id}`}>{p.filename}</Link>
+                    <Link href={`/inbox/${p.id}`}>{p.filename}</Link>
                     <Text type="supporting">{p.status === 'filed' ? 'Filed' : p.status === 'trashed' ? 'Not a bill' : 'To review'}</Text>
                   </li>
                 ))}
@@ -890,7 +890,7 @@ export function DocumentReview() {
           onSubmit={async (reason) => {
             await run('document.trash', { document_id: doc.id, reason });
             toast({ body: `${doc.filename} set aside` });
-            navigate('/documents');
+            navigate('/inbox');
           }}
         />
       )}

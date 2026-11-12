@@ -43,7 +43,7 @@ const noSideScroll = (page: Page) => page.evaluate(() => document.documentElemen
 test('the reader suggests the invoices, and a bill is made from the ticked pages', async ({ page }) => {
   await reclamationVendor();
   const file = await reclamationFile('desk');
-  await page.goto(`/documents/${file.id}`);
+  await page.goto(`/inbox/${file.id}`);
   await expect(strip(page).getByText('4 pages')).toBeVisible();
 
   // A person reading it gets a suggestion, not a split.
@@ -76,7 +76,7 @@ test('the reader suggests the invoices, and a bill is made from the ticked pages
   await expect.poll(() => shown(page)).toEqual([1, 2]);
 
   // The rest stays in To review, as the same document.
-  await page.goto('/documents');
+  await page.goto('/inbox');
   const toReview = page.getByRole('region', { name: 'To review' });
   await expect(toReview.getByRole('link', { name: file.filename, exact: true })).toBeVisible();
   await expect(toReview.getByText('reclaim-desk (pages 1–2).pdf')).toHaveCount(0);
@@ -96,7 +96,7 @@ test("an agent's reading splits the file at once, and Undo puts the pages back",
   await agent('document.extract', { document_id: first });
 
   // The inbox shows where each part came from, with Undo.
-  await page.goto('/documents');
+  await page.goto('/inbox');
   const toReview = page.getByRole('region', { name: 'To review' });
   await expect(toReview.getByText(`Split from ${file.filename}`)).toHaveCount(2);
   await toReview.getByRole('button', { name: 'Undo split of reclaim-agent (page 3).pdf' }).click();
@@ -104,13 +104,13 @@ test("an agent's reading splits the file at once, and Undo puts the pages back",
   await expect(toReview.getByText(`Split from ${file.filename}`)).toHaveCount(1);
 
   // The other part, read on its own: one invoice, with Undo on the page.
-  await page.goto(`/documents/${first}`);
+  await page.goto(`/inbox/${first}`);
   await expect(page.getByText(`Split from ${file.filename}`)).toBeVisible();
   await expect(page.getByRole('textbox', { name: 'Invoice number' })).toHaveValue('85273');
   await expect(page.getByText(/This file has/)).toHaveCount(0);
   await expect.poll(() => shown(page)).toEqual([1, 2]);
   await page.getByRole('button', { name: 'Undo', exact: true }).click();
-  await expect(page).toHaveURL(new RegExp(`/documents/${file.id}$`));
+  await expect(page).toHaveURL(new RegExp(`/inbox/${file.id}$`));
 
   // Whole again, with the agent's split and both undos on the record, and
   // the reader's suggestion back for a person to act on.
@@ -129,7 +129,7 @@ test('a bill from some pages on a phone', async ({ page }, info) => {
   await reclamationVendor();
   const file = await reclamationFile('phone');
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto(`/documents/${file.id}`);
+  await page.goto(`/inbox/${file.id}`);
   await page.getByRole('button', { name: 'Read it' }).click();
   await expect(page.getByText('This file has 2 invoices')).toBeVisible();
   // The second invoice this time.
