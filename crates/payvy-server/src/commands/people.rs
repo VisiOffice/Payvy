@@ -113,6 +113,7 @@ pub async fn remove(cx: &mut Cx<'_>, input: Remove) -> Result<Value, CommandErro
         )));
     }
     protect_last_admin(cx, &actor).await?;
+    approver_strand_refusal(cx, &actor).await?;
     let id = store::remove_person(&mut cx.tx, cx.org, &actor, cx.now, &cx.actor.name)
         .await?
         .ok_or(CommandError::NotFound("person"))?;
@@ -137,6 +138,78 @@ fn validate_roles(mut roles: Vec<Role>) -> Result<Vec<Role>, CommandError> {
     }
     Ok(roles)
 }
+/// Taking away the approval ability of someone an open bill is
+/// currently waiting on would strand that bill: it keeps the workflow
+/// version it arrived under, and nobody else can give that step. So
+/// role loss (and removal) is refused exactly while a bill waits on
+/// their approval step — and only then; role changes at other times
+/// stay possible, and queued notices recheck eligibility before send.
+async fn approver_strand_refusal(cx: &mut Cx<'_>, actor: &str) -> Result<(), CommandError> {
+    use payvy_domain::bills::State;
+    use payvy_domain::permissions::Permission;
+    use payvy_domain::workflow::{self, Facts, Status, Workflow};
+    let roles = store::actor_roles(&mut cx.tx, cx.org, actor).await?;
+    if !Permission::Approve.allows(&roles) {
+        return Ok(());
+    }
+    let bills = store::list_bills(&mut cx.tx, Some(State::Open), None, None, 5_000).await?;
+    if bills.is_empty() {
+        return Ok(());
+    }
+    let wf_ids: Vec<uuid::Uuid> = bills.iter().filter_map(|b| b.workflow_id).collect();
+    let workflows: std::collections::HashMap<uuid::Uuid, Workflow> =
+        store::workflows_by_id(&mut cx.tx, &wf_ids)
+            .await?
+            .into_iter()
+            .collect();
+    let ids: Vec<uuid::Uuid> = bills.iter().map(|b| b.id).collect();
+    let (approvals, signals) = store::facts(&mut cx.tx, &ids).await?;
+    let limits = store::auto_pay_limits(&mut cx.tx).await?;
+    let builtin = Workflow::builtin_default();
+    for bill in &bills {
+        let wf = bill
+            .workflow_id
+            .and_then(|id| workflows.get(&id))
+            .unwrap_or(&builtin);
+        let a: Vec<_> = approvals
+            .iter()
+            .filter(|(b, _)| *b == bill.id)
+            .map(|(_, a)| a.clone())
+            .collect();
+        let s: Vec<_> = signals
+            .iter()
+            .filter(|(b, _)| *b == bill.id)
+            .map(|(_, s)| s.clone())
+            .collect();
+        let progress = workflow::evaluate(
+            wf,
+            &Facts {
+                amount_cents: bill.amount_cents,
+                received_at: bill.received_at,
+                approvals: &a,
+                signals: &s,
+                released_at: bill.released_at,
+                release_by_person: bill.release_by_person,
+                payable_by_override: false,
+                auto_pay_limit: limits.for_vendor(bill.vendor_id),
+                now: cx.now,
+            },
+        );
+        if let Status::AwaitingApproval {
+            step_id,
+            waiting_on,
+        } = &progress.status
+            && (waiting_on.is_empty() || waiting_on.iter().any(|w| w == actor))
+        {
+            return Err(CommandError::Conflict(format!(
+                "bill {} is waiting on {actor}'s approval (step {step_id}); have them approve or reject it first — it keeps the workflow version it arrived under",
+                bill.invoice_number
+            )));
+        }
+    }
+    Ok(())
+}
+
 async fn protect_last_admin(cx: &mut Cx<'_>, actor: &str) -> Result<(), CommandError> {
     let admins = store::sign_in_admins(&mut cx.tx, cx.org).await?;
     if admins.len() == 1 && admins[0] == actor {
@@ -170,6 +243,9 @@ pub async fn set_roles(cx: &mut Cx<'_>, input: SetRoles) -> Result<Value, Comman
     }
     if !roles.contains(&Role::Admin) {
         protect_last_admin(cx, &actor).await?;
+    }
+    if !payvy_domain::permissions::Permission::Approve.allows(&roles) {
+        approver_strand_refusal(cx, &actor).await?;
     }
     store::set_actor_roles(&mut cx.tx, cx.org, &actor, &roles).await?;
     cx.emit(

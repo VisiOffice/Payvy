@@ -546,3 +546,93 @@ async fn migration_preserves_existing_people_and_keys_without_restoring_removed_
     tx.rollback().await.unwrap();
     db.drop().await;
 }
+
+#[tokio::test]
+async fn workflows_cannot_name_approvers_without_the_approver_role_and_roles_cannot_strand_them() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let operator = person("operator");
+    add(&db, "carol", json!(["ap_clerk"])).await;
+    add(&db, "dave", json!(["approver"])).await;
+    let wf = |who: &str| {
+        json!({ "workflow": { "steps": [
+            { "id": "ok", "type": "approve", "approvers": [who] },
+            { "id": "pay", "type": "pay", "release": "manual" }] } })
+    };
+    // Carol is a person here but can't approve: proposing strands bills.
+    let e = commit(&db.state, &operator, "workflow.propose", wf("carol"))
+        .await
+        .unwrap_err();
+    assert!(matches!(e, CommandError::Conflict(_)), "{e}");
+    assert!(e.to_string().contains("carol"), "{e}");
+    // Dave can; but acceptance rechecks, because roles may have changed
+    // since the proposal: strip his role first (nothing active names him
+    // yet) and accepting the proposal is refused.
+    let proposal = commit(&db.state, &operator, "workflow.propose", wf("dave"))
+        .await
+        .unwrap();
+    let proposal_id = proposal["result"]["proposal_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assign(&db, "dave", json!(["ap_clerk"])).await.unwrap();
+    let e = commit(
+        &db.state,
+        &person("robert"),
+        "workflow.accept",
+        json!({ "proposal_id": proposal_id }),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(e, CommandError::Conflict(_)), "{e}");
+    assign(&db, "dave", json!(["approver"])).await.unwrap();
+    commit(
+        &db.state,
+        &person("robert"),
+        "workflow.accept",
+        json!({ "proposal_id": proposal_id }),
+    )
+    .await
+    .unwrap();
+    // While a bill waits on Dave's approval, taking his Approver role
+    // (or removing him) would strand it: both are refused.
+    let v = vendor(&db.state, &operator, "Dave's Vendor").await;
+    let waiting = bill(&db.state, &operator, &v, "D-1", 10_000).await;
+    let e = assign(&db, "dave", json!(["ap_clerk"])).await.unwrap_err();
+    assert!(matches!(e, CommandError::Conflict(_)), "{e}");
+    assert!(e.to_string().contains("waiting on dave"), "{e}");
+    let e = commit(
+        &db.state,
+        &operator,
+        "person.remove",
+        json!({ "actor": "dave" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(e, CommandError::Conflict(_)), "{e}");
+    // Once nothing waits on him, the role can go.
+    commit(
+        &db.state,
+        &member("dave"),
+        "bill.approve",
+        json!({ "bill_id": waiting }),
+    )
+    .await
+    .unwrap();
+    assign(&db, "dave", json!(["ap_clerk"])).await.unwrap();
+    assign(&db, "dave", json!(["approver", "payment_releaser"]))
+        .await
+        .unwrap();
+    // And a workflow naming someone who isn't a person here is left
+    // alone: they may be added under that name later.
+    commit(
+        &db.state,
+        &operator,
+        "workflow.propose",
+        wf("future-person"),
+    )
+    .await
+    .unwrap();
+    db.drop().await;
+}
