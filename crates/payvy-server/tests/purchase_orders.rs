@@ -1223,3 +1223,93 @@ async fn closing_lets_allocations_stand_and_their_bills_wait() {
     assert_eq!(canceled["result"]["amounts"]["reserved_cents"], 40_000);
     db.drop().await;
 }
+
+#[tokio::test]
+async fn a_person_permits_a_closed_pos_bill_and_someone_else_releases_it() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    po_on(&db).await;
+    let robert = person("robert");
+    let v = manual_po_vendor(&db).await;
+    let olga = add_person(&db, "olga", json!(["admin"])).await;
+    let rita = add_person(&db, "rita", json!(["payment_releaser"])).await;
+    let po = active_po(&db, &v, "PO-CLOSE-OVR", 100_000).await;
+    let b = bill(&db.state, &agent("claude-ap"), &v, "close-ovr-1", 50_000).await;
+    confirm(
+        &db.state,
+        &robert,
+        "po.match_apply",
+        json!({ "bill_id": b, "allocations": [{ "po_id": po, "amount_cents": 50_000 }] }),
+    )
+    .await
+    .unwrap();
+    commit(
+        &db.state,
+        &robert,
+        "po.close",
+        json!({ "po_id": po, "reason": "fulfilled" }),
+    )
+    .await
+    .unwrap();
+
+    let got = commit(&db.state, &olga, "bill.get", json!({ "bill_id": b }))
+        .await
+        .unwrap();
+    let exception = &got["result"]["purchase_orders"]["exception"];
+    assert_eq!(exception["kind"], "ineligible_po", "{got}");
+    assert_eq!(exception["excess_cents"], 50_000, "{got}");
+    assert_eq!(got["result"]["purchase_orders"]["can_override"], true);
+    let e = confirm(&db.state, &rita, "bill.release", json!({ "bill_id": b }))
+        .await
+        .unwrap_err();
+    assert!(e.to_string().contains("ineligible_po"), "{e}");
+
+    // An agent can't permit it, and a person must cover the whole allocation.
+    let e = confirm(
+        &db.state,
+        &agent("claude-ap"),
+        "po.override",
+        json!({ "bill_id": b, "authorized_excess_cents": 50_000, "reason": "closed early" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(e, CommandError::PersonOnly(_)), "{e}");
+    let e = confirm(
+        &db.state,
+        &olga,
+        "po.override",
+        json!({ "bill_id": b, "authorized_excess_cents": 49_999, "reason": "closed early" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(e, CommandError::Invalid(_)), "{e}");
+    let over = confirm(
+        &db.state,
+        &olga,
+        "po.override",
+        json!({ "bill_id": b, "authorized_excess_cents": 50_000, "reason": "work done before close" }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(over["result"]["overridden"], true);
+    assert_eq!(over["result"]["overridden_by"], "olga");
+
+    // The exception still names the closed PO, but is permitted; the
+    // allocation stands, so the PO's ledger is unchanged.
+    let got = commit(&db.state, &rita, "bill.get", json!({ "bill_id": b }))
+        .await
+        .unwrap();
+    assert_eq!(got["result"]["can_release"], true, "{got}");
+    assert_eq!(amounts(&db, &po).await["reserved_cents"], 50_000);
+
+    // Olga permitted it, so she can't release; Rita can.
+    let e = confirm(&db.state, &olga, "bill.release", json!({ "bill_id": b }))
+        .await
+        .unwrap_err();
+    assert!(matches!(e, CommandError::Forbidden(_)), "{e}");
+    confirm(&db.state, &rita, "bill.release", json!({ "bill_id": b }))
+        .await
+        .unwrap();
+    db.drop().await;
+}
