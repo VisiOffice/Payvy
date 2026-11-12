@@ -20,8 +20,13 @@ use crate::commands::{self, CommandError, Mode};
 use crate::{Actor, AppState};
 
 const EVERY: Duration = Duration::from_secs(15);
-/// How long a part is held by one worker while it is read and billed.
+/// How long a part is held by one worker while it is read and billed. Parts
+/// are claimed one at a time, so the lease covers one read (the model is
+/// given at most five minutes), not a whole pass: a pass of twenty parts at
+/// half a minute each would outlast it, and another worker would take parts
+/// this one still meant to read.
 const LEASE_MINUTES: i64 = 10;
+/// Parts looked at in one pass, before the worker yields to the next org.
 const PER_TICK: i64 = 20;
 /// Failed reads before a part is left for a person.
 const MAX_FAILURES: i32 = 3;
@@ -48,16 +53,19 @@ pub async fn run(state: AppState) {
 pub async fn tick(state: &AppState) -> anyhow::Result<usize> {
     let mut done = 0;
     for org in state.store.org_ids().await? {
-        let mut tx = state.store.begin(org).await?;
-        let claimed = store::claim_bill_batch_parts(
-            &mut tx,
-            (state.clock)(),
-            chrono::Duration::minutes(LEASE_MINUTES),
-            PER_TICK,
-        )
-        .await?;
-        tx.commit().await?;
-        for (part, requested_by) in claimed {
+        for _ in 0..PER_TICK {
+            let mut tx = state.store.begin(org).await?;
+            let claimed = store::claim_bill_batch_parts(
+                &mut tx,
+                (state.clock)(),
+                chrono::Duration::minutes(LEASE_MINUTES),
+                1,
+            )
+            .await?;
+            tx.commit().await?;
+            let Some((part, requested_by)) = claimed.into_iter().next() else {
+                break;
+            };
             done += 1;
             let outcome = step(state, org, &part, &requested_by).await;
             let mut tx = state.store.begin(org).await?;

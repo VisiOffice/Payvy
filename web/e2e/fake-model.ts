@@ -179,6 +179,46 @@ function readSaguaro(pages: number[] | null): Read {
   return { ...blank, kind: 'other', vendor_name: 'Saguaro Storage Co' };
 }
 
+/**
+ * Cholla Freight Lines, at real-world size (split-load.spec.ts): 40 pages,
+ * 38 invoices. CF-1001 runs pages 1–3; CF-1002 to CF-1038 are one page each
+ * (CF-n on page n + 2). Page 32 is a smudged scan: the reader finds an
+ * invoice there but can't read it, and answers with something that isn't
+ * the schema when asked to.
+ */
+export const CHOLLA_UNREADABLE_PAGE = 32;
+const cholla = (n: number) => `CF-${1000 + n}`;
+const chollaTotal = (n: number) => `${100 + n}.00`;
+const chollaRead = (n: number, invoices: object[] = []): Read => ({
+  ...blank,
+  kind: 'invoice',
+  vendor_name: 'Cholla Freight Lines',
+  invoice_number: cholla(n),
+  invoice_date: '2026-11-05',
+  currency: 'USD',
+  total: chollaTotal(n),
+  lines: [{ description: 'Freight', amount: chollaTotal(n) }],
+  invoices,
+});
+/** null: the answer isn't the schema. */
+function readCholla(pages: number[] | null): Read | null {
+  if (!pages) {
+    const invoices: object[] = [{ pages: [1, 2, 3], invoice_number: cholla(1), total: chollaTotal(1) }];
+    for (let n = 2; n <= 38; n++) {
+      const page = n + 2;
+      invoices.push(
+        page === CHOLLA_UNREADABLE_PAGE
+          ? { pages: [page], invoice_number: null, total: null }
+          : { pages: [page], invoice_number: cholla(n), total: chollaTotal(n) },
+      );
+    }
+    return chollaRead(1, invoices);
+  }
+  if (pages.includes(CHOLLA_UNREADABLE_PAGE)) return null;
+  if (pages.some((p) => p <= 3)) return chollaRead(1);
+  return chollaRead(pages[0]! - 2);
+}
+
 /** The pages the server asked for ("Read only pages 1, 2 of this file"), or null for all. */
 function pagesAsked(body: { messages?: { content?: unknown }[] }): number[] | null {
   for (const m of body.messages ?? []) {
@@ -214,6 +254,17 @@ export function startFakeModel(port: number): Promise<http.Server> {
       }
       const body = JSON.parse(raw);
       const file = fileOf(body);
+      if (file.includes('Cholla Freight')) {
+        const read = readCholla(pagesAsked(body));
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            model: 'fake',
+            choices: [{ finish_reason: 'stop', message: { content: read ? JSON.stringify(read) : 'Sorry, the scan is too smudged to read.' } }],
+          }),
+        );
+        return;
+      }
       let read = file.includes('American Reclamation')
         ? readReclamation(pagesAsked(body))
         : file.includes('Saguaro Storage')

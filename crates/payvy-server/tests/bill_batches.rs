@@ -310,3 +310,130 @@ async fn a_part_a_person_handles_first_is_withdrawn() {
     assert_eq!(batch["parts"][1]["state"], "withdrawn");
     assert_eq!(batch["counts"]["created"], 1);
 }
+
+/// A real model takes tens of seconds a part. A worker holds only the part
+/// it is reading, so a second worker (another process, or a restart) takes
+/// the next part rather than one the first already holds: at the size of a
+/// real file, 38 invoices with the first running three pages, every part is
+/// read once and billed once, however the two workers interleave.
+#[tokio::test]
+async fn a_slow_model_and_two_workers_read_each_part_once() {
+    let Some(mut db) = TestDb::with_storage().await else {
+        return;
+    };
+    // Each read takes a minute of the test's clock.
+    let reads: std::sync::Arc<std::sync::Mutex<Vec<u32>>> = Default::default();
+    let (seen, clock) = (reads.clone(), db.clock.clone());
+    let app = axum::Router::new().route(
+        "/v1/messages",
+        post(move |Json(body): Json<Value>| {
+            let (seen, clock) = (seen.clone(), clock.clone());
+            async move {
+                let prompt = body["messages"][0]["content"][1]["text"]
+                    .as_str()
+                    .unwrap_or_default();
+                let page: u32 = prompt
+                    .split_once("Read only page")
+                    .map(|(_, rest)| {
+                        rest.trim_start_matches('s')
+                            .trim_start()
+                            .chars()
+                            .take_while(char::is_ascii_digit)
+                            .collect::<String>()
+                    })
+                    .and_then(|n| n.parse().ok())
+                    .unwrap_or(0);
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                *clock.lock().unwrap() += chrono::Duration::seconds(60);
+                seen.lock().unwrap().push(page);
+                let n = if page <= 3 { 1 } else { page - 2 };
+                let mut read = invoice(
+                    Some(&format!("CF-{}", 1000 + n)),
+                    &format!("{}.00", 100 + n),
+                    json!([]),
+                );
+                read["vendor_name"] = json!("Cholla Freight Lines");
+                Json(
+                    json!({ "model": "claude-opus-5-5", "stop_reason": "end_turn",
+                             "content": [{ "type": "text", "text": read.to_string() }] }),
+                )
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    db.state = db.state.clone().with_extractor(
+        Extractor::new(Config {
+            provider: Provider::Anthropic,
+            base_url: format!("http://{addr}"),
+            api_key: Some("test-model-key".into()),
+            model: "claude-opus-5-5".into(),
+        })
+        .unwrap(),
+    );
+    let cleo = clerk(&db).await;
+    vendor(&db.state, &cleo, "Cholla Freight Lines").await;
+    let id = commit(
+        &db.state,
+        &cleo,
+        "document.upload",
+        json!({ "filename": "cholla.pdf",
+                "content_base64": base64::engine::general_purpose::STANDARD.encode(pdf(40)) }),
+    )
+    .await
+    .unwrap()["result"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut groups = vec![vec![1, 2, 3]];
+    groups.extend((4..=40).map(|p| vec![p]));
+    let made = commit(
+        &db.state,
+        &cleo,
+        "document.create_bills",
+        json!({ "document_id": id, "expected_version": 0, "request_id": uuid::Uuid::new_v4(),
+                "groups": groups }),
+    )
+    .await
+    .unwrap()["result"]
+        .clone();
+    assert_eq!(made["parts"].as_array().unwrap().len(), 38);
+
+    // One worker starts; a second joins after twelve minutes of reading,
+    // when the first's lease on anything it claimed at the start has run out.
+    let first = tokio::spawn({
+        let state = db.state.clone();
+        async move { payvy_server::bill_batch_worker::tick(&state).await.unwrap() }
+    });
+    while reads.lock().unwrap().len() < 12 {
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    let second = payvy_server::bill_batch_worker::tick(&db.state)
+        .await
+        .unwrap();
+    let first = first.await.unwrap();
+    // Whatever is left (more than one pass's worth) is taken on later passes.
+    let mut rest = 0;
+    for _ in 0..5 {
+        *db.clock.lock().unwrap() += chrono::Duration::minutes(1);
+        rest += payvy_server::bill_batch_worker::tick(&db.state)
+            .await
+            .unwrap();
+    }
+    assert_eq!(first + second + rest, 38, "each part looked at once");
+
+    let mut read = reads.lock().unwrap().clone();
+    read.sort_unstable();
+    let mut want = vec![1];
+    want.extend(4..=40);
+    assert_eq!(read, want, "each part read once");
+    let batch = get(&db, &cleo, &id).await["bill_batch"].clone();
+    assert_eq!(batch["done"], true);
+    assert_eq!(
+        batch["counts"],
+        json!({ "reading": 0, "created": 38, "stacked": 0, "needs_you": 0, "withdrawn": 0 }),
+        "{:#}",
+        batch["parts"]
+    );
+}
