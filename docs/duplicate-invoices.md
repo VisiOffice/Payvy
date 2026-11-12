@@ -20,15 +20,17 @@ enforced it. When `bill.create` finds a live bill with that key and
 - Same amount with the same lines: a **resend**. Recorded, no
   state change, never payable twice — including a copy that arrives after
   the bill was paid.
-- Different amount, or the same amount with different lines (different
-  quantities at the same total included), on an open bill: a **revision**.
-  Lines compare as printed — normalized description, amount, exact
-  quantity, unit and unit price, in any order — so a restated copy is
-  still a resend. A revision becomes the bill's one pending revision (a
-  newer revision supersedes an undecided older one) and blocks payment
-  until a person decides it; accepting it quantity-checks the new lines
-  instead of the old ones being checked forever. A revision on a
-  closed bill is recorded but never pending: there is nothing left to pay.
+- Different amount on an open bill: a **revision**. So is a same-total
+  copy whose quantities differ — but only when both the bill and the copy
+  carry quantity-bearing lines, comparing just (unit, exact quantity,
+  unit price): most bills have no lines, or lines a person edited, and
+  two reads of one invoice word lines differently, so none of that may
+  turn a plain resend into a blocking revision. A revision becomes the
+  bill's one pending revision (a newer revision supersedes an undecided
+  older one) and blocks payment until a person decides it; accepting it
+  quantity-checks the new lines instead of the old ones being checked
+  forever. A revision on a closed bill is recorded but never pending:
+  there is nothing left to pay.
 
 The first arrival of every bill is in the stack too, so `received_count`
 counts the original. Bills that predate the migration were backfilled with

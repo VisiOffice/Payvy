@@ -19,8 +19,8 @@ Conventions follow Visirent (`~/Code/visirent`).
 - **A resent invoice stacks, never pays twice.** Every copy of an invoice (vendor +
   normalized number, as `bill.create` detects) files with its bill in `bill_arrivals`
   and emits `bill.invoice_received`; same amount with the same lines is a recorded
-  resend, a different amount — or the same amount with different lines (quantities at
-  the same total included, compared as printed by `bills::lines_differ`) — on an open
+  resend, a different amount — or the same total with different quantities on both
+  sides' quantity-bearing lines (`bills::quantities_differ`) — on an open
   bill is a pending revision that blocks `bill.release`/`bill.auto_pay`
   until a person accepts (`bill.revision_accept`: the bill takes the copy's amount and
   lines) or rejects it. `Sent N×`/`Revised` show on the bill, in lists and in Waiting

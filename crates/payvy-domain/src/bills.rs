@@ -124,35 +124,38 @@ pub enum ArrivalKind {
     Revision,
 }
 
-/// Whether two sets of lines say the same thing, for classifying a copy
-/// that carries the bill's current total: descriptions compare normalized
-/// (case, spacing and punctuation don't make a different line), amounts,
-/// quantities (exact, so "2" and "2.0" agree), units (case-insensitive)
-/// and unit prices must all match, in any order. Accounts are Payvy's
-/// coding, not the vendor's, and don't count. A copy whose lines differ
-/// — different quantities at the same total included — is a revision,
-/// so the new lines are quantity-checked once a person accepts them
-/// instead of the old lines being checked forever.
-pub fn lines_differ(current: &[Line], arrived: &[Line]) -> bool {
-    fn key(line: &Line) -> (String, Cents, Option<i64>, Option<String>, Option<Cents>) {
-        (
-            invoice_key(&line.description),
-            line.amount_cents,
-            line.quantity
-                .as_deref()
-                .and_then(crate::invoice_evidence::quantity_micro),
-            line.unit
-                .as_ref()
-                .map(|u| u.trim().to_lowercase())
-                .filter(|u| !u.is_empty()),
-            line.unit_price_cents,
-        )
+/// Whether a same-total copy's quantities differ from the bill's, for
+/// classifying the copy. Narrow on purpose: most bills have no lines, or
+/// lines a person edited in review, and two reads of one invoice word or
+/// split lines differently — none of that may turn a plain resend into a
+/// blocking revision. So this compares only when **both** sides carry at
+/// least one quantity-bearing line, and then only the multiset of
+/// (unit, exact quantity, unit price) over those lines: descriptions and
+/// amounts are left out. "2" and "2.0" agree; units are case-insensitive.
+pub fn quantities_differ(current: &[Line], arrived: &[Line]) -> bool {
+    fn quantities(lines: &[Line]) -> Vec<(Option<String>, Option<i64>, Option<Cents>)> {
+        let mut out: Vec<_> = lines
+            .iter()
+            .filter(|l| l.quantity.is_some())
+            .map(|l| {
+                (
+                    l.unit
+                        .as_ref()
+                        .map(|u| u.trim().to_lowercase())
+                        .filter(|u| !u.is_empty()),
+                    l.quantity
+                        .as_deref()
+                        .and_then(crate::invoice_evidence::quantity_micro),
+                    l.unit_price_cents,
+                )
+            })
+            .collect();
+        out.sort();
+        out
     }
-    let mut a: Vec<_> = current.iter().map(key).collect();
-    let mut b: Vec<_> = arrived.iter().map(key).collect();
-    a.sort();
-    b.sort();
-    a != b
+    let a = quantities(current);
+    let b = quantities(arrived);
+    !a.is_empty() && !b.is_empty() && a != b
 }
 
 /// The form of an invoice number used to spot duplicates from one vendor:
@@ -194,7 +197,7 @@ mod tests {
     use chrono::NaiveDate;
 
     #[test]
-    fn same_total_lines_differ_only_when_what_is_printed_differs() {
+    fn same_total_quantities_differ_only_when_both_sides_carry_them() {
         let haul = |q: &str, rate: i64| Line {
             description: "Haul, 30 yd".into(),
             amount_cents: 20_000,
@@ -203,14 +206,22 @@ mod tests {
             unit: Some("Load".into()),
             unit_price_cents: Some(rate),
         };
-        // Same lines, restated: formatting, order and quantity spelling.
-        assert!(!lines_differ(&[haul("2", 10_000)], &[haul("2.0", 10_000)]));
-        // Different quantity at the same total and rate: a revision.
-        assert!(lines_differ(&[haul("2", 10_000)], &[haul("3", 10_000)]));
-        // A different rate, or a line the bill doesn't have.
-        assert!(lines_differ(&[haul("2", 10_000)], &[haul("2", 9_000)]));
-        assert!(lines_differ(&[], &[haul("2", 10_000)]));
-        assert!(!lines_differ(&[], &[]));
+        // Restated quantity spelling and unit case: no difference.
+        assert!(!quantities_differ(
+            &[haul("2", 10_000)],
+            &[haul("2.0", 10_000)]
+        ));
+        // Different quantity (or rate) at the same total: a revision.
+        assert!(quantities_differ(
+            &[haul("2", 10_000)],
+            &[haul("3", 10_000)]
+        ));
+        assert!(quantities_differ(&[haul("2", 10_000)], &[haul("2", 9_000)]));
+        // Either side without quantity-bearing lines: never a difference,
+        // so a bill entered with no lines resends against a read copy.
+        assert!(!quantities_differ(&[], &[haul("2", 10_000)]));
+        assert!(!quantities_differ(&[haul("2", 10_000)], &[]));
+        assert!(!quantities_differ(&[], &[]));
     }
 
     #[test]

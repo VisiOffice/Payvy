@@ -479,3 +479,31 @@ async fn a_same_total_copy_with_different_quantities_is_a_revision_not_a_resend(
     assert_eq!(accepted["lines"][0]["quantity"], "3");
     db.drop().await;
 }
+
+#[tokio::test]
+async fn a_copy_with_lines_still_resends_when_the_bill_has_none() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let robert = person("robert");
+    let v = pay_vendor(&db, "Allied").await;
+    // Entered with a total and no lines, as an agent or an import would.
+    let b = bill(&db.state, &robert, &v, "NL-1", 20_000).await;
+    // The read copy carries quantity lines at the same total: a resend,
+    // not a revision — there is nothing quantity-bearing to compare.
+    let again = create(
+        &db,
+        &robert,
+        &v,
+        "NL-1",
+        20_000,
+        json!({ "lines": [{ "description": "Haul", "amount_cents": 20_000,
+                            "quantity": "2", "unit": "load", "unit_price_cents": 10_000 }] }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(again["bill"]["id"], b);
+    assert_eq!(again["arrival"]["kind"], "resend");
+    assert!(again["pending_revision"].is_null());
+    db.drop().await;
+}

@@ -467,14 +467,15 @@ pub async fn create(cx: &mut Cx<'_>, mut input: Create) -> Result<Value, Command
 }
 
 /// A copy of an invoice that is already a bill: it stacks on that bill
-/// instead of becoming a second payable one. Same amount with the same
-/// lines is a resend (recorded, nothing changes); a different amount, or
-/// the same amount with different lines (quantities at the same total
-/// included), on an open bill is a revision a person must accept or
-/// reject before the bill can be paid — accepting quantity-checks the
-/// new lines, not the old ones. `allow_duplicate` never reaches here: it
-/// makes a separate bill, as before, and that choice stays on its
-/// `bill.created` event.
+/// instead of becoming a second payable one. Same amount is a resend
+/// (recorded, nothing changes), unless both the bill and the copy carry
+/// quantity-bearing lines and their quantities differ — then, like a
+/// different amount, it is a revision on an open bill: a person accepts
+/// or rejects it before the bill can be paid, and accepting
+/// quantity-checks the new lines, not the old ones. Bills with no lines,
+/// or lines without quantities, always resend at the same total.
+/// `allow_duplicate` never reaches here: it makes a separate bill, as
+/// before, and that choice stays on its `bill.created` event.
 #[allow(clippy::too_many_arguments)]
 async fn stack_arrival(
     cx: &mut Cx<'_>,
@@ -491,11 +492,12 @@ async fn stack_arrival(
         .await?
         .ok_or(CommandError::NotFound("bill"))?;
     let current_lines = store::bill_lines(&mut cx.tx, bill.id).await?;
-    let kind = if amount_cents == bill.amount_cents && !rules::lines_differ(&current_lines, lines) {
-        rules::ArrivalKind::Resend
-    } else {
-        rules::ArrivalKind::Revision
-    };
+    let kind =
+        if amount_cents == bill.amount_cents && !rules::quantities_differ(&current_lines, lines) {
+            rules::ArrivalKind::Resend
+        } else {
+            rules::ArrivalKind::Revision
+        };
     let revised = kind == rules::ArrivalKind::Revision;
     let pending = revised && bill.state == State::Open;
     if pending {
