@@ -564,3 +564,64 @@ async fn an_override_for_one_exception_never_clears_another() {
     .unwrap();
     db.drop().await;
 }
+
+#[tokio::test]
+async fn a_revised_quantity_is_checked_once_accepted_not_before() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    po_on(&db).await;
+    let robert = person("robert");
+    let v = gated_vendor(&db).await;
+    let po = haul_po(&db, &v).await;
+    // 2 of 3 loads: within the ordered quantity.
+    let b = bill_with_lines(&db, &v, "RQ-9", haul("2", 10_000, 20_000), 20_000).await;
+    allocate(&db, &b, &po, 20_000).await;
+    let got = get_bill(&db, &b).await;
+    assert!(
+        got["purchase_orders"]["quantity_findings"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "{got}"
+    );
+
+    // The vendor resends the same total with 5 loads on it. Until a
+    // person accepts the revision, the old lines are what is checked.
+    let rev = commit(
+        &db.state,
+        &agent("claude-ap"),
+        "bill.create",
+        json!({ "vendor_id": v, "invoice_number": "RQ-9", "invoice_date": "2027-01-15",
+                "amount_cents": 20_000, "lines": haul("5", 4_000, 20_000) }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(rev["result"]["arrival"]["kind"], "revision");
+    let got = get_bill(&db, &b).await;
+    assert!(
+        got["purchase_orders"]["quantity_findings"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "{got}"
+    );
+
+    commit(
+        &db.state,
+        &robert,
+        "bill.revision_accept",
+        json!({ "bill_id": b }),
+    )
+    .await
+    .unwrap();
+    let got = get_bill(&db, &b).await;
+    let kinds: Vec<&str> = got["purchase_orders"]["quantity_findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["kind"].as_str().unwrap())
+        .collect();
+    assert!(kinds.contains(&"quantity_over"), "{got}");
+    db.drop().await;
+}

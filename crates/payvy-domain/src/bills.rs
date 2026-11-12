@@ -124,12 +124,38 @@ pub enum ArrivalKind {
     Revision,
 }
 
-pub fn arrival_kind(current_cents: Cents, arrived_cents: Cents) -> ArrivalKind {
-    if arrived_cents == current_cents {
-        ArrivalKind::Resend
-    } else {
-        ArrivalKind::Revision
+/// Whether a same-total copy's quantities differ from the bill's, for
+/// classifying the copy. Narrow on purpose: most bills have no lines, or
+/// lines a person edited in review, and two reads of one invoice word or
+/// split lines differently — none of that may turn a plain resend into a
+/// blocking revision. So this compares only when **both** sides carry at
+/// least one quantity-bearing line, and then only the multiset of
+/// (unit, exact quantity, unit price) over those lines: descriptions and
+/// amounts are left out. "2" and "2.0" agree; units are case-insensitive.
+pub fn quantities_differ(current: &[Line], arrived: &[Line]) -> bool {
+    fn quantities(lines: &[Line]) -> Vec<(Option<String>, Option<i64>, Option<Cents>)> {
+        let mut out: Vec<_> = lines
+            .iter()
+            .filter(|l| l.quantity.is_some())
+            .map(|l| {
+                (
+                    l.unit
+                        .as_ref()
+                        .map(|u| u.trim().to_lowercase())
+                        .filter(|u| !u.is_empty()),
+                    l.quantity
+                        .as_deref()
+                        .and_then(crate::invoice_evidence::quantity_micro),
+                    l.unit_price_cents,
+                )
+            })
+            .collect();
+        out.sort();
+        out
     }
+    let a = quantities(current);
+    let b = quantities(arrived);
+    !a.is_empty() && !b.is_empty() && a != b
 }
 
 /// The form of an invoice number used to spot duplicates from one vendor:
@@ -171,10 +197,31 @@ mod tests {
     use chrono::NaiveDate;
 
     #[test]
-    fn a_copy_is_a_resend_only_at_the_bills_current_amount() {
-        assert_eq!(arrival_kind(8_740, 8_740), ArrivalKind::Resend);
-        assert_eq!(arrival_kind(8_740, 3_749), ArrivalKind::Revision);
-        assert_eq!(arrival_kind(3_749, 8_740), ArrivalKind::Revision);
+    fn same_total_quantities_differ_only_when_both_sides_carry_them() {
+        let haul = |q: &str, rate: i64| Line {
+            description: "Haul, 30 yd".into(),
+            amount_cents: 20_000,
+            account: None,
+            quantity: Some(q.into()),
+            unit: Some("Load".into()),
+            unit_price_cents: Some(rate),
+        };
+        // Restated quantity spelling and unit case: no difference.
+        assert!(!quantities_differ(
+            &[haul("2", 10_000)],
+            &[haul("2.0", 10_000)]
+        ));
+        // Different quantity (or rate) at the same total: a revision.
+        assert!(quantities_differ(
+            &[haul("2", 10_000)],
+            &[haul("3", 10_000)]
+        ));
+        assert!(quantities_differ(&[haul("2", 10_000)], &[haul("2", 9_000)]));
+        // Either side without quantity-bearing lines: never a difference,
+        // so a bill entered with no lines resends against a read copy.
+        assert!(!quantities_differ(&[], &[haul("2", 10_000)]));
+        assert!(!quantities_differ(&[haul("2", 10_000)], &[]));
+        assert!(!quantities_differ(&[], &[]));
     }
 
     #[test]

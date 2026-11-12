@@ -17,13 +17,20 @@ enforced it. When `bill.create` finds a live bill with that key and
 - A `bill.invoice_received` event records the invoice number, how many times
   it has now been received (`received_count`), the amount this copy carries
   and whether it is pending a decision.
-- Same amount as the bill currently carries: a **resend**. Recorded, no
+- Same amount with the same lines: a **resend**. Recorded, no
   state change, never payable twice — including a copy that arrives after
   the bill was paid.
-- Different amount on an open bill: a **revision**. It becomes the bill's
-  one pending revision (a newer revision supersedes an undecided older one)
-  and blocks payment until a person decides it. A different amount on a
-  closed bill is recorded but never pending: there is nothing left to pay.
+- Different amount on an open bill: a **revision**. So is a same-total
+  copy whose quantities differ — but only when both the bill and the copy
+  carry quantity-bearing lines, comparing just (unit, exact quantity,
+  unit price): most bills have no lines, or lines a person edited, and
+  two reads of one invoice word lines differently, so none of that may
+  turn a plain resend into a blocking revision. A revision becomes the
+  bill's one pending revision (a newer revision supersedes an undecided
+  older one) and blocks payment until a person decides it; accepting it
+  quantity-checks the new lines instead of the old ones being checked
+  forever. A revision on a closed bill is recorded but never pending:
+  there is nothing left to pay.
 
 The first arrival of every bill is in the stack too, so `received_count`
 counts the original. Bills that predate the migration were backfilled with
