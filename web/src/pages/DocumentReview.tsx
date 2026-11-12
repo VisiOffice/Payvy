@@ -150,9 +150,16 @@ interface ListedBill {
  * One inbox document beside what was read from it: correct anything that's
  * wrong, then make it a bill. Corrections are recorded against the reading.
  */
-export function DocumentReview() {
+/**
+ * The review of one document. On its own page it takes the id from the URL.
+ * `embedded` is the inbox's side-by-side pane: J/K belong to the list there,
+ * so pages turn with the arrows only, the I/T/P keys stay off, and making a
+ * bill or setting the file aside calls `onDone` instead of leaving the inbox.
+ */
+export function DocumentReview({ id: given, embedded = false, onDone }: { id?: string; embedded?: boolean; onDone?: () => void } = {}) {
   const can = useCan();
-  const { id } = useParams<{ id: string }>();
+  const params = useParams<{ id: string }>();
+  const id = given ?? params.id;
   const navigate = useNavigate();
   const toast = useToast();
   const { me } = useSession();
@@ -180,6 +187,7 @@ export function DocumentReview() {
   // I, T, and P only apply once the file is several invoices and the switch is on screen.
   const multi = useRef(false);
   useEffect(() => {
+    if (embedded) return;
     const onKey = (e: KeyboardEvent) => {
       if (!multi.current || typing(e)) return;
       const k = e.key.toLowerCase();
@@ -190,7 +198,7 @@ export function DocumentReview() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  }, [embedded]);
   /** How many invoices the cards hold, after any pages moved. */
   const [splitCount, setSplitCount] = useState<number | null>(null);
   const [thumbnails, setThumbnails] = useState<boolean | null>(thumbnailsChoice);
@@ -437,7 +445,7 @@ export function DocumentReview() {
     if (reviewDirty) await saveReview();
     const r = await run<{documents:{id:string}[]}>('document.split', {document_id:doc.id, expected_version:detail!.pages.version, groups:[picked]});
     const child = r.result.documents[0];
-    if (child) navigate(`/inbox/${child.id}`);
+    if (child) { if (onDone) onDone(); else navigate(`/inbox/${child.id}`); }
   }
 
   async function addVendor() {
@@ -479,7 +487,7 @@ export function DocumentReview() {
       } else {
         toast({ body: partial ? 'Bill created. The other pages stay in To review.' : 'Bill created' });
       }
-      navigate(`/bills/${r.result.bill.id}`);
+      if (onDone) onDone(); else navigate(`/bills/${r.result.bill.id}`);
     } catch (e) {
       toast({ body: e instanceof Error ? e.message : String(e), type: 'error' });
     }
@@ -491,7 +499,7 @@ export function DocumentReview() {
     try {
       await run('document.unsplit', { document_id: doc.id });
       toast({ body: `Pages put back in ${from.filename ?? 'the document they came from'}` });
-      navigate(`/inbox/${from.id}`);
+      if (onDone) onDone(); else navigate(`/inbox/${from.id}`);
     } catch (e) {
       toast({ body: e instanceof Error ? e.message : String(e), type: 'error' });
     }
@@ -526,9 +534,9 @@ export function DocumentReview() {
         : undefined;
 
   return (
-    <div className="payvy-document-review" data-mobile-view={mobileView}>
+    <div className="payvy-document-review" data-mobile-view={mobileView} data-embedded={embedded || undefined}>
       <header className="payvy-review-header">
-        <Link href="/inbox">← Inbox</Link>
+        {embedded ? <Link href={`/inbox/${doc.id}`}>Open full page</Link> : <Link href="/inbox">← Inbox</Link>}
         <h1>Review invoice</h1>
         <p className="payvy-review-filename" title={doc.filename}>{doc.filename}</p>
         <span className="payvy-document-status">
@@ -906,6 +914,7 @@ export function DocumentReview() {
             paging={{
               current,
               onCurrentChange: setCurrent,
+              letters: !embedded,
               extra: (ref) =>
                 picking && visible.length > 1 ? (
                   <span className="payvy-viewer-attach">
@@ -936,7 +945,7 @@ export function DocumentReview() {
           onSubmit={async (reason) => {
             await run('document.trash', { document_id: doc.id, reason });
             toast({ body: `${doc.filename} set aside` });
-            navigate('/inbox');
+            if (onDone) onDone(); else navigate('/inbox');
           }}
         />
       )}

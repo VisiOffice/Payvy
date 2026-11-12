@@ -189,6 +189,8 @@ export interface Paging {
   /** The page shown, by its number in the original; null for the first. */
   current: number | null;
   onCurrentChange: (page: number) => void;
+  /** J and K turn pages as well as the arrows (default). Off where J/K belong to a list. */
+  letters?: boolean;
   /** More controls for the toolbar, for the page shown (e.g. its tick box). */
   extra?: (ref: PageRef) => ReactNode;
 }
@@ -358,6 +360,7 @@ export function DocumentViewer({
   // through a ref, which each turn advances at once, so a second key before
   // the next render turns from the new page, not the old one again.
   const paged = !!paging && shown.length > 1;
+  const letters = paging?.letters !== false;
   const turn = useRef({ index, go, count: shown.length });
   useLayoutEffect(() => {
     turn.current = { index, go, count: shown.length };
@@ -365,7 +368,7 @@ export function DocumentViewer({
   useLayoutEffect(() => {
     if (!paged) return;
     const onKey = (e: KeyboardEvent) => {
-      const dir = e.key === 'ArrowRight' || e.key === 'j' ? 1 : e.key === 'ArrowLeft' || e.key === 'k' ? -1 : 0;
+      const dir = e.key === 'ArrowRight' || (letters && e.key === 'j') ? 1 : e.key === 'ArrowLeft' || (letters && e.key === 'k') ? -1 : 0;
       if (!dir || keyIsTaken(e)) return;
       // Not while the viewer is out of sight (the details tab on a phone).
       if (!scroller.current || scroller.current.getClientRects().length === 0) return;
@@ -378,7 +381,7 @@ export function DocumentViewer({
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [paged]);
+  }, [paged, letters]);
 
   // A swipe across a page that fits turns it, on a touch screen.
   const swipe = useRef<{ x: number; y: number } | null>(null);
@@ -483,11 +486,11 @@ export function DocumentViewer({
                 aria-keyshortcuts="ArrowLeft K"
                 onClick={() => go(index - 1)}
               />
-              <span className="payvy-viewer-key" aria-hidden="true"><Kbd keys="k" /></span>
+              {letters && <span className="payvy-viewer-key" aria-hidden="true"><Kbd keys="k" /></span>}
               <span className="payvy-viewer-counter" aria-live="polite" aria-atomic="true">
                 Page {index + 1} of {shown.length}
               </span>
-              <span className="payvy-viewer-key" aria-hidden="true"><Kbd keys="j" /></span>
+              {letters && <span className="payvy-viewer-key" aria-hidden="true"><Kbd keys="j" /></span>}
               <Button
                 label="Next page"
                 tooltip="Next page (→ or J)"

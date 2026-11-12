@@ -522,3 +522,20 @@ body { -webkit-font-smoothing: antialiased; }
 .payvy-menu-keys { display: inline-flex; align-items: center; gap: 4px; color: var(--color-text-secondary); font-size: 11px; }
 .payvy-menu-keys > span { display: inline-flex; align-items: center; gap: 4px; }
 .payvy-menu-then { font-size: 11px; }
+
+/* Inbox side by side: a slim list beside the chosen document's review. */
+.payvy-inbox-side { display: grid; grid-template-columns: minmax(260px, 320px) minmax(0, 1fr); height: max(560px, calc(100dvh - 300px)); border-top: 1px solid var(--color-border); }
+.payvy-inbox-side-list { list-style: none; margin: 0; padding: 0; overflow: auto; min-height: 0; border-right: 1px solid var(--color-border); }
+.payvy-inbox-side-list button { all: unset; box-sizing: border-box; display: grid; gap: 3px; width: 100%; padding: 10px 14px; border-bottom: 1px solid var(--color-border); cursor: pointer; font-size: 13px; }
+.payvy-inbox-side-list button:hover { background: var(--color-background-muted); }
+.payvy-inbox-side-list button[aria-current] { background: var(--color-accent-muted); box-shadow: inset 2px 0 0 var(--color-accent); }
+.payvy-inbox-side-list button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; }
+.payvy-inbox-side-top, .payvy-inbox-side-sub { display: flex; justify-content: space-between; gap: 8px; min-width: 0; }
+.payvy-inbox-side-top strong { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.payvy-inbox-side-top .payvy-num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.payvy-inbox-side-sub { font-size: 12px; }
+.payvy-inbox-side-sub > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.payvy-inbox-side-file { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.payvy-inbox-side-pane { min-width: 0; min-height: 0; overflow: hidden; display: flex; }
+.payvy-inbox-side-pane > .payvy-document-review { flex: 1; height: auto; min-width: 0; }
+.payvy-inbox-side-empty { margin: auto; color: var(--color-text-secondary); font-size: 13px; }
