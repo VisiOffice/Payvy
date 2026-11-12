@@ -262,7 +262,14 @@ async fn approver_strand_refusal(cx: &mut Cx<'_>, actor: &str) -> Result<(), Com
         }
         let last_eligible = match require {
             Require::All => waiting_on.iter().any(|w| w == actor),
-            Require::Any => turn.others.is_empty(),
+            // turn's others for a named step is the step's names, without
+            // checking they still hold Approve (in bills.rs it only
+            // feeds a "who else" message). Here it decides a refusal, so
+            // count only others who can still approve.
+            Require::Any => !turn
+                .others
+                .iter()
+                .any(|o| can_approve.get(o).copied().unwrap_or(false)),
         };
         if last_eligible {
             return Err(CommandError::Conflict(format!(

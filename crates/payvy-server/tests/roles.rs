@@ -740,3 +740,36 @@ async fn the_last_eligible_approver_counts_duties_not_just_roles() {
     assign(&db, "carol", json!(["ap_clerk"])).await.unwrap();
     db.drop().await;
 }
+
+#[tokio::test]
+async fn a_named_step_counts_only_others_who_still_hold_approve() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let operator = person("operator");
+    add(&db, "dave", json!(["approver"])).await;
+    add(&db, "erin", json!(["approver"])).await;
+    let v = vendor(&db.state, &operator, "Named Vendor").await;
+    set_workflow(
+        &db.state,
+        &operator,
+        Some(&v),
+        json!([
+            { "id": "ok", "type": "approve", "approvers": ["dave", "erin"] },
+            { "id": "pay", "type": "pay", "release": "manual" }]),
+    )
+    .await;
+    bill(&db.state, &operator, &v, "N-1", 10_000).await;
+
+    // Erin's role goes first: Dave remains, so it's allowed.
+    assign(&db, "erin", json!(["ap_clerk"])).await.unwrap();
+    // Then Dave's: Erin is still named on the step but can no longer
+    // approve, so Dave is the last eligible approver — refused.
+    let e = assign(&db, "dave", json!(["ap_clerk"])).await.unwrap_err();
+    assert!(matches!(e, CommandError::Conflict(_)), "{e}");
+    assert!(
+        e.to_string().contains("nobody else can still approve"),
+        "{e}"
+    );
+    db.drop().await;
+}
