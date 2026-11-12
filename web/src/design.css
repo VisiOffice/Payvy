@@ -364,7 +364,14 @@ body { -webkit-font-smoothing: antialiased; }
 .payvy-inbox-table th:nth-child(1) { width: 45%; }
 .payvy-inbox-table th:nth-child(2) { width: 30%; }
 .payvy-inbox-table th:nth-child(n+3) { width: 1%; }
-.payvy-inbox-table td:nth-child(6) { white-space: nowrap; }
+.payvy-inbox-table td:nth-child(4), .payvy-inbox-table td:nth-child(6) { white-space: nowrap; }
+/* The row J/K or the arrows are on. */
+.payvy-inbox-table tr[aria-current] td { background: var(--color-accent-muted); }
+.payvy-inbox-table tr[aria-current] td:first-child { box-shadow: inset 2px 0 0 var(--color-accent); }
+/* Add invoices, with a line saying a drop works anywhere. Phones can't drag files, so it hides there. */
+.payvy-add-invoices { position: relative; display: inline-flex; }
+.payvy-add-hint { position: absolute; top: calc(100% + 4px); right: 0; white-space: nowrap; font-size: 11px; color: var(--color-text-secondary); pointer-events: none; }
+@media (pointer: coarse) { .payvy-add-hint { display: none; } }
 /* Spreadsheet look: interior gridlines between columns, small capital headers. */
 .payvy-inbox-table th, .payvy-grid th { text-transform: uppercase; letter-spacing: .04em; }
 .payvy-inbox-table th + th, .payvy-inbox-table td + td,

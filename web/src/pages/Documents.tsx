@@ -102,10 +102,11 @@ function useFileDrag(onDrop: (files: File[]) => void, enabled: boolean): boolean
 function AddInvoices({ busy, onFiles }: { busy: boolean; onFiles: (files: File[]) => void }) {
   const input = useRef<HTMLInputElement>(null);
   return (
-    <>
+    <div className="payvy-add-invoices">
       <Button label="Add invoices" tooltip="PDFs, scans, or photos, up to 25 MB each" onClick={() => input.current?.click()} isDisabled={busy} />
+      <span className="payvy-add-hint">or drop files anywhere on this page</span>
       <input ref={input} type="file" className="payvy-sr-only" accept={ACCEPT} multiple tabIndex={-1} aria-hidden="true" onChange={e => { onFiles(Array.from(e.target.files ?? [])); e.target.value = ''; }} />
-    </>
+    </div>
   );
 }
 function base64(file: File): Promise<string> {
