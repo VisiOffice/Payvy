@@ -6,11 +6,12 @@
 //! A repeat of the same request hash returns the first id and does not call
 //! the ledger again. A different hash after a post is a conflict. When a key
 //! the adapter already accepted arrives with a different body, the adapter
-//! refuses it and does not return the first id. This crate does not open a
-//! network connection: the server supplies a [`Ledger`], and tests supply
-//! [`FakeLedger`].
+//! refuses it and does not return the first id. The server supplies a [`Ledger`];
+//! [`VisiBooks`] records over HTTPS, and unit tests supply [`FakeLedger`].
 
 mod fake;
+mod visibooks;
+pub use visibooks::VisiBooks;
 
 use std::collections::BTreeMap;
 use std::future::Future;
