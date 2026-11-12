@@ -61,7 +61,11 @@ service period of the PO it is allocated to:
 A partly covered bill's shortfall is `over_available` when none of the vendor's active
 POs has room for the rest (the cumulative caps are the limit), `uncovered` when room
 exists and just isn't used. Both are overridable like any other exception; the caps
-themselves are unchanged.
+themselves are unchanged. For override validity the two are one family: the kind flips
+as other bills use the vendor's room (or POs are added or closed) without anything
+about the bill changing, so an override permits the shortfall either way it is
+labelled today. Its fingerprint binds to the family name `uncovered`, which also
+keeps overrides written before `over_available` existed valid.
 
 ## Overrides and separation of duties
 

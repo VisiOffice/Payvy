@@ -1038,6 +1038,20 @@ pub struct Exception {
     pub detail: String,
 }
 
+/// The family an override binds to: `uncovered` and `over_available` are
+/// one shortfall seen from two sides of the vendor's remaining room, which
+/// changes as other bills reserve and POs are added or closed — without
+/// anything about this bill changing. An override permits the shortfall,
+/// so it must survive the flip; other kinds bind as themselves. The
+/// family's name is `uncovered`, so fingerprints written before
+/// `over_available` existed keep matching.
+fn override_family(kind: &str) -> &str {
+    match kind {
+        "uncovered" | "over_available" => "uncovered",
+        other => other,
+    }
+}
+
 fn fingerprint(bill: &store::Bill, kind: &str, allocs: &[po_store::Allocation]) -> String {
     let mut parts: Vec<String> = allocs
         .iter()
@@ -1048,7 +1062,7 @@ fn fingerprint(bill: &store::Bill, kind: &str, allocs: &[po_store::Allocation]) 
         "bill:{}:{}:{}|{}",
         bill.id,
         bill.amount_cents,
-        kind,
+        override_family(kind),
         parts.join(",")
     )
 }
@@ -1175,7 +1189,7 @@ async fn valid_override(
     let Some(o) = po_store::latest_override(&mut cx.tx, bill.id).await? else {
         return Ok(None);
     };
-    let valid = o.exception_kind == ex.kind
+    let valid = override_family(&o.exception_kind) == override_family(ex.kind)
         && o.bill_amount_cents == bill.amount_cents
         && o.authorized_excess_cents >= ex.excess_cents
         && o.fingerprint == fingerprint(bill, ex.kind, &allocs);

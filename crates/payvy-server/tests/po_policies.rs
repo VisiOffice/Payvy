@@ -209,6 +209,52 @@ async fn over_period_flags_by_default_blocks_when_the_pinned_policy_requires_cov
 }
 
 #[tokio::test]
+async fn an_override_survives_the_shortfall_flipping_between_uncovered_and_over_available() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    po_on(&db).await;
+    let robert = person("robert");
+    let v = gated_vendor(&db, "Flip Hauler").await;
+    let small = active_po(&db, &v, "PO-A", 30_000, None).await;
+    let big = active_po(&db, &v, "PO-B", 100_000, None).await;
+    let b = make_bill(&db, &v, "F-1", 50_000, "2027-01-15").await;
+    allocate(&db, &b, &small, 30_000).await;
+
+    // Room remains on PO-B, so the $200 shortfall is "uncovered" for now.
+    let got = get_bill(&db, &b).await;
+    assert_eq!(got["purchase_orders"]["exception"]["kind"], "uncovered");
+    confirm(
+        &db.state,
+        &robert,
+        "po.override",
+        json!({ "bill_id": b, "authorized_excess_cents": 20_000, "reason": "short haul, agreed" }),
+    )
+    .await
+    .unwrap();
+
+    // Another bill uses up PO-B's room. Nothing about b changed, but its
+    // shortfall is now "over_available" — the override must still count.
+    let other = make_bill(&db, &v, "F-2", 100_000, "2027-01-15").await;
+    allocate(&db, &other, &big, 100_000).await;
+    let got = get_bill(&db, &b).await;
+    assert_eq!(
+        got["purchase_orders"]["exception"]["kind"],
+        "over_available"
+    );
+    assert_eq!(got["purchase_orders"]["overridden"], true, "{got}");
+    confirm(
+        &db.state,
+        &person("alice"),
+        "bill.release",
+        json!({ "bill_id": b }),
+    )
+    .await
+    .unwrap();
+    db.drop().await;
+}
+
+#[tokio::test]
 async fn a_suspended_po_keeps_its_allocations_and_its_bills_wait() {
     let Some(db) = TestDb::new().await else {
         return;

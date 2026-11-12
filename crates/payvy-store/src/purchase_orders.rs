@@ -612,6 +612,13 @@ pub async fn set_policy(
     by: &str,
     now: DateTime<Utc>,
 ) -> anyhow::Result<PolicyVersion> {
+    // Serialize policy changes per vendor: two first-ever sets would
+    // otherwise both compute version 1 and one would fail on the unique
+    // constraint instead of superseding (or refusing) cleanly.
+    sqlx::query("SELECT id FROM vendors WHERE id = $1 FOR UPDATE")
+        .bind(vendor_id)
+        .execute(&mut **tx)
+        .await?;
     sqlx::query(
         "UPDATE vendor_po_policies SET status = 'superseded' WHERE vendor_id = $1 AND status = 'active'",
     )
@@ -633,7 +640,6 @@ pub async fn set_policy(
     .execute(&mut **tx)
     .await?;
     policy_by_id(tx, id)
-        .await
-        .transpose()
-        .expect("the version just inserted is readable")
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("the policy version just written is missing"))
 }
