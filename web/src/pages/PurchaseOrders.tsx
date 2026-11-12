@@ -164,7 +164,7 @@ function PurchaseOrderList() {
         />
       )}
       {pos && pos.length > 0 && (
-        <Table columns={selectColumns} data={pos} idKey="id" hasHover />
+        <div className="payvy-table payvy-grid"><Table columns={selectColumns} data={pos} idKey="id" hasHover /></div>
       )}
 
       {selected && (

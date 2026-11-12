@@ -116,5 +116,5 @@ export function rows(bills: Listed[]): BillRow[] {
 /** Without `showVendor` (on a vendor's own page) the invoice number links to the bill. */
 export function BillsTable({ bills, showVendor = true }: { bills: Listed[]; showVendor?: boolean }) {
   const columns = showVendor ? COLUMNS : COLUMNS.filter((c) => c.key !== 'vendor');
-  return <div className="payvy-table"><Table data={rows(bills)} columns={columns} idKey="id" hasHover /></div>;
+  return <div className="payvy-table payvy-grid"><Table data={rows(bills)} columns={columns} idKey="id" hasHover /></div>;
 }
