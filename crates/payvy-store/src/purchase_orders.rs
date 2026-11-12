@@ -450,6 +450,25 @@ pub async fn insert_override(
     Ok(id)
 }
 
+/// Every override ever recorded for this bill, newest first.
+pub async fn overrides_for_bill(tx: &mut Tx, bill_id: Uuid) -> anyhow::Result<Vec<Override>> {
+    let rows = sqlx::query("SELECT id, bill_id, exception_kind, authorized_excess_cents, bill_amount_cents, fingerprint, reason, created_by FROM po_overrides WHERE bill_id = $1 ORDER BY created_at DESC")
+        .bind(bill_id).fetch_all(&mut **tx).await?;
+    Ok(rows
+        .iter()
+        .map(|r| Override {
+            id: r.get("id"),
+            bill_id: r.get("bill_id"),
+            exception_kind: r.get("exception_kind"),
+            authorized_excess_cents: r.get("authorized_excess_cents"),
+            bill_amount_cents: r.get("bill_amount_cents"),
+            fingerprint: r.get("fingerprint"),
+            reason: r.get("reason"),
+            created_by: r.get("created_by"),
+        })
+        .collect())
+}
+
 pub async fn latest_override(tx: &mut Tx, bill_id: Uuid) -> anyhow::Result<Option<Override>> {
     let row = sqlx::query("SELECT id, bill_id, exception_kind, authorized_excess_cents, bill_amount_cents, fingerprint, reason, created_by FROM po_overrides WHERE bill_id = $1 ORDER BY created_at DESC LIMIT 1")
         .bind(bill_id).fetch_optional(&mut **tx).await?;
@@ -656,6 +675,9 @@ pub struct AllocatedBill {
     pub bill_id: Uuid,
     pub first_seq: i64,
     pub allocated_cents: Cents,
+    /// The bill's live allocations across every PO: the denominator of
+    /// its split share, so an unallocated remainder never shrinks it.
+    pub total_allocated_cents: Cents,
     pub bill_amount_cents: Cents,
     pub lines: Vec<payvy_domain::bills::Line>,
 }
@@ -665,11 +687,13 @@ pub struct AllocatedBill {
 pub async fn allocated_bill_lines(tx: &mut Tx, po_id: Uuid) -> anyhow::Result<Vec<AllocatedBill>> {
     let rows = sqlx::query(
         "WITH per_bill AS (\
-             SELECT bill_id, min(seq) AS first_seq, sum(amount_cents)::bigint AS allocated \
-             FROM po_allocations \
-             WHERE po_id = $1 AND state <> 'released' AND bill_id IS NOT NULL \
-             GROUP BY bill_id) \
-         SELECT pb.bill_id AS bill_id, pb.first_seq AS first_seq, pb.allocated AS allocated, \
+             SELECT a.bill_id, min(a.seq) AS first_seq, sum(a.amount_cents)::bigint AS allocated, \
+                    (SELECT sum(x.amount_cents)::bigint FROM po_allocations x \
+                      WHERE x.bill_id = a.bill_id AND x.state <> 'released') AS total_allocated \
+             FROM po_allocations a \
+             WHERE a.po_id = $1 AND a.state <> 'released' AND a.bill_id IS NOT NULL \
+             GROUP BY a.bill_id) \
+         SELECT pb.bill_id AS bill_id, pb.first_seq AS first_seq, pb.allocated AS allocated, pb.total_allocated AS total_allocated, \
                 b.amount_cents AS bill_amount, bl.description, bl.amount_cents, bl.account, \
                 bl.quantity_micro, bl.unit, bl.unit_price_cents \
          FROM per_bill pb \
@@ -698,6 +722,7 @@ pub async fn allocated_bill_lines(tx: &mut Tx, po_id: Uuid) -> anyhow::Result<Ve
                 bill_id,
                 first_seq: r.get("first_seq"),
                 allocated_cents: r.get("allocated"),
+                total_allocated_cents: r.get("total_allocated"),
                 bill_amount_cents: r.get("bill_amount"),
                 lines: vec![line],
             }),

@@ -10,7 +10,17 @@ ALTER TABLE bill_lines ADD COLUMN unit_price_cents bigint;
 
 -- "Bills allocated before this one" needs an allocation order that
 -- timestamps can't give (two allocations can share one); a sequence can.
-ALTER TABLE po_allocations ADD COLUMN seq bigint GENERATED ALWAYS AS IDENTITY;
+-- Existing rows are numbered in creation order explicitly: an identity
+-- column added in one step would number them in heap order, and rows
+-- updated since insert (reserved -> consumed) can sit anywhere in it.
+ALTER TABLE po_allocations ADD COLUMN seq bigint;
+UPDATE po_allocations SET seq = numbered.n
+FROM (SELECT id, row_number() OVER (ORDER BY created_at, id) AS n FROM po_allocations) numbered
+WHERE po_allocations.id = numbered.id;
+ALTER TABLE po_allocations ALTER COLUMN seq SET NOT NULL;
+ALTER TABLE po_allocations ALTER COLUMN seq ADD GENERATED ALWAYS AS IDENTITY;
+SELECT setval('po_allocations_seq_seq',
+              COALESCE((SELECT MAX(seq) FROM po_allocations), 0) + 1, false);
 
 -- The registry's second policy: quantity_matching is flag_only (findings
 -- show beside the bill, never block) or enforce (quantity_over and

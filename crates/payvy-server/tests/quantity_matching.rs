@@ -451,3 +451,93 @@ async fn an_override_binds_to_the_finding_it_permitted_and_quantity_never_hides_
     );
     db.drop().await;
 }
+
+#[tokio::test]
+async fn a_tiny_allocation_does_not_hide_overbilling() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    po_on(&db).await;
+    let v = gated_vendor(&db).await;
+    let po = haul_po(&db, &v).await;
+
+    // 40 loads on the bill, $1 allocated to a 3-load PO: the share is this
+    // PO's allocation over the bill's total allocations (all of it), so
+    // the full 40 count — the unallocated remainder does not shrink it.
+    let b = bill_with_lines(&db, &v, "T-1", haul("40", 10_000, 400_000), 400_000).await;
+    allocate(&db, &b, &po, 100).await;
+    let got = get_bill(&db, &b).await;
+    assert_eq!(
+        got["purchase_orders"]["quantity_findings"][0]["kind"], "quantity_over",
+        "{got}"
+    );
+    assert_eq!(got["purchase_orders"]["quantity_lines"][0]["billed"], "40");
+    db.drop().await;
+}
+
+#[tokio::test]
+async fn an_override_for_one_exception_never_clears_another() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    po_on(&db).await;
+    let robert = person("robert");
+    let v = gated_vendor(&db).await;
+    commit(
+        &db.state,
+        &robert,
+        "po.policy_set",
+        json!({ "vendor_id": v, "quantity_matching": "enforce" }),
+    )
+    .await
+    .unwrap();
+    let po = haul_po(&db, &v).await;
+
+    // Partly covered and 5 loads against 3 ordered: two exceptions stand.
+    let b = bill_with_lines(&db, &v, "B-1", haul("5", 10_000, 50_000), 50_000).await;
+    allocate(&db, &b, &po, 20_000).await;
+    let got = get_bill(&db, &b).await;
+    let kinds: Vec<&str> = got["purchase_orders"]["exceptions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(kinds, ["uncovered", "quantity_over"], "{got}");
+
+    // Permitting the shortfall leaves the quantity exception standing.
+    confirm(
+        &db.state,
+        &robert,
+        "po.override",
+        json!({ "bill_id": b, "authorized_excess_cents": 30_000, "reason": "shortfall agreed" }),
+    )
+    .await
+    .unwrap();
+    let e = confirm(&db.state, &robert, "bill.release", json!({ "bill_id": b }))
+        .await
+        .unwrap_err();
+    assert!(e.to_string().contains("quantity_over"), "{e}");
+
+    // Permitting that too (the override targets the first unpermitted
+    // exception) makes the bill payable by someone else.
+    confirm(
+        &db.state,
+        &robert,
+        "po.override",
+        json!({ "bill_id": b, "authorized_excess_cents": 0, "reason": "extra loads agreed" }),
+    )
+    .await
+    .unwrap();
+    let got = get_bill(&db, &b).await;
+    assert_eq!(got["purchase_orders"]["overridden"], true, "{got}");
+    confirm(
+        &db.state,
+        &person("alice"),
+        "bill.release",
+        json!({ "bill_id": b }),
+    )
+    .await
+    .unwrap();
+    db.drop().await;
+}

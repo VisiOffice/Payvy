@@ -96,6 +96,19 @@ never blocks; `enforce` makes `quantity_over` and `rate_mismatch` block payment
 like other exceptions (overridable). Lines without quantities, on either side,
 are amount-only and not quantity-checked.
 
+Counting rules: a bill counts against a PO only in the share that PO carries of
+it — this PO's allocations divided by the bill's allocations across all POs, so
+a partly allocated bill is not shrunk by its unallocated remainder, and a bill
+split across POs counts its share against each. "Earlier bills" means bills
+whose first allocation to the PO came first (`po_allocations.seq`, backfilled
+in creation order); a bill that is reversed and re-allocated takes a new place
+at the back of that queue.
+
+A bill can stand under several exceptions at once (say, partly uncovered and
+quantity-over). The gate requires each to be permitted: an override for one
+kind never clears another, and `po.override` permits the first unpermitted one
+each time it is used.
+
 ## Overrides and separation of duties
 
 `po.override` permits one bill's PO exception (Confirmed tier, person only, Admin), bound to the

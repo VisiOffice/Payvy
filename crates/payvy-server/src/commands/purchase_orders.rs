@@ -856,7 +856,7 @@ async fn quantity_check(
     let current: Vec<_> = raw_current
         .iter()
         .map(|l| match mine {
-            Some(s) => quantity::scaled(l, s.allocated_cents, s.bill_amount_cents),
+            Some(s) => quantity::scaled(l, s.allocated_cents, s.total_allocated_cents),
             None => l.clone(),
         })
         .collect();
@@ -873,7 +873,7 @@ async fn quantity_check(
         prior.extend(
             s.lines
                 .iter()
-                .map(|l| quantity::scaled(l, s.allocated_cents, s.bill_amount_cents)),
+                .map(|l| quantity::scaled(l, s.allocated_cents, s.total_allocated_cents)),
         );
     }
     let findings = quantity::evaluate(&ordered, &prior, &current);
@@ -891,6 +891,42 @@ async fn quantity_check(
         })
         .collect();
     Ok((findings, rows))
+}
+
+/// The structured identity of a blocking finding, for an override's
+/// fingerprint: PO, line, unit, the billed position and the rates — never
+/// the human-readable text, which may be reworded without changing what
+/// was permitted.
+fn scope_key(po: &po_store::PurchaseOrder, f: &payvy_domain::quantity::Finding) -> String {
+    use payvy_domain::quantity::Finding;
+    match f {
+        Finding::QuantityOver {
+            description,
+            unit,
+            ordered_micro,
+            billed_before_micro,
+            this_bill_micro,
+        } => format!(
+            "qty:{}:{}:{}:{}:{}",
+            po.id,
+            payvy_domain::bills::invoice_key(description),
+            unit.as_deref().unwrap_or(""),
+            ordered_micro,
+            billed_before_micro + this_bill_micro
+        ),
+        Finding::RateMismatch {
+            description,
+            ordered_cents,
+            billed_cents,
+        } => format!(
+            "rate:{}:{}:{}:{}",
+            po.id,
+            payvy_domain::bills::invoice_key(description),
+            ordered_cents,
+            billed_cents
+        ),
+        Finding::UnmatchedLine { .. } | Finding::AmbiguousLine { .. } => String::new(),
+    }
 }
 
 fn finding_detail(f: &payvy_domain::quantity::Finding) -> String {
@@ -1211,15 +1247,25 @@ fn fingerprint(
     }
 }
 
-/// The bill's current PO exception, if any. Only vendors with PO or funding
-/// requirements can raise one; everyone else's bills are untouched, and
-/// with purchase orders turned off for the company nobody's bill has one.
+/// The bill's first PO exception, if any (display and ordering).
 pub async fn bill_exception(
     cx: &mut Cx<'_>,
     bill: &store::Bill,
 ) -> Result<Option<Exception>, CommandError> {
+    Ok(bill_exceptions(cx, bill).await?.into_iter().next())
+}
+
+/// Every blocking exception standing on this bill, in gate order. Only
+/// vendors with PO or funding requirements can raise any; with purchase
+/// orders turned off for the company nobody's bill has one. The gate
+/// requires each to be permitted — an override for one kind never clears
+/// another.
+pub async fn bill_exceptions(
+    cx: &mut Cx<'_>,
+    bill: &store::Bill,
+) -> Result<Vec<Exception>, CommandError> {
     if !enabled(cx).await? {
-        return Ok(None);
+        return Ok(Vec::new());
     }
     let settings = po_store::vendor_settings(&mut cx.tx, bill.vendor_id).await?;
     let allocs = po_store::allocations_for_bill(&mut cx.tx, bill.id).await?;
@@ -1228,7 +1274,7 @@ pub async fn bill_exception(
     for a in &allocs {
         if let Some(po) = po_store::get_po(&mut cx.tx, a.po_id).await? {
             if po.status == "suspended" {
-                return Ok(Some(Exception {
+                return Ok(vec![Exception {
                     kind: "suspended_po",
                     excess_cents: a.amount_cents,
                     scope: String::new(),
@@ -1239,7 +1285,7 @@ pub async fn bill_exception(
                             .as_deref()
                             .map_or(String::new(), |r| format!(" ({r})"))
                     ),
-                }));
+                }]);
             }
             if (po.status != "active" || po.vendor_id != bill.vendor_id) && ineligible.is_none() {
                 ineligible = Some(Exception {
@@ -1255,8 +1301,9 @@ pub async fn bill_exception(
         }
     }
     if let Some(e) = ineligible {
-        return Ok(Some(e));
+        return Ok(vec![e]);
     }
+    let mut out: Vec<Exception> = Vec::new();
     // Over-period, under the policy version this bill pinned: with
     // require_full_cover the out-of-period allocations do not count as
     // covering the bill. flag_only only flags (see bill_po_view's notices).
@@ -1266,7 +1313,7 @@ pub async fn bill_exception(
         let excluded: Cents = outside.iter().map(|(a, _)| a.amount_cents).sum();
         if excluded > 0 {
             let po = &outside[0].1;
-            return Ok(Some(Exception {
+            out.push(Exception {
                 kind: "over_period",
                 excess_cents: excluded,
                 scope: String::new(),
@@ -1277,18 +1324,18 @@ pub async fn bill_exception(
                     po.period_start.map_or("…".into(), |d| d.to_string()),
                     po.period_end.map_or("…".into(), |d| d.to_string())
                 ),
-            }));
+            });
         }
     }
     if settings.require_po && covered == 0 {
-        return Ok(Some(Exception {
+        out.push(Exception {
             kind: "no_po",
             excess_cents: bill.amount_cents,
             scope: String::new(),
             detail: "this vendor's bills require a PO and none is allocated".into(),
-        }));
+        });
     }
-    if settings.require_po && covered < bill.amount_cents {
+    if settings.require_po && covered > 0 && covered < bill.amount_cents {
         // over_available when no active PO of this vendor has room for the
         // rest either; uncovered when room exists and it just isn't used.
         let mut others_available: Cents = 0;
@@ -1302,7 +1349,7 @@ pub async fn bill_exception(
             bill.amount_cents,
             others_available,
         );
-        return Ok(Some(Exception {
+        out.push(Exception {
             kind,
             excess_cents: bill.amount_cents - covered,
             scope: String::new(),
@@ -1317,13 +1364,13 @@ pub async fn bill_exception(
                     bill.amount_cents - covered
                 )
             },
-        }));
+        });
     }
     if settings.require_funding
         && !po_store::bill_has_signal(&mut cx.tx, bill.id, "customer_funded").await?
     {
-        return Ok(Some(Exception { kind: "funding_not_verified", excess_cents: 0, scope: String::new(),
-            detail: "customer funding is required and no customer_funded signal is on record (a signal, not verified payment)".into() }));
+        out.push(Exception { kind: "funding_not_verified", excess_cents: 0, scope: String::new(),
+            detail: "customer funding is required and no customer_funded signal is on record (a signal, not verified payment)".into() });
     }
     // Quantity matching comes last, after the coverage and funding gates:
     // a quantity finding never hides a no_po, uncovered or funding
@@ -1333,6 +1380,7 @@ pub async fn bill_exception(
     // permits a different one that appears later.
     if policies.quantity_matching == QuantityMatching::Enforce {
         let mut blocking: Vec<String> = Vec::new();
+        let mut scoped: Vec<String> = Vec::new();
         let mut has_quantity_over = false;
         let mut seen = std::collections::HashSet::new();
         for a in &allocs {
@@ -1344,12 +1392,14 @@ pub async fn bill_exception(
                 for f in findings.iter().filter(|f| f.blocks()) {
                     has_quantity_over |= f.kind() == "quantity_over";
                     blocking.push(format!("{} (PO {})", finding_detail(f), po.po_number));
+                    scoped.push(scope_key(&po, f));
                 }
             }
         }
-        if !blocking.is_empty() {
+        if !scoped.is_empty() {
+            scoped.sort();
             blocking.sort();
-            return Ok(Some(Exception {
+            out.push(Exception {
                 kind: if has_quantity_over {
                     "quantity_over"
                 } else {
@@ -1357,11 +1407,11 @@ pub async fn bill_exception(
                 },
                 excess_cents: 0,
                 detail: blocking.join("; "),
-                scope: blocking.join("|"),
-            }));
+                scope: scoped.join("|"),
+            });
         }
     }
-    Ok(None)
+    Ok(out)
 }
 
 /// The override that currently permits this exception, if one does.
@@ -1371,14 +1421,18 @@ async fn valid_override(
     ex: &Exception,
 ) -> Result<Option<po_store::Override>, CommandError> {
     let allocs = po_store::allocations_for_bill(&mut cx.tx, bill.id).await?;
-    let Some(o) = po_store::latest_override(&mut cx.tx, bill.id).await? else {
-        return Ok(None);
-    };
-    let valid = override_family(&o.exception_kind) == override_family(ex.kind)
-        && o.bill_amount_cents == bill.amount_cents
-        && o.authorized_excess_cents >= ex.excess_cents
-        && o.fingerprint == fingerprint(bill, ex.kind, &allocs, &ex.scope);
-    Ok(valid.then_some(o))
+    // Any recorded override may permit this exception: a bill can carry
+    // several (one per kind), and the newest may be for another kind.
+    for o in po_store::overrides_for_bill(&mut cx.tx, bill.id).await? {
+        let valid = override_family(&o.exception_kind) == override_family(ex.kind)
+            && o.bill_amount_cents == bill.amount_cents
+            && o.authorized_excess_cents >= ex.excess_cents
+            && o.fingerprint == fingerprint(bill, ex.kind, &allocs, &ex.scope);
+        if valid {
+            return Ok(Some(o));
+        }
+    }
+    Ok(None)
 }
 
 /// Who permitted the exception this bill is payable only because of: the
@@ -1426,16 +1480,17 @@ async fn preparer_refusal(
 /// unresolved exception. Called by bill.release, bill.auto_pay and
 /// bill.mark_paid before any money moves or is recorded.
 pub async fn ensure_payable(cx: &mut Cx<'_>, bill: &store::Bill) -> Result<(), CommandError> {
-    let Some(ex) = bill_exception(cx, bill).await? else {
-        return Ok(());
-    };
-    if valid_override(cx, bill, &ex).await?.is_some() {
-        return Ok(());
+    // Every standing exception must be permitted; an override for one
+    // kind never clears another.
+    for ex in bill_exceptions(cx, bill).await? {
+        if valid_override(cx, bill, &ex).await?.is_none() {
+            return Err(CommandError::Conflict(format!(
+                "this bill can't be paid yet: {} ({}) — allocate it against a PO, or have a person permit it with po.override",
+                ex.kind, ex.detail
+            )));
+        }
     }
-    Err(CommandError::Conflict(format!(
-        "this bill can't be paid yet: {} ({}) — allocate it against a PO, or have a person permit it with po.override",
-        ex.kind, ex.detail
-    )))
+    Ok(())
 }
 
 /// What bill.get shows beside the invoice, and what the web app renders.
@@ -1450,13 +1505,26 @@ pub async fn bill_po_view(cx: &mut Cx<'_>, bill: &store::Bill) -> Result<Value, 
             "po_number": po.as_ref().map(|p| p.po_number.clone()),
             "amount_cents": a.amount_cents, "state": a.state, "kind": a.kind }));
     }
-    let ex = bill_exception(cx, bill).await?;
-    let holding = match &ex {
+    let exceptions = bill_exceptions(cx, bill).await?;
+    let ex = exceptions.first();
+    let holding = match ex {
         Some(e) => valid_override(cx, bill, e).await?,
         None => None,
     };
-    let can_override =
-        on && ex.is_some() && cx.can("po.override") && preparer_refusal(cx, bill).await?.is_none();
+    // "Overridden" means every standing exception is permitted; while any
+    // remains, the bill still waits on a person for it.
+    let mut all_permitted = !exceptions.is_empty();
+    for e in &exceptions {
+        if valid_override(cx, bill, e).await?.is_none() {
+            all_permitted = false;
+            break;
+        }
+    }
+    let can_override = on
+        && !exceptions.is_empty()
+        && !all_permitted
+        && cx.can("po.override")
+        && preparer_refusal(cx, bill).await?.is_none();
     // flag_only policies show beside the bill without blocking it.
     let (policies, policy_version) = policies_for_bill(cx, bill).await?;
     let mut notices = Vec::new();
@@ -1499,8 +1567,9 @@ pub async fn bill_po_view(cx: &mut Cx<'_>, bill: &store::Bill) -> Result<Value, 
         "covered_cents": covered,
         "uncovered_cents": bill.amount_cents - covered,
         "allocations": rows,
-        "exception": ex.as_ref().map(|e| json!({ "kind": e.kind, "excess_cents": e.excess_cents, "detail": e.detail })),
-        "overridden": holding.is_some(),
+        "exception": ex.map(|e| json!({ "kind": e.kind, "excess_cents": e.excess_cents, "detail": e.detail })),
+        "exceptions": exceptions.iter().map(|e| json!({ "kind": e.kind, "excess_cents": e.excess_cents, "detail": e.detail })).collect::<Vec<_>>(),
+        "overridden": all_permitted,
         "notices": notices,
         "quantity_lines": quantity_lines,
         "quantity_findings": quantity_findings,
@@ -1528,9 +1597,16 @@ pub async fn override_exception(cx: &mut Cx<'_>, input: OverrideIn) -> Result<Va
     if let Some(why) = preparer_refusal(cx, &bill).await? {
         return Err(CommandError::Forbidden(why.into()));
     }
-    let Some(ex) = bill_exception(cx, &bill).await? else {
+    let mut target = None;
+    for ex in bill_exceptions(cx, &bill).await? {
+        if valid_override(cx, &bill, &ex).await?.is_none() {
+            target = Some(ex);
+            break;
+        }
+    }
+    let Some(ex) = target else {
         return Err(CommandError::Conflict(
-            "this bill has no PO exception to override".into(),
+            "this bill has no PO exception left to override".into(),
         ));
     };
     if input.authorized_excess_cents < ex.excess_cents {

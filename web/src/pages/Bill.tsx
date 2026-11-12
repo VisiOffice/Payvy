@@ -509,7 +509,10 @@ function PoPanel({ billId, po, onChange }: {
         <Banner key={i} status="info" title={`Flagged: ${n.kind.replaceAll('_', ' ')}`} description={n.detail} />
       ))}
       {po.policy.quantity_matching === 'enforce' &&
-        po.quantity_findings.map((f, i) => (
+        po.quantity_findings
+          // Blocking findings already show in the exception banner above.
+          .filter((f) => !(po.exception && (f.kind === 'quantity_over' || f.kind === 'rate_mismatch')))
+          .map((f, i) => (
           <Banner
             key={i}
             status={f.kind === 'quantity_over' || f.kind === 'rate_mismatch' ? 'warning' : 'info'}

@@ -101,8 +101,9 @@ test('quantities show ordered, billed and remaining on the bill', async ({ page 
       data: { mode: 'commit', confirm_token: token2, input: { bill_id: over.bill.id, allocations: [{ po_id: created.id, amount_cents: 20_000 }] } },
     });
     await page.goto(`/bills/${over.bill.id}`);
-    await expect(page.getByText(/quantity over · PO-QTY-1/)).toBeVisible();
+    // The blocking finding shows once, as the payment gate's banner.
     await expect(page.getByText(/Can't be paid yet: quantity over/)).toBeVisible();
+    await expect(page.getByText(/4 of 3 load billed · 0 left/)).toBeVisible();
   } finally {
     await page.goto('/settings/purchase-orders');
     if (await toggle.isChecked()) await toggle.click();
