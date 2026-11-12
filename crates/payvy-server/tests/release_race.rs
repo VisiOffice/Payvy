@@ -117,16 +117,20 @@ async fn a_release_waits_for_the_po_lock_and_then_sees_the_suspension() {
         "the release must wait while the PO is locked"
     );
 
-    // Let go, suspend, and the waiting release now sees the suspension.
-    drop(hold);
-    commit(
-        &db.state,
-        &robert,
-        "po.suspend",
-        json!({ "po_id": po, "reason": "customer suspended the order" }),
+    // The held transaction itself suspends and commits — exactly the
+    // race: its UPDATE waits behind nothing, the release waits behind it,
+    // and then sees the suspension.
+    payvy_store::purchase_orders::set_status(
+        &mut hold,
+        po_id,
+        "suspended",
+        None,
+        Some("customer suspended the order"),
+        chrono::Utc::now(),
     )
     .await
     .unwrap();
+    hold.commit().await.unwrap();
     let released = release.await.unwrap();
     let e = released.unwrap_err();
     assert!(matches!(e, CommandError::Conflict(_)), "{e}");
