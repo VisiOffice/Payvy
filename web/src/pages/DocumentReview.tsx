@@ -153,8 +153,9 @@ interface ListedBill {
 /**
  * The review of one document. On its own page it takes the id from the URL.
  * `embedded` is the inbox's side-by-side pane: J/K belong to the list there,
- * so pages turn with the arrows only, the I/T/P keys stay off, and making a
- * bill or setting the file aside calls `onDone` instead of leaving the inbox.
+ * so pages turn with the arrows only, and making a bill or setting the file
+ * aside calls `onDone` instead of leaving the inbox. I/P/L still switch a
+ * file of several invoices.
  */
 export function DocumentReview({ id: given, embedded = false, onDone }: { id?: string; embedded?: boolean; onDone?: () => void } = {}) {
   const can = useCan();
@@ -184,21 +185,20 @@ export function DocumentReview({ id: given, embedded = false, onDone }: { id?: s
   const [current, setCurrent] = useState<number | null>(null);
   /** A file of several invoices: cards, a table, or its pages one at a time. */
   const [splitMode, setSplitMode] = useState<'invoices' | 'pages' | 'table'>('invoices');
-  // I, T, and P only apply once the file is several invoices and the switch is on screen.
+  // I, P, and L only apply once the file is several invoices and the switch is on screen.
   const multi = useRef(false);
   useEffect(() => {
-    if (embedded) return;
     const onKey = (e: KeyboardEvent) => {
       if (!multi.current || typing(e)) return;
       const k = e.key.toLowerCase();
-      const mode = k === 'i' ? 'invoices' : k === 't' ? 'table' : k === 'p' ? 'pages' : null;
+      const mode = k === 'i' ? 'invoices' : k === 'l' ? 'table' : k === 'p' ? 'pages' : null;
       if (!mode) return;
       e.preventDefault();
       setSplitMode(mode);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [embedded]);
+  }, []);
   /** How many invoices the cards hold, after any pages moved. */
   const [splitCount, setSplitCount] = useState<number | null>(null);
   const [thumbnails, setThumbnails] = useState<boolean | null>(thumbnailsChoice);
@@ -864,7 +864,7 @@ export function DocumentReview({ id: given, embedded = false, onDone }: { id?: s
             <SegmentedControl label="Show the file as" value={splitMode} onChange={(v) => setSplitMode(v as 'invoices' | 'pages' | 'table')}>
               <SegmentedControlItem value="invoices" label="Invoices" aria-keyshortcuts="I" icon={<Kbd keys="i" aria-hidden />} />
               <SegmentedControlItem value="pages" label="Pages" aria-keyshortcuts="P" icon={<Kbd keys="p" aria-hidden />} />
-              <SegmentedControlItem value="table" label="Table" aria-keyshortcuts="T" icon={<Kbd keys="t" aria-hidden />} />
+              <SegmentedControlItem value="table" label="List" aria-keyshortcuts="L" icon={<Kbd keys="l" aria-hidden />} />
             </SegmentedControl>
           </div>
         )}

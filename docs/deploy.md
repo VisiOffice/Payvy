@@ -1,10 +1,11 @@
 # Hosted deploy (dev.payvy.com)
 
-**Until cutover** the rebuild runs at `dev.payvy.com` (API, MCP, webhooks) and `beta.payvy.com`
-(the web app); the legacy app keeps `api.payvy.com` and `app.payvy.com`, which are still used to
-look up old records. At cutover the new stack takes over those names.
+**Cut over 2026-11-12:** the web app is `app.payvy.com` (and still `beta.payvy.com`); the API,
+MCP and webhooks stay at `dev.payvy.com` (Mercury's webhooks are registered there). The legacy
+app moved to `old.payvy.com` (Worker `payvy-fe`, backend `be.payvy.com`) for looking up old
+records.
 
-The frontend is configured as the `payvy-web` Cloudflare Worker at `beta.payvy.com`.
+The frontend is the `payvy-web` Cloudflare Worker at `app.payvy.com` and `beta.payvy.com`.
 The API runs on `thatch-api-prod` (5.78.94.150, Hetzner Hillsboro) with
 [Kamal](https://kamal-deploy.org), beside VisiStaff and Unicorn Phonics. Self-hosters can use
 this as a template; nothing in the server depends on it.
@@ -21,10 +22,10 @@ Kamal runs under the mise Ruby; if it reports `can't find gem kamal`:
 ## Frontend: Cloudflare Workers Builds
 
 `web/wrangler.jsonc` serves `web/dist` as a single-page app and sends only `/api/*`
-and `/auth/*` to `https://dev.payvy.com`. Session cookies stay on `beta.payvy.com`;
+and `/auth/*` to `https://dev.payvy.com`. Session cookies stay on the host the app was opened on;
 the Worker streams requests and responses, disables API caching, and never retries
 commands. Rust still owns authentication, authorization, previews and confirmation.
-Keep `PAYVY_PUBLIC_URL=https://beta.payvy.com` on the API so emailed links open the frontend.
+Keep `PAYVY_PUBLIC_URL=https://app.payvy.com` on the API so emailed links open the frontend.
 
 Connect **VisiOffice/Payvy** to **payvy-web** in the Robert@payvy.com Cloudflare
 account, under **Settings → Builds → Connect**, with these settings:
@@ -57,8 +58,9 @@ PAYVY_E2E_EDGE_PORT=7434 pnpm --dir web e2e  # full suite through local Cloudfla
 pnpm --dir web deploy                       # bootstrap or manual recovery
 ```
 
-Cloudflare owns the `beta.payvy.com` custom domain after deploying the Worker. The
-legacy `app.payvy.com` Worker is separate and is not changed. The Docker image still
+Cloudflare owns the `app.payvy.com` and `beta.payvy.com` custom domains after deploying the
+Worker. A custom domain belongs to one Worker: `app.payvy.com` had to be removed from the
+legacy `payvy-fe` Worker before `payvy-web` could take it. The Docker image still
 includes the frontend for self-hosters and rollback. Hosted frontend-only changes
 need only a GitHub push after the Builds connection is enabled; API changes still
 need `kamal deploy`. Deploy compatible API additions before frontend code that uses them.
