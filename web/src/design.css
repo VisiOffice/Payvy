@@ -453,10 +453,30 @@ body { -webkit-font-smoothing: antialiased; }
 .payvy-split-page-foot { display: flex; justify-content: space-between; align-items: center; font-size: 10px; color: var(--color-text-secondary); }
 .payvy-split-move { all: unset; cursor: pointer; color: var(--color-text-accent); font-size: 10px; }
 .payvy-split-move:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; border-radius: 2px; }
+.payvy-split-table-wrap { min-width: 0; }
+.payvy-split-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.payvy-split-table th, .payvy-split-table td { padding: 10px 12px; text-align: left; vertical-align: middle; border-bottom: 1px solid var(--color-border); }
+.payvy-split-table th { font-size: 11px; font-weight: 500; color: var(--color-text-secondary); }
+.payvy-split-table td:nth-child(3), .payvy-split-table th:nth-child(3) { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.payvy-split-table td strong { font-weight: 600; }
+.payvy-split-table tbody tr { cursor: pointer; }
+.payvy-split-table tbody tr:hover td { background: var(--color-background-muted); }
+.payvy-split-table td:last-child { text-align: right; width: 1%; white-space: nowrap; }
+.payvy-split-review-short { display: none; }
+.payvy-lines { min-width: 0; }
+.payvy-lines table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 13px; margin-top: 6px; }
+.payvy-lines th, .payvy-lines td { padding: 8px 0; vertical-align: top; text-align: left; }
+.payvy-lines thead th { font-size: 11px; font-weight: 500; color: var(--color-text-secondary); border-bottom: 1px solid var(--color-border); }
+.payvy-lines td:first-child, .payvy-lines th:first-child { padding-right: 16px; overflow-wrap: break-word; }
+.payvy-lines td:last-child, .payvy-lines th:last-child { width: 7.5rem; text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.payvy-lines tbody td { border-bottom: 1px solid var(--color-border); }
+.payvy-lines tfoot th, .payvy-lines tfoot td { padding-top: 10px; font-weight: 600; border-bottom: 0; }
 @media (max-width: 900px) {
   .payvy-phone-only { display: inline !important; }
   .payvy-split-view { padding: 12px 16px 20px; }
   .payvy-split-grid { grid-template-columns: 1fr; }
+  .payvy-split-review-full { display: none; }
+  .payvy-split-review-short { display: inline; }
 }
 
 /* Bills being made from a file of several invoices, on the server. */
