@@ -622,6 +622,15 @@ export interface PoCancelInput {
   reason: string;
 }
 
+export interface PoSuspendInput {
+  po_id: string;
+  reason: string;
+}
+
+export interface PoReactivateInput {
+  po_id: string;
+}
+
 export interface PoGetInput {
   po_id: string;
 }
@@ -663,6 +672,16 @@ export interface PoSetVendorSettingsInput {
   require_funding?: boolean;
   overage_cents_cap?: number | null;
   overage_percent_bp?: number | null;
+}
+
+export interface PoPolicyGetInput {
+  vendor_id: string;
+}
+
+export interface PoPolicySetInput {
+  vendor_id: string;
+  over_period?: "flag_only" | "require_full_cover";
+  reason?: string;
 }
 
 export interface PoMatchPreviewInput {
@@ -1037,11 +1056,15 @@ export interface CommandInputs {
   "po.activate": PoActivateInput;
   "po.close": PoCloseInput;
   "po.cancel": PoCancelInput;
+  "po.suspend": PoSuspendInput;
+  "po.reactivate": PoReactivateInput;
   "po.get": PoGetInput;
   "po.list": PoListInput;
   "po.import": PoImportInput;
   "po.vendor_settings": PoVendorSettingsInput;
   "po.set_vendor_settings": PoSetVendorSettingsInput;
+  "po.policy_get": PoPolicyGetInput;
+  "po.policy_set": PoPolicySetInput;
   "po.match_preview": PoMatchPreviewInput;
   "po.match_apply": PoMatchApplyInput;
   "po.override": PoOverrideInput;
@@ -1140,11 +1163,15 @@ export const COMMANDS: Record<CommandName, { tier: Tier; personOnly: boolean; su
   "po.activate": { tier: "routine", personOnly: true, summary: "Activate a draft purchase order (person only). Requires an owner and an authorized amount. Imported POs arrive as drafts and are activated this way; an import never activates." },
   "po.close": { tier: "routine", personOnly: true, summary: "Close an active purchase order (person only), with a reason: fulfilled, expired, settled outside Payvy, or superseded. Refused while allocations are still reserved." },
   "po.cancel": { tier: "routine", personOnly: true, summary: "Cancel a draft or active purchase order (person only), with a reason. Refused while allocations are still reserved." },
+  "po.suspend": { tier: "routine", personOnly: true, summary: "Suspend an active purchase order (person only), with a reason: allocations already made stand, new ones are refused, and its bills wait (suspended_po) until po.reactivate or a scoped po.override." },
+  "po.reactivate": { tier: "routine", personOnly: true, summary: "Reactivate a suspended purchase order (person only): it takes allocations again and its bills stop waiting on the suspension." },
   "po.get": { tier: "read", personOnly: false, summary: "A purchase order: lifecycle, billing progress, authorized/reserved/consumed/available, its current lines, revisions and allocation history." },
   "po.list": { tier: "read", personOnly: false, summary: "Purchase orders, optionally for one vendor, each with authorized/reserved/consumed/available and billing progress." },
   "po.import": { tier: "routine", personOnly: false, summary: "Import a purchase order from another system by external source/id (idempotent). Always lands as a draft: a person activates it with po.activate. opening_consumed_cents records amounts already billed in the source system and is not counted twice on a re-import." },
   "po.vendor_settings": { tier: "read", personOnly: false, summary: "A vendor's purchase-order settings: whether its bills require a PO, and its overage caps (dollar and/or percentage in basis points). Caps are pinned onto each PO revision when it is made." },
   "po.set_vendor_settings": { tier: "routine", personOnly: true, summary: "Set a vendor's purchase-order settings (person only): whether its bills require a PO, and overage caps. Zero overage is the default; an absent cap is not configured, a cap of 0 is zero. Existing PO revisions keep the allowance pinned on them." },
+  "po.policy_get": { tier: "read", personOnly: false, summary: "A vendor's PO policies in force (the enumerated registry): over_period (flag_only or require_full_cover) and the version. Version 0 is the defaults: flag; do not silently match." },
+  "po.policy_set": { tier: "routine", personOnly: true, summary: "Set a vendor's PO policies (person only): a new immutable version supersedes the old; bills already created keep the version they pinned. Asking for what is already in force is refused. Agents may not set policy." },
   "po.match_preview": { tier: "read", personOnly: false, summary: "Which of a bill's vendor's active POs it could go against: available amounts, a proposed allocation and any exception (no PO, over available). Writes and reserves nothing." },
   "po.match_apply": { tier: "confirmed", personOnly: false, summary: "Reserve bill amounts against purchase orders. Atomic across every PO in the call: all affected POs are locked in a consistent order, the whole set is validated (active, vendor, available plus the revision's pinned allowance, total not over the bill), then everything reserves together or nothing does. Reserving is preparation, not approval." },
   "po.override": { tier: "confirmed", personOnly: true, summary: "Permit one bill's PO exception (person only, separate from vendor approval): bound to this bill, its current POs and allocations, the exception and an authorized excess amount, with a required reason. Relevant changes void it and need a new override. It does not create PO capacity or hide the excess." },

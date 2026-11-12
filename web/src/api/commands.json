@@ -393,6 +393,22 @@
       "tier": "routine"
     },
     {
+      "input_schema": "{\"type\":\"object\",\"required\":[\"po_id\",\"reason\"],\"properties\":{\"po_id\":{\"type\":\"string\",\"format\":\"uuid\"},\"reason\":{\"type\":\"string\"}}}",
+      "name": "po.suspend",
+      "permission": "admin",
+      "person_only": true,
+      "summary": "Suspend an active purchase order (person only), with a reason: allocations already made stand, new ones are refused, and its bills wait (suspended_po) until po.reactivate or a scoped po.override.",
+      "tier": "routine"
+    },
+    {
+      "input_schema": "{\"type\":\"object\",\"required\":[\"po_id\"],\"properties\":{\"po_id\":{\"type\":\"string\",\"format\":\"uuid\"}}}",
+      "name": "po.reactivate",
+      "permission": "admin",
+      "person_only": true,
+      "summary": "Reactivate a suspended purchase order (person only): it takes allocations again and its bills stop waiting on the suspension.",
+      "tier": "routine"
+    },
+    {
       "input_schema": "{\"type\":\"object\",\"required\":[\"po_id\"],\"properties\":{\"po_id\":{\"type\":\"string\",\"format\":\"uuid\"}}}",
       "name": "po.get",
       "permission": "read",
@@ -430,6 +446,22 @@
       "permission": "admin",
       "person_only": true,
       "summary": "Set a vendor's purchase-order settings (person only): whether its bills require a PO, and overage caps. Zero overage is the default; an absent cap is not configured, a cap of 0 is zero. Existing PO revisions keep the allowance pinned on them.",
+      "tier": "routine"
+    },
+    {
+      "input_schema": "{\"type\":\"object\",\"required\":[\"vendor_id\"],\"properties\":{\"vendor_id\":{\"type\":\"string\",\"format\":\"uuid\"}}}",
+      "name": "po.policy_get",
+      "permission": "read",
+      "person_only": false,
+      "summary": "A vendor's PO policies in force (the enumerated registry): over_period (flag_only or require_full_cover) and the version. Version 0 is the defaults: flag; do not silently match.",
+      "tier": "read"
+    },
+    {
+      "input_schema": "{\"type\":\"object\",\"required\":[\"vendor_id\"],\"properties\":{\"vendor_id\":{\"type\":\"string\",\"format\":\"uuid\"},\"over_period\":{\"type\":\"string\",\"enum\":[\"flag_only\",\"require_full_cover\"]},\"reason\":{\"type\":\"string\"}}}",
+      "name": "po.policy_set",
+      "permission": "admin",
+      "person_only": true,
+      "summary": "Set a vendor's PO policies (person only): a new immutable version supersedes the old; bills already created keep the version they pinned. Asking for what is already in force is refused. Agents may not set policy.",
       "tier": "routine"
     },
     {

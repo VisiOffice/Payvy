@@ -88,6 +88,16 @@ Conventions follow Visirent (`~/Code/visirent`).
 - **Mercury webhooks are nudges, not truth.** `bank.connect` registers one (`PAYVY_WEBHOOK_URL`,
   production only, never fails the connection); `mercury_webhook.rs` verifies `Mercury-Signature`
   and then runs `payment.refresh`, which asks Mercury. Never take a payment's state from the payload.
+- **Vendor/company cases are enumerated policies, never core code** (`vendor_po_policies`,
+  `po.policy_get`/`po.policy_set`, person-only Admin). Each change is a new immutable
+  version; bills pin the version at creation (`bills.policy_version_id`), so a change
+  never rewrites a bill in flight, and no pin reads the defaults (flag; do not silently
+  match). First policy: `over_period` (`flag_only` default; `require_full_cover` makes
+  out-of-period allocations not count as covering). A partly covered bill is
+  `over_available` when no active PO has room for the rest, else `uncovered`; caps are
+  unchanged. A PO can be suspended (`po.suspend`/`po.reactivate`, person-only Admin):
+  allocations stand, new ones refused, its bills carry `suspended_po` until reactivated
+  or overridden. Agents may not set policy. See `docs/purchase-orders.md`.
 - **Rho is a read-only connection** (`payvy-pay`'s `Rho`, mode `read_only`): it coexists with
   the paying bank (one live paying connection per org, plus one read-only connection per
   provider), its client has no pay method, and `bill.release` with only Rho behaves exactly

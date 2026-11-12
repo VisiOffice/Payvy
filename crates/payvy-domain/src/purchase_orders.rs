@@ -21,6 +21,72 @@ pub fn allowance_cents(
     }
 }
 
+/// The enumerated vendor/company policies (the registry): a small set of
+/// named policies with typed options, evaluated by the server as pure
+/// decisions. A person sets them; they are versioned and pinned to bills
+/// like workflows. Agents may only propose changes (a later build).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OverPeriod {
+    /// Show it beside the bill; it never blocks payment (the default).
+    FlagOnly,
+    /// Allocations to an out-of-period PO do not count as covering the
+    /// bill, so the payment gate blocks until a person overrides.
+    RequireFullCover,
+}
+
+impl OverPeriod {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            OverPeriod::FlagOnly => "flag_only",
+            OverPeriod::RequireFullCover => "require_full_cover",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "flag_only" => OverPeriod::FlagOnly,
+            "require_full_cover" => OverPeriod::RequireFullCover,
+            _ => return None,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Policies {
+    pub over_period: OverPeriod,
+}
+
+impl Default for Policies {
+    /// The safe defaults: flag; do not silently match.
+    fn default() -> Self {
+        Policies {
+            over_period: OverPeriod::FlagOnly,
+        }
+    }
+}
+
+/// Whether an invoice date falls outside a PO's service period. A PO with
+/// no period, or a period with only one end, only checks the ends it has.
+pub fn outside_period(
+    period_start: Option<chrono::NaiveDate>,
+    period_end: Option<chrono::NaiveDate>,
+    invoice_date: chrono::NaiveDate,
+) -> bool {
+    period_start.is_some_and(|s| invoice_date < s) || period_end.is_some_and(|e| invoice_date > e)
+}
+
+/// Which shortfall exception a partly covered bill carries: `over_available`
+/// when the vendor's other active POs cannot cover the rest either (the
+/// decided cumulative caps are the limit), `uncovered` otherwise.
+pub fn shortfall_kind(covered: Cents, bill_cents: Cents, others_available: Cents) -> &'static str {
+    if covered + others_available < bill_cents {
+        "over_available"
+    } else {
+        "uncovered"
+    }
+}
+
 /// A PO's billing position, derived from the allocation ledger.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Amounts {
@@ -61,6 +127,33 @@ impl Amounts {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn periods_and_shortfalls() {
+        use chrono::NaiveDate;
+        let d = |s: &str| NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap();
+        assert!(!outside_period(None, None, d("2027-06-01")));
+        assert!(!outside_period(
+            Some(d("2027-01-01")),
+            Some(d("2027-12-31")),
+            d("2027-06-01")
+        ));
+        assert!(outside_period(
+            Some(d("2027-01-01")),
+            Some(d("2027-12-31")),
+            d("2028-01-01")
+        ));
+        assert!(outside_period(None, Some(d("2027-01-31")), d("2027-02-01")));
+        assert!(outside_period(Some(d("2027-02-01")), None, d("2027-01-15")));
+        assert_eq!(Policies::default().over_period, OverPeriod::FlagOnly);
+        assert_eq!(shortfall_kind(10_000, 50_000, 30_000), "over_available");
+        assert_eq!(shortfall_kind(10_000, 50_000, 40_000), "uncovered");
+        assert_eq!(
+            OverPeriod::parse("require_full_cover"),
+            Some(OverPeriod::RequireFullCover)
+        );
+        assert_eq!(OverPeriod::parse("script"), None);
+    }
 
     #[test]
     fn allowance_is_the_smaller_cap_and_absent_is_zero() {

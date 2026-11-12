@@ -434,7 +434,7 @@ pub async fn close(
     let reason = text(Some(input.reason))
         .ok_or_else(|| CommandError::Invalid("a reason is required".to_owned()))?;
     let po = must_po(cx, input.po_id).await?;
-    if po.status != "draft" && po.status != "active" {
+    if po.status != "draft" && po.status != "active" && po.status != "suspended" {
         return Err(CommandError::Conflict(format!(
             "PO {} is already {}",
             po.po_number, po.status
@@ -457,6 +457,55 @@ pub async fn close(
         kind,
         po.id,
         json!({ "po_number": po.po_number, "reason": reason }),
+    )
+    .await?;
+    {
+        let fresh = must_po(cx, po.id).await?;
+        view(cx, &fresh).await
+    }
+}
+
+/// Pause an active PO: allocations already made stand, new ones are
+/// refused, and its bills wait (a suspended_po exception) until a person
+/// reactivates it or permits the bill with an override.
+pub async fn suspend(cx: &mut Cx<'_>, input: Close) -> Result<Value, CommandError> {
+    ensure_enabled(cx).await?;
+    let reason = text(Some(input.reason))
+        .ok_or_else(|| CommandError::Invalid("a reason is required".to_owned()))?;
+    let po = must_po(cx, input.po_id).await?;
+    if po.status != "active" {
+        return Err(CommandError::Conflict(format!(
+            "PO {} is {}; only an active PO can be suspended",
+            po.po_number, po.status
+        )));
+    }
+    po_store::set_status(&mut cx.tx, po.id, "suspended", None, Some(&reason), cx.now).await?;
+    cx.emit(
+        "po.suspended",
+        po.id,
+        json!({ "po_number": po.po_number, "reason": reason }),
+    )
+    .await?;
+    {
+        let fresh = must_po(cx, po.id).await?;
+        view(cx, &fresh).await
+    }
+}
+
+pub async fn reactivate(cx: &mut Cx<'_>, input: PoId) -> Result<Value, CommandError> {
+    ensure_enabled(cx).await?;
+    let po = must_po(cx, input.po_id).await?;
+    if po.status != "suspended" {
+        return Err(CommandError::Conflict(format!(
+            "PO {} is {}; only a suspended PO can be reactivated",
+            po.po_number, po.status
+        )));
+    }
+    po_store::set_status(&mut cx.tx, po.id, "active", None, None, cx.now).await?;
+    cx.emit(
+        "po.reactivated",
+        po.id,
+        json!({ "po_number": po.po_number }),
     )
     .await?;
     {
@@ -634,6 +683,128 @@ pub async fn set_vendor_settings(
     .await
 }
 
+// ── The enumerated policy registry ───────────────────────────────────────
+
+use payvy_domain::purchase_orders::{OverPeriod, Policies};
+
+fn policy_view(vendor_id: Uuid, v: Option<&po_store::PolicyVersion>) -> Value {
+    match v {
+        Some(v) => json!({ "vendor_id": vendor_id, "version": v.version,
+            "over_period": v.over_period, "reason": v.reason,
+            "updated_by": v.created_by, "updated_at": v.created_at }),
+        None => json!({ "vendor_id": vendor_id, "version": 0,
+            "over_period": Policies::default().over_period.as_str(),
+            "reason": null, "updated_by": null, "updated_at": null }),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PolicyIn {
+    vendor_id: Uuid,
+    over_period: Option<String>,
+    reason: Option<String>,
+}
+
+pub async fn policy_get(cx: &mut Cx<'_>, input: PolicyIn) -> Result<Value, CommandError> {
+    store::get_vendor(&mut cx.tx, input.vendor_id)
+        .await?
+        .ok_or(CommandError::NotFound("vendor"))?;
+    let v = po_store::current_policy(&mut cx.tx, input.vendor_id).await?;
+    Ok(policy_view(input.vendor_id, v.as_ref()))
+}
+
+/// A person's policy change is a new version; bills already created keep
+/// the version they pinned. Asking for what is already in force is an
+/// error, never a bare success.
+pub async fn policy_set(cx: &mut Cx<'_>, input: PolicyIn) -> Result<Value, CommandError> {
+    ensure_enabled(cx).await?;
+    store::get_vendor(&mut cx.tx, input.vendor_id)
+        .await?
+        .ok_or(CommandError::NotFound("vendor"))?;
+    let cur = po_store::current_policy(&mut cx.tx, input.vendor_id).await?;
+    let cur_policies = policies_of(cur.as_ref());
+    let next_over = match input.over_period.as_deref() {
+        Some(s) => OverPeriod::parse(s).ok_or_else(|| {
+            CommandError::Invalid("over_period is flag_only or require_full_cover".into())
+        })?,
+        None => cur_policies.over_period,
+    };
+    if next_over == cur_policies.over_period {
+        return Err(CommandError::Conflict(format!(
+            "over_period is already {} for this vendor",
+            next_over.as_str()
+        )));
+    }
+    let reason = text(input.reason);
+    let v = po_store::set_policy(
+        &mut cx.tx,
+        cx.org,
+        input.vendor_id,
+        next_over.as_str(),
+        reason.as_deref(),
+        &cx.actor.name,
+        cx.now,
+    )
+    .await?;
+    cx.emit(
+        "po.policy_changed",
+        input.vendor_id,
+        json!({ "vendor_id": input.vendor_id, "version": v.version,
+                "from": { "over_period": cur_policies.over_period.as_str() },
+                "to": { "over_period": next_over.as_str() }, "reason": reason }),
+    )
+    .await?;
+    Ok(policy_view(input.vendor_id, Some(&v)))
+}
+
+fn policies_of(v: Option<&po_store::PolicyVersion>) -> Policies {
+    match v {
+        Some(v) => Policies {
+            over_period: OverPeriod::parse(&v.over_period).unwrap_or(OverPeriod::FlagOnly),
+        },
+        None => Policies::default(),
+    }
+}
+
+/// The policies a bill is judged by: the version it pinned at creation.
+/// No pin (every bill before the registry) reads the defaults — a later
+/// policy change never rewrites a bill in flight.
+async fn policies_for_bill(
+    cx: &mut Cx<'_>,
+    bill: &store::Bill,
+) -> Result<(Policies, Option<i32>), CommandError> {
+    match bill.policy_version_id {
+        Some(id) => {
+            let v = po_store::policy_by_id(&mut cx.tx, id).await?;
+            Ok((policies_of(v.as_ref()), v.map(|v| v.version)))
+        }
+        None => Ok((Policies::default(), None)),
+    }
+}
+
+/// Allocations whose PO's service period does not contain the bill's
+/// invoice date, with the PO they belong to.
+async fn over_period_allocations(
+    cx: &mut Cx<'_>,
+    bill: &store::Bill,
+    allocs: &[po_store::Allocation],
+) -> Result<Vec<(po_store::Allocation, po_store::PurchaseOrder)>, CommandError> {
+    let mut out = Vec::new();
+    for a in allocs {
+        if let Some(po) = po_store::get_po(&mut cx.tx, a.po_id).await?
+            && payvy_domain::purchase_orders::outside_period(
+                po.period_start,
+                po.period_end,
+                bill.invoice_date,
+            )
+        {
+            out.push((a.clone(), po));
+        }
+    }
+    Ok(out)
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Preview {
@@ -667,6 +838,8 @@ pub async fn match_preview(cx: &mut Cx<'_>, input: Preview) -> Result<Value, Com
             "verified_reference": input.po_number.as_deref() == Some(po.po_number.as_str()),
             "available_cents": amounts.available_cents(),
             "proposed_cents": proposed,
+            "over_period": payvy_domain::purchase_orders::outside_period(
+                po.period_start, po.period_end, bill.invoice_date),
             "exception": if proposed >= remaining { Value::Null } else { json!("over_available") },
         }));
     }
@@ -865,6 +1038,20 @@ pub struct Exception {
     pub detail: String,
 }
 
+/// The family an override binds to: `uncovered` and `over_available` are
+/// one shortfall seen from two sides of the vendor's remaining room, which
+/// changes as other bills reserve and POs are added or closed — without
+/// anything about this bill changing. An override permits the shortfall,
+/// so it must survive the flip; other kinds bind as themselves. The
+/// family's name is `uncovered`, so fingerprints written before
+/// `over_available` existed keep matching.
+fn override_family(kind: &str) -> &str {
+    match kind {
+        "uncovered" | "over_available" => "uncovered",
+        other => other,
+    }
+}
+
 fn fingerprint(bill: &store::Bill, kind: &str, allocs: &[po_store::Allocation]) -> String {
     let mut parts: Vec<String> = allocs
         .iter()
@@ -875,7 +1062,7 @@ fn fingerprint(bill: &store::Bill, kind: &str, allocs: &[po_store::Allocation]) 
         "bill:{}:{}:{}|{}",
         bill.id,
         bill.amount_cents,
-        kind,
+        override_family(kind),
         parts.join(",")
     )
 }
@@ -893,16 +1080,55 @@ pub async fn bill_exception(
     let settings = po_store::vendor_settings(&mut cx.tx, bill.vendor_id).await?;
     let allocs = po_store::allocations_for_bill(&mut cx.tx, bill.id).await?;
     let covered: Cents = allocs.iter().map(|a| a.amount_cents).sum();
+    let mut ineligible: Option<Exception> = None;
     for a in &allocs {
-        if let Some(po) = po_store::get_po(&mut cx.tx, a.po_id).await?
-            && (po.status != "active" || po.vendor_id != bill.vendor_id)
-        {
+        if let Some(po) = po_store::get_po(&mut cx.tx, a.po_id).await? {
+            if po.status == "suspended" {
+                return Ok(Some(Exception {
+                    kind: "suspended_po",
+                    excess_cents: a.amount_cents,
+                    detail: format!(
+                        "PO {} is suspended{}; its bills wait until it is reactivated",
+                        po.po_number,
+                        po.lifecycle_reason
+                            .as_deref()
+                            .map_or(String::new(), |r| format!(" ({r})"))
+                    ),
+                }));
+            }
+            if (po.status != "active" || po.vendor_id != bill.vendor_id) && ineligible.is_none() {
+                ineligible = Some(Exception {
+                    kind: "ineligible_po",
+                    excess_cents: a.amount_cents,
+                    detail: format!(
+                        "PO {} is {} and no longer eligible",
+                        po.po_number, po.status
+                    ),
+                });
+            }
+        }
+    }
+    if let Some(e) = ineligible {
+        return Ok(Some(e));
+    }
+    // Over-period, under the policy version this bill pinned: with
+    // require_full_cover the out-of-period allocations do not count as
+    // covering the bill. flag_only only flags (see bill_po_view's notices).
+    let (policies, _) = policies_for_bill(cx, bill).await?;
+    if policies.over_period == OverPeriod::RequireFullCover {
+        let outside = over_period_allocations(cx, bill, &allocs).await?;
+        let excluded: Cents = outside.iter().map(|(a, _)| a.amount_cents).sum();
+        if excluded > 0 {
+            let po = &outside[0].1;
             return Ok(Some(Exception {
-                kind: "ineligible_po",
-                excess_cents: a.amount_cents,
+                kind: "over_period",
+                excess_cents: excluded,
                 detail: format!(
-                    "PO {} is {} and no longer eligible",
-                    po.po_number, po.status
+                    "invoice date {} is outside PO {}'s period ({} to {}), and this vendor's over_period policy requires full cover",
+                    bill.invoice_date,
+                    po.po_number,
+                    po.period_start.map_or("…".into(), |d| d.to_string()),
+                    po.period_end.map_or("…".into(), |d| d.to_string())
                 ),
             }));
         }
@@ -915,13 +1141,33 @@ pub async fn bill_exception(
         }));
     }
     if settings.require_po && covered < bill.amount_cents {
+        // over_available when no active PO of this vendor has room for the
+        // rest either; uncovered when room exists and it just isn't used.
+        let mut others_available: Cents = 0;
+        for po in po_store::list_pos(&mut cx.tx, Some(bill.vendor_id)).await? {
+            if po.status == "active" {
+                others_available += po_store::amounts(&mut cx.tx, &po).await?.available_cents();
+            }
+        }
+        let kind = payvy_domain::purchase_orders::shortfall_kind(
+            covered,
+            bill.amount_cents,
+            others_available,
+        );
         return Ok(Some(Exception {
-            kind: "uncovered",
+            kind,
             excess_cents: bill.amount_cents - covered,
-            detail: format!(
-                "{} of this bill is not covered by a PO",
-                bill.amount_cents - covered
-            ),
+            detail: if kind == "over_available" {
+                format!(
+                    "{} of this bill is not covered by a PO, and no PO has room for the rest",
+                    bill.amount_cents - covered
+                )
+            } else {
+                format!(
+                    "{} of this bill is not covered by a PO",
+                    bill.amount_cents - covered
+                )
+            },
         }));
     }
     if settings.require_funding
@@ -943,7 +1189,7 @@ async fn valid_override(
     let Some(o) = po_store::latest_override(&mut cx.tx, bill.id).await? else {
         return Ok(None);
     };
-    let valid = o.exception_kind == ex.kind
+    let valid = override_family(&o.exception_kind) == override_family(ex.kind)
         && o.bill_amount_cents == bill.amount_cents
         && o.authorized_excess_cents >= ex.excess_cents
         && o.fingerprint == fingerprint(bill, ex.kind, &allocs);
@@ -1026,6 +1272,19 @@ pub async fn bill_po_view(cx: &mut Cx<'_>, bill: &store::Bill) -> Result<Value, 
     };
     let can_override =
         on && ex.is_some() && cx.can("po.override") && preparer_refusal(cx, bill).await?.is_none();
+    // flag_only policies show beside the bill without blocking it.
+    let (policies, policy_version) = policies_for_bill(cx, bill).await?;
+    let mut notices = Vec::new();
+    if policies.over_period == OverPeriod::FlagOnly {
+        for (a, po) in over_period_allocations(cx, bill, &allocs).await? {
+            notices.push(json!({ "kind": "over_period", "po_number": po.po_number,
+                "allocation_id": a.id, "amount_cents": a.amount_cents,
+                "detail": format!("invoice date {} is outside PO {}'s period ({} to {}); flagged by this vendor's over_period policy, not blocking",
+                    bill.invoice_date, po.po_number,
+                    po.period_start.map_or("…".into(), |d| d.to_string()),
+                    po.period_end.map_or("…".into(), |d| d.to_string())) }));
+        }
+    }
     Ok(json!({
         "enabled": on,
         "can_override": can_override,
@@ -1035,6 +1294,8 @@ pub async fn bill_po_view(cx: &mut Cx<'_>, bill: &store::Bill) -> Result<Value, 
         "allocations": rows,
         "exception": ex.as_ref().map(|e| json!({ "kind": e.kind, "excess_cents": e.excess_cents, "detail": e.detail })),
         "overridden": holding.is_some(),
+        "notices": notices,
+        "policy": { "over_period": policies.over_period.as_str(), "version": policy_version },
     }))
 }
 

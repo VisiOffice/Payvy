@@ -27,9 +27,18 @@ interface VendorPo {
   overage_percent_bp: number | null;
 }
 
+interface VendorPolicy {
+  vendor_id: string;
+  version: number;
+  over_period: 'flag_only' | 'require_full_cover';
+  updated_by: string | null;
+}
+
 export function VendorPoSettings({ vendorId }: { vendorId: string }) {
   const [on, setOn] = useState<boolean | null>(null);
   const [data, setData] = useState<VendorPo | null>(null);
+  const [policy, setPolicy] = useState<VendorPolicy | null>(null);
+  const canPolicy = useCan()('po.policy_set');
   const [capDollars, setCapDollars] = useState('');
   const [capPercent, setCapPercent] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -44,6 +53,7 @@ export function VendorPoSettings({ vendorId }: { vendorId: string }) {
       if (!settings.enabled) return;
       const v = (await run<VendorPo>('po.vendor_settings', { vendor_id: vendorId })).result;
       setData(v);
+      setPolicy((await run<VendorPolicy>('po.policy_get', { vendor_id: vendorId })).result);
       setCapDollars(v.overage_cents_cap == null ? '' : dollars(v.overage_cents_cap));
       setCapPercent(v.overage_percent_bp == null ? '' : String(v.overage_percent_bp / 100));
       setError(null);
@@ -151,7 +161,42 @@ export function VendorPoSettings({ vendorId }: { vendorId: string }) {
             {!canSet && <Text type="supporting">Only an admin changes these settings.</Text>}
           </VStack>
         </Card>
+        {policy && (
+          <Card>
+            <VStack gap={3}>
+              <Text weight="semibold">Matching policies</Text>
+              <Switch
+                label="An invoice outside a PO's period can't be covered by it"
+                value={policy.over_period === 'require_full_cover'}
+                isDisabled={busy || !canPolicy}
+                changeAction={(v: boolean) => void savePolicy(v ? 'require_full_cover' : 'flag_only')}
+                description="Off: an invoice dated outside its PO's service period is flagged beside the bill and never blocks payment. On: it doesn't count as covered, so the bill can't be paid until a person permits it."
+              />
+              <Text type="supporting">
+                Policy version {policy.version === 0 ? '0 (the defaults; nobody has set a policy)' : policy.version}
+                {policy.updated_by ? `, set by ${policy.updated_by}` : ''}. Every bill keeps the policy version
+                in force when it was created, so changing this applies to new bills, never rewrites one
+                already in flight.
+              </Text>
+              {!canPolicy && <Text type="supporting">Only an admin changes policies.</Text>}
+            </VStack>
+          </Card>
+        )}
       </VStack>
     </section>
   );
+
+  async function savePolicy(over_period: VendorPolicy['over_period']) {
+    setBusy(true);
+    try {
+      const r = await run<VendorPolicy>('po.policy_set', { vendor_id: vendorId, over_period });
+      setPolicy(r.result);
+      toast({ body: 'Matching policy saved' });
+    } catch (e) {
+      toast({ body: e instanceof Error ? e.message : String(e), type: 'error' });
+      await load();
+    } finally {
+      setBusy(false);
+    }
+  }
 }

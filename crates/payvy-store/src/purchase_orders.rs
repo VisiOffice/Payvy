@@ -540,3 +540,106 @@ pub async fn lock_company_settings(tx: &mut Tx, org: Uuid) -> anyhow::Result<()>
     .await?;
     Ok(())
 }
+
+// ── The enumerated policy registry ───────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PolicyVersion {
+    pub id: Uuid,
+    pub vendor_id: Uuid,
+    pub version: i32,
+    pub status: String,
+    /// flag_only | require_full_cover (payvy-domain::purchase_orders::OverPeriod)
+    pub over_period: String,
+    pub reason: Option<String>,
+    pub created_by: String,
+    pub created_at: DateTime<Utc>,
+}
+
+fn policy_version(r: &PgRow) -> PolicyVersion {
+    PolicyVersion {
+        id: r.get("id"),
+        vendor_id: r.get("vendor_id"),
+        version: r.get("version"),
+        status: r.get("status"),
+        over_period: r.get("over_period"),
+        reason: r.get("reason"),
+        created_by: r.get("created_by"),
+        created_at: r.get("created_at"),
+    }
+}
+
+macro_rules! policy_cols {
+    () => {
+        "id, vendor_id, version, status, over_period, reason, created_by, created_at"
+    };
+}
+
+/// The vendor's policy version in force now, if a person has ever set one.
+pub async fn current_policy(tx: &mut Tx, vendor_id: Uuid) -> anyhow::Result<Option<PolicyVersion>> {
+    let row = sqlx::query(concat!(
+        "SELECT ",
+        policy_cols!(),
+        " FROM vendor_po_policies WHERE vendor_id = $1 AND status = 'active'"
+    ))
+    .bind(vendor_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(row.as_ref().map(policy_version))
+}
+
+pub async fn policy_by_id(tx: &mut Tx, id: Uuid) -> anyhow::Result<Option<PolicyVersion>> {
+    let row = sqlx::query(concat!(
+        "SELECT ",
+        policy_cols!(),
+        " FROM vendor_po_policies WHERE id = $1"
+    ))
+    .bind(id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(row.as_ref().map(policy_version))
+}
+
+/// A person's change: the active version is superseded and a new one takes
+/// its place. Old versions are never edited, so a bill's pin keeps meaning
+/// what it meant when the bill was created.
+pub async fn set_policy(
+    tx: &mut Tx,
+    org: Uuid,
+    vendor_id: Uuid,
+    over_period: &str,
+    reason: Option<&str>,
+    by: &str,
+    now: DateTime<Utc>,
+) -> anyhow::Result<PolicyVersion> {
+    // Serialize policy changes per vendor: two first-ever sets would
+    // otherwise both compute version 1 and one would fail on the unique
+    // constraint instead of superseding (or refusing) cleanly.
+    sqlx::query("SELECT id FROM vendors WHERE id = $1 FOR UPDATE")
+        .bind(vendor_id)
+        .execute(&mut **tx)
+        .await?;
+    sqlx::query(
+        "UPDATE vendor_po_policies SET status = 'superseded' WHERE vendor_id = $1 AND status = 'active'",
+    )
+    .bind(vendor_id)
+    .execute(&mut **tx)
+    .await?;
+    let version: i32 = sqlx::query(
+        "SELECT COALESCE(MAX(version), 0) + 1 AS v FROM vendor_po_policies WHERE vendor_id = $1",
+    )
+    .bind(vendor_id)
+    .fetch_one(&mut **tx)
+    .await?
+    .get("v");
+    let id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO vendor_po_policies (id, org_id, vendor_id, version, status, over_period, reason, created_by, created_at) VALUES ($1,$2,$3,$4,'active',$5,$6,$7,$8)",
+    )
+    .bind(id).bind(org).bind(vendor_id).bind(version).bind(over_period).bind(reason).bind(by).bind(now)
+    .execute(&mut **tx)
+    .await?;
+    policy_by_id(tx, id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("the policy version just written is missing"))
+}

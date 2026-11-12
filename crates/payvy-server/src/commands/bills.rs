@@ -359,6 +359,11 @@ pub async fn create(cx: &mut Cx<'_>, mut input: Create) -> Result<Value, Command
     let workflow_id = store::effective_workflow(&mut cx.tx, vendor.id)
         .await?
         .map(|w| w.id);
+    // Pin the vendor's PO policy version in force now, like the workflow:
+    // a later policy change never rewrites a bill already in flight.
+    let policy_version_id = store::purchase_orders::current_policy(&mut cx.tx, vendor.id)
+        .await?
+        .map(|p| p.id);
     // Some pages of a document: they become a document of their own first,
     // in this transaction, so a refused bill leaves no split behind.
     let (document_id, split_from) = match input.document_id {
@@ -391,6 +396,7 @@ pub async fn create(cx: &mut Cx<'_>, mut input: Create) -> Result<Value, Command
         created_by: &cx.actor.name,
         received_at: cx.now,
         arrangement_id,
+        policy_version_id,
     };
     let id = match store::insert_bill(&mut cx.tx, cx.org, &new, input.allow_duplicate).await? {
         InsertBill::Inserted(id) => id,
