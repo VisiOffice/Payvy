@@ -421,7 +421,7 @@
       "name": "po.list",
       "permission": "read",
       "person_only": false,
-      "summary": "Purchase orders, optionally for one vendor, each with authorized/reserved/consumed/available and billing progress.",
+      "summary": "Purchase orders, optionally for one vendor, each with authorized/reserved/consumed/available (none on a closed or canceled PO) and billing progress.",
       "tier": "read"
     },
     {

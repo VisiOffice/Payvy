@@ -50,6 +50,15 @@ test('an admin turns purchase orders on, a bill is matched to one, and turning t
     await expect(page.getByText('Reserved against the purchase order').first()).toBeVisible();
     await expect(page.getByText("Can't be paid yet: no po")).toHaveCount(0);
     await expect(page.getByText(/PO-E2E-1 · \$400\.00 · reserved/)).toBeVisible();
+
+    // Closed with the reservation standing: nothing is shown available,
+    // and what is reserved still is.
+    const po = (await command(page, 'po.list', {})).purchase_orders.find((p: { po_number: string }) => p.po_number === 'PO-E2E-1');
+    await command(page, 'po.close', { po_id: po.id, reason: 'fulfilled' });
+    await poNav(page).click();
+    await page.getByRole('button', { name: 'PO-E2E-1', exact: true }).click();
+    await expect(page.getByText(/Reserved \$400\.00 · Consumed \$0\.00 · Nothing available \(closed\)/)).toBeVisible();
+    await expect(page.getByText(/Available \$600\.00/)).toHaveCount(0);
   } finally {
     // Turning them off hides the nav and the bill's PO section.
     await page.goto('/settings/purchase-orders');

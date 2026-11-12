@@ -467,7 +467,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "po.list",
-        summary: "Purchase orders, optionally for one vendor, each with authorized/reserved/consumed/available and billing progress.",
+        summary: "Purchase orders, optionally for one vendor, each with authorized/reserved/consumed/available (none on a closed or canceled PO) and billing progress.",
         tier: RiskTier::Read,
         person_only: false,
         permission: Permission::Read,
