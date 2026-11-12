@@ -43,6 +43,11 @@ test('several invoices as cards: moved by keyboard and by drag, then created as 
   await expect(card(page, 'Invoice SS-101').getByText('pages 1–3 · $300.00')).toBeVisible();
   await expect(card(page, 'Not part of any bill').getByText('page 6 stay in To review')).toBeVisible();
 
+  // An invoice of several pages is one stack until opened to move a page.
+  await expect(card(page, 'Invoice SS-101').getByRole('button', { name: /^Page \d\./ })).toHaveCount(0);
+  await card(page, 'Invoice SS-101').getByRole('button', { name: 'Show the 3 pages of Invoice SS-101 to move one' }).click();
+  await expect(card(page, 'Invoice SS-101').getByRole('button', { name: /^Page \d\./ })).toHaveCount(3);
+
   // Keyboard: page 3 out of SS-101 and back again, with the Move menu.
   await page.getByRole('button', { name: 'Move page 3' }).focus();
   await page.keyboard.press('Enter');
@@ -72,6 +77,14 @@ test('several invoices as cards: moved by keyboard and by drag, then created as 
   await expect(page.getByRole('button', { name: /^Create bill/ })).toHaveCount(0);
   await expect(page.getByText('Create the bills from the invoice cards')).toBeVisible();
   await page.screenshot({ path: info.outputPath('split-view.png'), animations: 'disabled' });
+
+  // A click anywhere on a card reviews that invoice page by page; I brings the cards back.
+  await card(page, 'Invoice SS-102').getByText('page 4 · $120.00').click();
+  await expect(page.getByRole('radio', { name: 'Pages' })).toBeChecked();
+  await expect(page.getByLabel('Invoice number')).toHaveValue('SS-102');
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  await page.keyboard.press('i');
+  await expect(page.getByRole('radio', { name: 'Invoices' })).toBeChecked();
 
   // One confirm, with the count and the total as read.
   await page.getByRole('button', { name: 'Create 4 bills' }).click();

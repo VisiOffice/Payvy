@@ -12,6 +12,8 @@ import { Heading } from '@astryxdesign/core/Heading';
 import { HStack } from '@astryxdesign/core/HStack';
 import { Link } from '@astryxdesign/core/Link';
 import { Selector } from '@astryxdesign/core/Selector';
+import { Kbd } from '@astryxdesign/core/Kbd';
+import { typing } from '../documents/InboxViews';
 import { SegmentedControl, SegmentedControlItem } from '@astryxdesign/core/SegmentedControl';
 import { DocumentLoading, readWithin } from '../documents/Loading';
 import { Text } from '@astryxdesign/core/Text';
@@ -175,6 +177,18 @@ export function DocumentReview() {
   const [current, setCurrent] = useState<number | null>(null);
   /** A file of several invoices shows them as cards, or its pages one at a time. */
   const [splitMode, setSplitMode] = useState<'invoices' | 'pages'>('invoices');
+  // I and P show the file as invoice cards or page by page.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (typing(e)) return;
+      const k = e.key.toLowerCase();
+      if (k !== 'i' && k !== 'p') return;
+      e.preventDefault();
+      setSplitMode(k === 'i' ? 'invoices' : 'pages');
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
   /** How many invoices the cards hold, after any pages moved. */
   const [splitCount, setSplitCount] = useState<number | null>(null);
   const [thumbnails, setThumbnails] = useState<boolean | null>(thumbnailsChoice);
@@ -832,10 +846,10 @@ export function DocumentReview() {
       <section className="payvy-review-original" aria-label="Original document">
         {detail.bill_batch && <BatchProgress batch={detail.bill_batch} />}
         {groups.length > 1 && (
-          <div className="payvy-split-mode">
+          <div className="payvy-split-mode payvy-view-switch">
             <SegmentedControl label="Show the file as" value={splitMode} onChange={(v) => setSplitMode(v as 'invoices' | 'pages')}>
-              <SegmentedControlItem value="invoices" label="Invoices" />
-              <SegmentedControlItem value="pages" label="Pages" />
+              <SegmentedControlItem value="invoices" label="Invoices" aria-keyshortcuts="I" icon={<Kbd keys="i" aria-hidden />} />
+              <SegmentedControlItem value="pages" label="Pages" aria-keyshortcuts="P" icon={<Kbd keys="p" aria-hidden />} />
             </SegmentedControl>
           </div>
         )}

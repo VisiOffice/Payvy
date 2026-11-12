@@ -2,7 +2,7 @@
 // between cards by dragging (pointer or keyboard) or with each page's Move
 // menu, and "Create N bills" splits the file and makes a bill of each part
 // that reads cleanly.
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
 import {
   closestCorners,
   DndContext,
@@ -216,10 +216,11 @@ function PageTile({
   );
 }
 
-function Drop({ id, className, label, children }: { id: string; className: string; label: string; children: ReactNode }) {
+function Drop({ id, className, label, children, onClick }: { id: string; className: string; label: string; children: ReactNode; onClick?: (e: ReactMouseEvent) => void }) {
   const { setNodeRef, isOver } = useDroppable({ id });
   return (
-    <section ref={setNodeRef} className={className} data-over={isOver || undefined} aria-label={label}>
+    // The card's own Review this one button is the keyboard way to the same choice.
+    <section ref={setNodeRef} className={className} data-over={isOver || undefined} data-clickable={onClick ? true : undefined} aria-label={label} onClick={onClick}>
       {children}
     </section>
   );
@@ -259,6 +260,12 @@ export function SplitView({
     () => remembered(doc.id, version, visible, invoices) ?? layoutOf(invoices, visible),
   );
   const [dragging, setDragging] = useState<number | null>(null);
+  // Invoices of several pages show as one stack until opened to move a page.
+  const [opened, setOpened] = useState<Set<string>>(() => new Set());
+  const open = (key: string) => setOpened((o) => new Set(o).add(key));
+  // A drag ends with a click where it was dropped; that click isn't a choice.
+  // Set when a drag starts, cleared when the next press begins.
+  const dragged = useRef(false);
   const before = useRef<Layout | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -323,6 +330,7 @@ export function SplitView({
   }
 
   function onDragStart(e: DragStartEvent) {
+    dragged.current = true;
     setDragging(pageOf(String(e.active.id)));
     before.current = layout;
   }
@@ -400,7 +408,7 @@ export function SplitView({
   }
 
   return (
-    <div className="payvy-split-view">
+    <div className="payvy-split-view" onPointerDownCapture={() => { dragged.current = false; }}>
       <header className="payvy-split-header">
         <div>
           <strong>{vendorName ? `${vendorName} · ` : ''}{n} {n === 1 ? 'invoice' : 'invoices'} in this file</strong>
@@ -416,7 +424,15 @@ export function SplitView({
         <ul className="payvy-split-grid" aria-label="Invoices in this file">
           {layout.groups.map((g, i) => (
             <li key={g.key} className="payvy-split-card-item">
-              <Drop id={g.key} className="payvy-split-card" label={invoiceName(g, i)}>
+              <Drop id={g.key} className="payvy-split-card" label={invoiceName(g, i)} onClick={locked ? undefined : (e) => {
+                // Anywhere on the card picks this invoice, except its own controls and the click a drag ends with.
+                const t = e.target as HTMLElement;
+                if (dragged.current) return;
+                if (t.closest('[role="menu"],[role="menuitem"],.payvy-split-move,.payvy-split-stack-open')) return;
+                if (t.closest('button') && !t.closest('.payvy-split-handle,.payvy-split-stack')) return;
+                if (t.closest('.payvy-split-handle') && e.detail === 0) return; // Enter or space on a page picks it up instead
+                onReview(g.pages, g.read);
+              }}>
                 <header>
                   <strong>{invoiceName(g, i)}</strong>
                   <span className="payvy-muted">
@@ -425,13 +441,26 @@ export function SplitView({
                     {!g.read && ' · read when created'}
                   </span>
                 </header>
-                <SortableContext items={g.pages.map(pageId)} strategy={rectSortingStrategy}>
-                  <ol className="payvy-split-pages" aria-label={`Pages of ${invoiceName(g, i)}`}>
-                    {g.pages.map((p) => (
-                      <PageTile key={p} page={p} documentId={doc.id} pdf={pdf} rotation={rotation(p)} destinations={destinations(p)} onMove={move} onOpen={onOpenPage} disabled={locked} />
-                    ))}
-                  </ol>
-                </SortableContext>
+                {g.pages.length > 1 && !opened.has(g.key) && !(dragging !== null && g.pages.includes(dragging)) ? (
+                  <div className="payvy-split-stack-row">
+                    <button type="button" className="payvy-split-stack" aria-label={`${invoiceName(g, i)}, ${g.pages.length} pages`} tabIndex={-1}>
+                      <Thumb documentId={doc.id} pdf={pdf} page={g.pages[0]!} rotation={rotation(g.pages[0]!)} />
+                    </button>
+                    {!locked && (
+                      <button type="button" className="payvy-split-stack-open" onClick={() => open(g.key)} aria-label={`Show the ${g.pages.length} pages of ${invoiceName(g, i)} to move one`}>
+                        {g.pages.length} pages · show
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  <SortableContext items={g.pages.map(pageId)} strategy={rectSortingStrategy}>
+                    <ol className="payvy-split-pages" aria-label={`Pages of ${invoiceName(g, i)}`}>
+                      {g.pages.map((p) => (
+                        <PageTile key={p} page={p} documentId={doc.id} pdf={pdf} rotation={rotation(p)} destinations={destinations(p)} onMove={move} onOpen={onOpenPage} disabled={locked} />
+                      ))}
+                    </ol>
+                  </SortableContext>
+                )}
                 {!locked && (
                   <Button label={`Select ${invoiceName(g, i)}`} size="sm" variant="ghost" onClick={() => onReview(g.pages, g.read)}>
                     Review this one

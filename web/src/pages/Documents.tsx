@@ -13,10 +13,11 @@ import { useToast } from '@astryxdesign/core/Toast';
 import { Page } from '../Page';
 import { run } from '../api/client';
 import type { Doc } from '../documents/types';
-import { InboxBoard, InboxTable, useInboxView, type Row } from '../documents/InboxViews';
+import { InboxBoard, InboxTable, typing, useInboxView, type Row } from '../documents/InboxViews';
 import { readWithin } from '../documents/Loading';
 
 type Status = Doc['status'];
+const STATUS_KEY: Record<string, Status> = { r: 'inbox', f: 'filed', n: 'trashed' };
 const LABEL: Record<Status, string> = { inbox: 'To review', filed: 'Filed', trashed: 'Not bills', split: 'Split' };
 const ACCEPT = 'application/pdf,image/png,image/jpeg,image/gif,image/webp,image/tiff';
 const MAX_BYTES = 25 * 1024 * 1024;
@@ -33,6 +34,20 @@ export const fileSize = (bytes: number) => bytes < 1024 * 1024 ? `${Math.max(1, 
 export function Documents() {
   const [view, setView] = useInboxView();
   const [status, setStatus] = useState<Status>('inbox');
+  const show = (s: Status) => { setStatus(s); setSearch(''); };
+  // R, F and N pick To review, Filed and Not bills; those are lists, so the table shows.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (typing(e)) return;
+      const s = STATUS_KEY[e.key.toLowerCase()];
+      if (!s) return;
+      e.preventDefault();
+      show(s);
+      setView('table');
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
   const [filed, setFiled] = useState<Row[] | null>(null);
   const [docs, setDocs] = useState<Row[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -109,9 +124,13 @@ export function Documents() {
     </section></Allowed>
     <div className="payvy-documents-toolbar">
       <div className="payvy-documents-switches">
-        {!board && <SegmentedControl label="Show" value={status} onChange={v => { setStatus(v as Status); setSearch(''); }}>
-          <SegmentedControlItem value="inbox" label="To review" /><SegmentedControlItem value="filed" label="Filed" /><SegmentedControlItem value="trashed" label="Not bills" />
-        </SegmentedControl>}
+        {!board && <div className="payvy-view-switch">
+          <SegmentedControl label="Show" value={status} onChange={v => show(v as Status)}>
+            <SegmentedControlItem value="inbox" label="To review" aria-keyshortcuts="R" icon={<Kbd keys="r" aria-hidden />} />
+            <SegmentedControlItem value="filed" label="Filed" aria-keyshortcuts="F" icon={<Kbd keys="f" aria-hidden />} />
+            <SegmentedControlItem value="trashed" label="Not bills" aria-keyshortcuts="N" icon={<Kbd keys="n" aria-hidden />} />
+          </SegmentedControl>
+        </div>}
         <div className="payvy-view-switch">
           <SegmentedControl label="View" value={view} onChange={v => setView(v as 'table' | 'board')}>
             <SegmentedControlItem value="table" label="Table" aria-keyshortcuts="T" icon={<Kbd keys="t" aria-hidden />} />
