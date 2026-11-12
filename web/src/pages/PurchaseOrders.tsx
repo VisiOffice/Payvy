@@ -66,7 +66,11 @@ const columns: TableColumn<PurchaseOrder>[] = [
   { key: 'authorized', header: 'Authorized', align: 'end', renderCell: (r) => money(r.amounts.authorized_cents) },
   { key: 'reserved', header: 'Reserved', align: 'end', renderCell: (r) => money(r.amounts.reserved_cents) },
   { key: 'consumed', header: 'Consumed', align: 'end', renderCell: (r) => money(r.amounts.consumed_cents) },
-  { key: 'available', header: 'Available', align: 'end', renderCell: (r) => money(r.amounts.available_cents) },
+  {
+    key: 'available', header: 'Available', align: 'end',
+    // A closed or canceled PO takes no more bills; the server reports 0.
+    renderCell: (r) => (r.status === 'closed' || r.status === 'canceled' ? <Text type="supporting">None</Text> : money(r.amounts.available_cents)),
+  },
 ];
 
 export function PurchaseOrders() {
@@ -175,7 +179,10 @@ function PurchaseOrderList() {
           </HStack>
           <Text>
             Authorized {money(selected.amounts.authorized_cents)} · Reserved {money(selected.amounts.reserved_cents)} ·
-            Consumed {money(selected.amounts.consumed_cents)} · Available {money(selected.amounts.available_cents)}
+            Consumed {money(selected.amounts.consumed_cents)} ·{' '}
+            {selected.status === 'closed' || selected.status === 'canceled'
+              ? `Nothing available (${STATUS_BADGE[selected.status].label.toLowerCase()})`
+              : `Available ${money(selected.amounts.available_cents)}`}
             {selected.amounts.allowance_cents > 0 && ` (includes ${money(selected.amounts.allowance_cents)} overage allowance)`}
           </Text>
           {selected.lines.length > 0 && (

@@ -132,7 +132,8 @@ async fn view(cx: &mut Cx<'_>, po: &po_store::PurchaseOrder) -> Result<Value, Co
             "reserved_cents": amounts.reserved_cents,
             "consumed_cents": amounts.consumed_cents,
             "allowance_cents": amounts.allowance_cents,
-            "available_cents": amounts.available_cents(),
+            // Nothing is available on a closed or canceled PO.
+            "available_cents": amounts.available_cents_for(&po.status),
             "progress": amounts.progress(),
         },
         "lines": lines, "allocations": allocations,

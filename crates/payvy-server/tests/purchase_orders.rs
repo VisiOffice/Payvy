@@ -1170,7 +1170,22 @@ async fn closing_lets_allocations_stand_and_their_bills_wait() {
     .unwrap();
     assert_eq!(closed["result"]["status"], "closed");
     assert_eq!(closed["result"]["amounts"]["reserved_cents"], 50_000);
-    assert_eq!(amounts(&db, &po).await["available_cents"], 50_000);
+    // Nothing can allocate to a closed PO, so nothing is shown available;
+    // what stands is still reported.
+    let shown = amounts(&db, &po).await;
+    assert_eq!(shown["available_cents"], 0, "{shown}");
+    assert_eq!(shown["reserved_cents"], 50_000, "{shown}");
+    assert_eq!(shown["authorized_cents"], 100_000, "{shown}");
+    let listed = commit(&db.state, &robert, "po.list", json!({ "vendor_id": v }))
+        .await
+        .unwrap();
+    let row = listed["result"]["purchase_orders"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == po.as_str())
+        .unwrap();
+    assert_eq!(row["amounts"]["available_cents"], 0, "{row}");
 
     // The bill waits on its now-ineligible PO, not on missing cover.
     let got = commit(&db.state, &robert, "bill.get", json!({ "bill_id": b }))
@@ -1221,6 +1236,7 @@ async fn closing_lets_allocations_stand_and_their_bills_wait() {
     .unwrap();
     assert_eq!(canceled["result"]["status"], "canceled");
     assert_eq!(canceled["result"]["amounts"]["reserved_cents"], 40_000);
+    assert_eq!(canceled["result"]["amounts"]["available_cents"], 0);
     db.drop().await;
 }
 

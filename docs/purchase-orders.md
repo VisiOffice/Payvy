@@ -35,7 +35,10 @@ Closing or canceling (Q6, as proposed in review) stops new allocations — only 
 POs take them — but reserved and consumed allocations already made stand, and nothing
 is released implicitly. Their bills carry a blocking `ineligible_po` exception until
 the allocation is reversed with `po.allocation_reverse` or a person permits the bill
-with `po.override`.
+with `po.override`. A closed or canceled PO shows nothing available
+(`available_cents` is 0), since it never takes an allocation again; authorized, reserved
+and consumed still report what stands. A suspended or draft PO keeps its available
+figure, which is what reactivation or activation makes available.
 
 ## Suspended purchase orders
 

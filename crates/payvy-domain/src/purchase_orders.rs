@@ -105,6 +105,11 @@ pub fn outside_period(
     period_start.is_some_and(|s| invoice_date < s) || period_end.is_some_and(|e| invoice_date > e)
 }
 
+/// A closed or canceled PO never takes an allocation again.
+pub fn is_final(status: &str) -> bool {
+    matches!(status, "closed" | "canceled")
+}
+
 /// Which shortfall exception a partly covered bill carries: `over_available`
 /// when the vendor's other active POs cannot cover the rest either (the
 /// decided cumulative caps are the limit), `uncovered` otherwise.
@@ -136,6 +141,18 @@ impl Amounts {
     /// How much more can be reserved right now (never negative).
     pub fn available_cents(&self) -> Cents {
         (self.ceiling_cents() - self.committed_cents()).max(0)
+    }
+    /// What a PO in `status` can still take. A closed or canceled PO is
+    /// final and takes no allocation again, so nothing is available on it;
+    /// reserved and consumed still report what stands. A draft or suspended
+    /// PO keeps its figure: it is what activation or reactivation makes
+    /// available, and allocation refuses either status meanwhile.
+    pub fn available_cents_for(&self, status: &str) -> Cents {
+        if is_final(status) {
+            0
+        } else {
+            self.available_cents()
+        }
     }
     /// Derived billing progress; never stored as lifecycle.
     pub fn progress(&self) -> &'static str {
@@ -182,6 +199,23 @@ mod tests {
             Some(OverPeriod::RequireFullCover)
         );
         assert_eq!(OverPeriod::parse("script"), None);
+    }
+
+    #[test]
+    fn a_closed_or_canceled_po_has_nothing_available() {
+        let a = Amounts {
+            authorized_cents: 100_000,
+            reserved_cents: 50_000,
+            consumed_cents: 0,
+            allowance_cents: 0,
+        };
+        assert_eq!(a.available_cents_for("active"), 50_000);
+        assert_eq!(a.available_cents_for("suspended"), 50_000);
+        assert_eq!(a.available_cents_for("draft"), 50_000);
+        assert_eq!(a.available_cents_for("closed"), 0);
+        assert_eq!(a.available_cents_for("canceled"), 0);
+        // Reserved and consumed are untouched by the status.
+        assert_eq!(a.committed_cents(), 50_000);
     }
 
     #[test]
