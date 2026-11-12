@@ -685,3 +685,91 @@ async fn role_loss_is_allowed_while_someone_else_can_still_approve_the_step() {
     );
     db.drop().await;
 }
+
+#[tokio::test]
+async fn the_last_eligible_approver_counts_duties_not_just_roles() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let operator = person("operator");
+    add(&db, "alice", json!(["approver", "ap_clerk"])).await;
+    for name in ["bob", "carol"] {
+        add(&db, name, json!(["approver"])).await;
+    }
+    commit(
+        &db.state,
+        &operator,
+        "approval_rules.set",
+        json!({ "submitter_cannot_approve": true, "reason": "auditor asked" }),
+    )
+    .await
+    .unwrap();
+    // Step 1 is Bob's; step 2 is open to anyone.
+    set_workflow(
+        &db.state,
+        &operator,
+        None,
+        json!([
+            { "id": "first", "type": "approve", "approvers": ["bob"] },
+            { "id": "second", "type": "approve", "approvers": [] },
+            { "id": "pay", "type": "pay", "release": "manual" }]),
+    )
+    .await;
+    // Alice enters the bill; Bob approves step 1. At step 2, Alice is
+    // blocked as the submitter and Bob as an earlier approver, so Carol
+    // is the last person who could still approve it.
+    let v = vendor(&db.state, &operator, "Duties Vendor").await;
+    let b = bill(&db.state, &member("alice"), &v, "E-1", 10_000).await;
+    commit(
+        &db.state,
+        &member("bob"),
+        "bill.approve",
+        json!({ "bill_id": b }),
+    )
+    .await
+    .unwrap();
+    let e = assign(&db, "carol", json!(["ap_clerk"])).await.unwrap_err();
+    assert!(matches!(e, CommandError::Conflict(_)), "{e}");
+    assert!(
+        e.to_string().contains("nobody else can still approve"),
+        "{e}"
+    );
+
+    // With a fourth approver who could still approve step 2, it goes through.
+    add(&db, "dave", json!(["approver"])).await;
+    assign(&db, "carol", json!(["ap_clerk"])).await.unwrap();
+    db.drop().await;
+}
+
+#[tokio::test]
+async fn a_named_step_counts_only_others_who_still_hold_approve() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let operator = person("operator");
+    add(&db, "dave", json!(["approver"])).await;
+    add(&db, "erin", json!(["approver"])).await;
+    let v = vendor(&db.state, &operator, "Named Vendor").await;
+    set_workflow(
+        &db.state,
+        &operator,
+        Some(&v),
+        json!([
+            { "id": "ok", "type": "approve", "approvers": ["dave", "erin"] },
+            { "id": "pay", "type": "pay", "release": "manual" }]),
+    )
+    .await;
+    bill(&db.state, &operator, &v, "N-1", 10_000).await;
+
+    // Erin's role goes first: Dave remains, so it's allowed.
+    assign(&db, "erin", json!(["ap_clerk"])).await.unwrap();
+    // Then Dave's: Erin is still named on the step but can no longer
+    // approve, so Dave is the last eligible approver — refused.
+    let e = assign(&db, "dave", json!(["ap_clerk"])).await.unwrap_err();
+    assert!(matches!(e, CommandError::Conflict(_)), "{e}");
+    assert!(
+        e.to_string().contains("nobody else can still approve"),
+        "{e}"
+    );
+    db.drop().await;
+}

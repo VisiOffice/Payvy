@@ -144,6 +144,11 @@ fn validate_roles(mut roles: Vec<Role>) -> Result<Vec<Role>, CommandError> {
 /// refused exactly when the actor is that last eligible approver —
 /// an "all" step needs everyone who hasn't approved yet; an "any" step
 /// (named or open to anyone) needs only one eligible approver left.
+/// "Eligible" is whatever `duties::turn` — the same code that actually
+/// approves bills — says for that bill, built the way bills.rs builds
+/// it, so the two can never drift: whoever already approved a step on
+/// the bill, and (when the company rule is on) whoever entered it or
+/// uploaded its document, are out, having the role notwithstanding.
 /// Role changes at other times stay possible, and queued notices
 /// recheck eligibility before send.
 async fn approver_strand_refusal(cx: &mut Cx<'_>, actor: &str) -> Result<(), CommandError> {
@@ -160,7 +165,16 @@ async fn approver_strand_refusal(cx: &mut Cx<'_>, actor: &str) -> Result<(), Com
         let r = store::actor_roles(&mut cx.tx, cx.org, &p.actor).await?;
         can_approve.insert(p.actor, Permission::Approve.allows(&r));
     }
-    let eligible = |name: &str| can_approve.get(name).copied().unwrap_or(false);
+    let rules = payvy_domain::duties::Rules {
+        submitter_cannot_approve: store::approval_rules(&mut cx.tx)
+            .await?
+            .submitter_cannot_approve,
+    };
+    let approver_people: Vec<String> = can_approve
+        .iter()
+        .filter(|(_, ok)| **ok)
+        .map(|(name, _)| name.clone())
+        .collect();
     let bills = store::list_bills(&mut cx.tx, Some(State::Open), None, None, 5_000).await?;
     if bills.is_empty() {
         return Ok(());
@@ -173,6 +187,7 @@ async fn approver_strand_refusal(cx: &mut Cx<'_>, actor: &str) -> Result<(), Com
             .collect();
     let ids: Vec<uuid::Uuid> = bills.iter().map(|b| b.id).collect();
     let (approvals, signals) = store::facts(&mut cx.tx, &ids).await?;
+    let uploaders = store::bill_uploaders(&mut cx.tx, &ids).await?;
     let limits = store::auto_pay_limits(&mut cx.tx).await?;
     let builtin = Workflow::builtin_default();
     for bill in &bills {
@@ -214,24 +229,47 @@ async fn approver_strand_refusal(cx: &mut Cx<'_>, actor: &str) -> Result<(), Com
         let Some(step) = wf.steps.iter().find(|s| &s.id == step_id) else {
             continue;
         };
-        let StepKind::Approve {
-            approvers, require, ..
-        } = &step.kind
-        else {
+        let StepKind::Approve { require, .. } = &step.kind else {
             continue;
         };
-        // Is this actor the last person who could still approve it?
+        // The same turn computation that approves bills decides who
+        // could still approve this step; refuse only when the actor can
+        // approve and is the last such person: an "all" step still waits
+        // on them, or an "any" step has nobody else left.
+        let uploaded_by: Vec<String> = uploaders
+            .iter()
+            .filter(|(b, _)| *b == bill.id)
+            .map(|(_, u)| u.clone())
+            .collect();
+        let Some(turn) = payvy_domain::duties::turn(
+            &payvy_domain::duties::Context {
+                workflow: wf,
+                status: &progress.status,
+                amount_cents: bill.amount_cents,
+                approvals: &a,
+                entered_by: &bill.created_by,
+                uploaded_by: &uploaded_by,
+                people: &approver_people,
+                rules,
+            },
+            actor,
+            true,
+        ) else {
+            continue;
+        };
+        if !turn.can_approve {
+            continue;
+        }
         let last_eligible = match require {
-            // Everyone listed must approve: anyone still waiting is needed.
             Require::All => waiting_on.iter().any(|w| w == actor),
-            Require::Any if approvers.is_empty() => {
-                // Open to anyone: last only if nobody else here can approve.
-                !can_approve.iter().any(|(name, ok)| *ok && name != actor)
-            }
-            Require::Any => {
-                approvers.iter().any(|a| a == actor)
-                    && !approvers.iter().any(|a| a != actor && eligible(a))
-            }
+            // turn's others for a named step is the step's names, without
+            // checking they still hold Approve (in bills.rs it only
+            // feeds a "who else" message). Here it decides a refusal, so
+            // count only others who can still approve.
+            Require::Any => !turn
+                .others
+                .iter()
+                .any(|o| can_approve.get(o).copied().unwrap_or(false)),
         };
         if last_eligible {
             return Err(CommandError::Conflict(format!(
