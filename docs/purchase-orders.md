@@ -75,6 +75,27 @@ about the bill changing, so an override permits the shortfall either way it is
 labelled today. Its fingerprint binds to the family name `uncovered`, which also
 keeps overrides written before `over_available` existed valid.
 
+## Quantity matching
+
+Bill lines carry the quantity, unit and unit price as printed (from extraction's
+line details, the invoice review, or `bill.create` input); PO lines already stored
+theirs. Quantities are exact micro-units — no float enters the arithmetic
+(`payvy-domain::quantity`, `invoice_evidence::quantity_micro`).
+
+A bill line belongs to a PO line by normalized description, with the unit agreeing
+when both sides state one. More than one fit is `ambiguous_line`, none is
+`unmatched_line`; both are identification findings and never silently map a line.
+Against that mapping, quantities are cumulative across every live allocation to
+the PO: billing past the ordered quantity is `quantity_over`, and a billed rate
+one cent off the PO line's rate is `rate_mismatch` (exact to the cent).
+
+The registry's `quantity_matching` policy decides what findings do, under the
+version the bill pinned: `flag_only` (default) shows them beside the bill — with
+ordered/billed/remaining per line and on `po.match_preview` candidates — and
+never blocks; `enforce` makes `quantity_over` and `rate_mismatch` block payment
+like other exceptions (overridable). Lines without quantities, on either side,
+are amount-only and not quantity-checked.
+
 ## Overrides and separation of duties
 
 `po.override` permits one bill's PO exception (Confirmed tier, person only, Admin), bound to the

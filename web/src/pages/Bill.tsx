@@ -70,7 +70,9 @@ interface Detail {
     overridden: boolean;
     /** Policy findings that show beside the bill without blocking it. */
     notices: { kind: string; po_number: string | null; detail: string }[];
-    policy: { over_period: string; version: number | null };
+    quantity_lines: { po_number: string; description: string; unit: string | null; ordered: string; billed: string; remaining: string; unit_price_cents: number | null }[];
+    quantity_findings: { kind: string; detail: string; po_number: string }[];
+    policy: { over_period: string; quantity_matching: string; version: number | null };
   };
   arrivals: {
     id: string;
@@ -410,7 +412,7 @@ export function BillPage() {
 }
 
 interface PoPreview {
-  candidates: { po_id: string; po_number: string; available_cents: number; proposed_cents: number; verified_reference: boolean; over_period: boolean }[];
+  candidates: { po_id: string; po_number: string; available_cents: number; proposed_cents: number; verified_reference: boolean; over_period: boolean; quantity_findings: { kind: string; detail: string }[] }[];
 }
 
 /** PO matching beside the invoice: identify, reserve, accept, override.
@@ -506,6 +508,23 @@ function PoPanel({ billId, po, onChange }: {
       {po.notices.map((n, i) => (
         <Banner key={i} status="info" title={`Flagged: ${n.kind.replaceAll('_', ' ')}`} description={n.detail} />
       ))}
+      {po.quantity_lines.length > 0 && (
+        <VStack gap={1}>
+          <Text weight="semibold">Quantities</Text>
+          {po.quantity_lines.map((q, i) => (
+            <HStack key={i} hAlign="between" gap={3}>
+              <Text>
+                {q.description} <Text type="supporting">· {q.po_number}</Text>
+              </Text>
+              <Text hasTabularNumbers>
+                {q.billed} of {q.ordered}
+                {q.unit ? ` ${q.unit}` : ''} billed · {q.remaining} left
+                {q.unit_price_cents != null ? ` · at ${money(q.unit_price_cents)}` : ''}
+              </Text>
+            </HStack>
+          ))}
+        </VStack>
+      )}
       {po.allocations.map((a) => (
         <HStack key={a.allocation_id} hAlign="between" gap={3} vAlign="center">
           <Text>
@@ -520,7 +539,7 @@ function PoPanel({ billId, po, onChange }: {
       {candidates.map((c) => (
         <HStack key={c.po_id} gap={2} vAlign="end">
           <TextInput
-            label={`${c.po_number} (${money(c.available_cents)} available)${c.over_period ? ' · outside its period' : ''}`}
+            label={`${c.po_number} (${money(c.available_cents)} available)${c.over_period ? ' · outside its period' : ''}${c.quantity_findings.length ? ` · ${c.quantity_findings.length} quantity finding${c.quantity_findings.length === 1 ? '' : 's'}` : ''}`}
             value={amounts[c.po_id] ?? ''}
             onChange={(v: string) => setAmounts((m) => ({ ...m, [c.po_id]: v }))}
           />

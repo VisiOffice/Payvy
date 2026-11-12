@@ -683,15 +683,17 @@ pub async fn set_vendor_settings(
 
 // ── The enumerated policy registry ───────────────────────────────────────
 
-use payvy_domain::purchase_orders::{OverPeriod, Policies};
+use payvy_domain::purchase_orders::{OverPeriod, Policies, QuantityMatching};
 
 fn policy_view(vendor_id: Uuid, v: Option<&po_store::PolicyVersion>) -> Value {
     match v {
         Some(v) => json!({ "vendor_id": vendor_id, "version": v.version,
-            "over_period": v.over_period, "reason": v.reason,
+            "over_period": v.over_period, "quantity_matching": v.quantity_matching,
+            "reason": v.reason,
             "updated_by": v.created_by, "updated_at": v.created_at }),
         None => json!({ "vendor_id": vendor_id, "version": 0,
             "over_period": Policies::default().over_period.as_str(),
+            "quantity_matching": Policies::default().quantity_matching.as_str(),
             "reason": null, "updated_by": null, "updated_at": null }),
     }
 }
@@ -701,6 +703,7 @@ fn policy_view(vendor_id: Uuid, v: Option<&po_store::PolicyVersion>) -> Value {
 pub struct PolicyIn {
     vendor_id: Uuid,
     over_period: Option<String>,
+    quantity_matching: Option<String>,
     reason: Option<String>,
 }
 
@@ -728,11 +731,16 @@ pub async fn policy_set(cx: &mut Cx<'_>, input: PolicyIn) -> Result<Value, Comma
         })?,
         None => cur_policies.over_period,
     };
-    if next_over == cur_policies.over_period {
-        return Err(CommandError::Conflict(format!(
-            "over_period is already {} for this vendor",
-            next_over.as_str()
-        )));
+    let next_qty = match input.quantity_matching.as_deref() {
+        Some(s) => QuantityMatching::parse(s).ok_or_else(|| {
+            CommandError::Invalid("quantity_matching is flag_only or enforce".into())
+        })?,
+        None => cur_policies.quantity_matching,
+    };
+    if next_over == cur_policies.over_period && next_qty == cur_policies.quantity_matching {
+        return Err(CommandError::Conflict(
+            "these policies are already in force for this vendor".into(),
+        ));
     }
     let reason = text(input.reason);
     let v = po_store::set_policy(
@@ -740,6 +748,7 @@ pub async fn policy_set(cx: &mut Cx<'_>, input: PolicyIn) -> Result<Value, Comma
         cx.org,
         input.vendor_id,
         next_over.as_str(),
+        next_qty.as_str(),
         reason.as_deref(),
         &cx.actor.name,
         cx.now,
@@ -749,8 +758,10 @@ pub async fn policy_set(cx: &mut Cx<'_>, input: PolicyIn) -> Result<Value, Comma
         "po.policy_changed",
         input.vendor_id,
         json!({ "vendor_id": input.vendor_id, "version": v.version,
-                "from": { "over_period": cur_policies.over_period.as_str() },
-                "to": { "over_period": next_over.as_str() }, "reason": reason }),
+                "from": { "over_period": cur_policies.over_period.as_str(),
+                          "quantity_matching": cur_policies.quantity_matching.as_str() },
+                "to": { "over_period": next_over.as_str(),
+                        "quantity_matching": next_qty.as_str() }, "reason": reason }),
     )
     .await?;
     Ok(policy_view(input.vendor_id, Some(&v)))
@@ -760,6 +771,8 @@ fn policies_of(v: Option<&po_store::PolicyVersion>) -> Policies {
     match v {
         Some(v) => Policies {
             over_period: OverPeriod::parse(&v.over_period).unwrap_or(OverPeriod::FlagOnly),
+            quantity_matching: QuantityMatching::parse(&v.quantity_matching)
+                .unwrap_or(QuantityMatching::FlagOnly),
         },
         None => Policies::default(),
     }
@@ -803,6 +816,92 @@ async fn over_period_allocations(
     Ok(out)
 }
 
+/// Quantity matching for one bill against one PO: the findings and the
+/// ordered/billed/remaining rows a person reads. Empty when the PO's lines
+/// carry no quantities — those lines are amount-only in v1's terms.
+async fn quantity_check(
+    cx: &mut Cx<'_>,
+    bill: &store::Bill,
+    po: &po_store::PurchaseOrder,
+) -> Result<(Vec<payvy_domain::quantity::Finding>, Vec<Value>), CommandError> {
+    use payvy_domain::invoice_evidence::format_micro;
+    use payvy_domain::quantity::{self, OrderedLine};
+    let Some(rev) = &po.revision else {
+        return Ok((Vec::new(), Vec::new()));
+    };
+    let ordered: Vec<OrderedLine> = po_store::lines_for(&mut cx.tx, rev.id)
+        .await?
+        .into_iter()
+        .filter_map(|l| {
+            l.quantity.map(|q| OrderedLine {
+                description: l.description,
+                unit: l.unit,
+                ordered_micro: (q * 1_000_000.0).round() as i64,
+                unit_price_cents: l.unit_price_cents,
+            })
+        })
+        .collect();
+    if ordered.is_empty() {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    let current = store::bill_lines(&mut cx.tx, bill.id).await?;
+    let mut prior = Vec::new();
+    for (other_bill, lines) in po_store::allocated_bill_lines(&mut cx.tx, po.id).await? {
+        if other_bill != bill.id {
+            prior.extend(lines);
+        }
+    }
+    let findings = quantity::evaluate(&ordered, &prior, &current);
+    let before = quantity::billed_micro(&ordered, &prior);
+    let this_bill = quantity::billed_micro(&ordered, &current);
+    let rows = ordered
+        .iter()
+        .enumerate()
+        .map(|(i, o)| {
+            json!({ "po_number": po.po_number, "description": o.description,
+                "unit": o.unit, "ordered": format_micro(o.ordered_micro),
+                "billed": format_micro(before[i] + this_bill[i]),
+                "remaining": format_micro(quantity::remaining_micro(o.ordered_micro, before[i], this_bill[i])),
+                "unit_price_cents": o.unit_price_cents })
+        })
+        .collect();
+    Ok((findings, rows))
+}
+
+fn finding_detail(f: &payvy_domain::quantity::Finding) -> String {
+    use payvy_domain::invoice_evidence::format_micro;
+    use payvy_domain::quantity::Finding;
+    match f {
+        Finding::QuantityOver {
+            description,
+            ordered_micro,
+            billed_before_micro,
+            this_bill_micro,
+            ..
+        } => format!(
+            "{description}: {} ordered, {} billed before this bill, {} on it",
+            format_micro(*ordered_micro),
+            format_micro(*billed_before_micro),
+            format_micro(*this_bill_micro)
+        ),
+        Finding::RateMismatch {
+            description,
+            ordered_cents,
+            billed_cents,
+        } => format!(
+            "{description}: billed at {} against a PO rate of {}",
+            payvy_domain::workflow::dollars(*billed_cents),
+            payvy_domain::workflow::dollars(*ordered_cents)
+        ),
+        Finding::UnmatchedLine { description } => {
+            format!("{description}: no PO line matches this bill line")
+        }
+        Finding::AmbiguousLine { description } => {
+            format!("{description}: more than one PO line matches this bill line")
+        }
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Preview {
@@ -831,6 +930,7 @@ pub async fn match_preview(cx: &mut Cx<'_>, input: Preview) -> Result<Value, Com
         if proposed > 0 {
             any_available = true;
         }
+        let (qty_findings, _) = quantity_check(cx, &bill, &po).await?;
         candidates.push(json!({
             "po_id": po.id, "po_number": po.po_number,
             "verified_reference": input.po_number.as_deref() == Some(po.po_number.as_str()),
@@ -838,6 +938,9 @@ pub async fn match_preview(cx: &mut Cx<'_>, input: Preview) -> Result<Value, Com
             "proposed_cents": proposed,
             "over_period": payvy_domain::purchase_orders::outside_period(
                 po.period_start, po.period_end, bill.invoice_date),
+            "quantity_findings": qty_findings.iter()
+                .map(|f| json!({ "kind": f.kind(), "detail": finding_detail(f) }))
+                .collect::<Vec<_>>(),
             "exception": if proposed >= remaining { Value::Null } else { json!("over_available") },
         }));
     }
@@ -1131,6 +1234,27 @@ pub async fn bill_exception(
             }));
         }
     }
+    // Quantity matching, under the pinned policy: enforce makes an
+    // over-billed quantity or a rate difference block like any other
+    // exception. Identification findings (unmatched/ambiguous) only flag.
+    if policies.quantity_matching == QuantityMatching::Enforce {
+        let mut seen = std::collections::HashSet::new();
+        for a in &allocs {
+            if !seen.insert(a.po_id) {
+                continue;
+            }
+            if let Some(po) = po_store::get_po(&mut cx.tx, a.po_id).await? {
+                let (findings, _) = quantity_check(cx, bill, &po).await?;
+                if let Some(f) = findings.iter().find(|f| f.blocks()) {
+                    return Ok(Some(Exception {
+                        kind: f.kind(),
+                        excess_cents: 0,
+                        detail: format!("{} (PO {})", finding_detail(f), po.po_number),
+                    }));
+                }
+            }
+        }
+    }
     if settings.require_po && covered == 0 {
         return Ok(Some(Exception {
             kind: "no_po",
@@ -1273,6 +1397,28 @@ pub async fn bill_po_view(cx: &mut Cx<'_>, bill: &store::Bill) -> Result<Value, 
     // flag_only policies show beside the bill without blocking it.
     let (policies, policy_version) = policies_for_bill(cx, bill).await?;
     let mut notices = Vec::new();
+    let mut quantity_lines = Vec::new();
+    let mut quantity_findings = Vec::new();
+    {
+        let mut seen = std::collections::HashSet::new();
+        for a in &allocs {
+            if !seen.insert(a.po_id) {
+                continue;
+            }
+            if let Some(po) = po_store::get_po(&mut cx.tx, a.po_id).await? {
+                let (findings, rows) = quantity_check(cx, bill, &po).await?;
+                quantity_lines.extend(rows);
+                for f in &findings {
+                    quantity_findings.push(json!({ "kind": f.kind(),
+                        "detail": finding_detail(f), "po_number": po.po_number }));
+                    if policies.quantity_matching == QuantityMatching::FlagOnly {
+                        notices.push(json!({ "kind": f.kind(), "po_number": po.po_number,
+                            "detail": format!("{} (PO {})", finding_detail(f), po.po_number) }));
+                    }
+                }
+            }
+        }
+    }
     if policies.over_period == OverPeriod::FlagOnly {
         for (a, po) in over_period_allocations(cx, bill, &allocs).await? {
             notices.push(json!({ "kind": "over_period", "po_number": po.po_number,
@@ -1293,7 +1439,11 @@ pub async fn bill_po_view(cx: &mut Cx<'_>, bill: &store::Bill) -> Result<Value, 
         "exception": ex.as_ref().map(|e| json!({ "kind": e.kind, "excess_cents": e.excess_cents, "detail": e.detail })),
         "overridden": holding.is_some(),
         "notices": notices,
-        "policy": { "over_period": policies.over_period.as_str(), "version": policy_version },
+        "quantity_lines": quantity_lines,
+        "quantity_findings": quantity_findings,
+        "policy": { "over_period": policies.over_period.as_str(),
+                    "quantity_matching": policies.quantity_matching.as_str(),
+                    "version": policy_version },
     }))
 }
 

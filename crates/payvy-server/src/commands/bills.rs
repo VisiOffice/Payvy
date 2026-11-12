@@ -339,6 +339,16 @@ pub async fn create(cx: &mut Cx<'_>, mut input: Create) -> Result<Value, Command
         due_date,
     )
     .map_err(|e| CommandError::Invalid(e.to_string()))?;
+    for line in &input.lines {
+        if let Some(q) = &line.quantity
+            && payvy_domain::invoice_evidence::quantity_micro(q).is_none()
+        {
+            return Err(CommandError::Invalid(format!(
+                "line {:?} has a quantity that isn't a number: {q:?}",
+                line.description
+            )));
+        }
+    }
     let corrected = match input.extraction_id {
         Some(id) => {
             let entered = json!({

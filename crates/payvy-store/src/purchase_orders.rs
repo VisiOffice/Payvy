@@ -551,6 +551,8 @@ pub struct PolicyVersion {
     pub status: String,
     /// flag_only | require_full_cover (payvy-domain::purchase_orders::OverPeriod)
     pub over_period: String,
+    /// flag_only | enforce (payvy-domain::purchase_orders::QuantityMatching)
+    pub quantity_matching: String,
     pub reason: Option<String>,
     pub created_by: String,
     pub created_at: DateTime<Utc>,
@@ -563,6 +565,7 @@ fn policy_version(r: &PgRow) -> PolicyVersion {
         version: r.get("version"),
         status: r.get("status"),
         over_period: r.get("over_period"),
+        quantity_matching: r.get("quantity_matching"),
         reason: r.get("reason"),
         created_by: r.get("created_by"),
         created_at: r.get("created_at"),
@@ -571,7 +574,7 @@ fn policy_version(r: &PgRow) -> PolicyVersion {
 
 macro_rules! policy_cols {
     () => {
-        "id, vendor_id, version, status, over_period, reason, created_by, created_at"
+        "id, vendor_id, version, status, over_period, quantity_matching, reason, created_by, created_at"
     };
 }
 
@@ -603,11 +606,13 @@ pub async fn policy_by_id(tx: &mut Tx, id: Uuid) -> anyhow::Result<Option<Policy
 /// A person's change: the active version is superseded and a new one takes
 /// its place. Old versions are never edited, so a bill's pin keeps meaning
 /// what it meant when the bill was created.
+#[allow(clippy::too_many_arguments)]
 pub async fn set_policy(
     tx: &mut Tx,
     org: Uuid,
     vendor_id: Uuid,
     over_period: &str,
+    quantity_matching: &str,
     reason: Option<&str>,
     by: &str,
     now: DateTime<Utc>,
@@ -634,12 +639,49 @@ pub async fn set_policy(
     .get("v");
     let id = Uuid::new_v4();
     sqlx::query(
-        "INSERT INTO vendor_po_policies (id, org_id, vendor_id, version, status, over_period, reason, created_by, created_at) VALUES ($1,$2,$3,$4,'active',$5,$6,$7,$8)",
+        "INSERT INTO vendor_po_policies (id, org_id, vendor_id, version, status, over_period, quantity_matching, reason, created_by, created_at) VALUES ($1,$2,$3,$4,'active',$5,$6,$7,$8,$9)",
     )
-    .bind(id).bind(org).bind(vendor_id).bind(version).bind(over_period).bind(reason).bind(by).bind(now)
+    .bind(id).bind(org).bind(vendor_id).bind(version).bind(over_period).bind(quantity_matching).bind(reason).bind(by).bind(now)
     .execute(&mut **tx)
     .await?;
     policy_by_id(tx, id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("the policy version just written is missing"))
+}
+
+/// Lines of every bill with a live (not released) allocation to this PO,
+/// grouped by bill in allocation order: the cumulative billed quantities
+/// quantity matching counts.
+pub async fn allocated_bill_lines(
+    tx: &mut Tx,
+    po_id: Uuid,
+) -> anyhow::Result<Vec<(Uuid, Vec<payvy_domain::bills::Line>)>> {
+    let rows = sqlx::query(
+        "SELECT a.bill_id AS bill_id, bl.description, bl.amount_cents, bl.account, \
+         bl.quantity_micro, bl.unit, bl.unit_price_cents \
+         FROM po_allocations a JOIN bill_lines bl ON bl.bill_id = a.bill_id \
+         WHERE a.po_id = $1 AND a.state <> 'released' AND a.bill_id IS NOT NULL \
+         ORDER BY a.created_at, a.id, bl.position",
+    )
+    .bind(po_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    let mut out: Vec<(Uuid, Vec<payvy_domain::bills::Line>)> = Vec::new();
+    for r in &rows {
+        let bill_id: Uuid = r.get("bill_id");
+        let micro: Option<i64> = r.get("quantity_micro");
+        let line = payvy_domain::bills::Line {
+            description: r.get("description"),
+            amount_cents: r.get("amount_cents"),
+            account: r.get("account"),
+            quantity: micro.map(payvy_domain::invoice_evidence::format_micro),
+            unit: r.get("unit"),
+            unit_price_cents: r.get("unit_price_cents"),
+        };
+        match out.iter_mut().find(|(id, _)| *id == bill_id) {
+            Some((_, lines)) => lines.push(line),
+            None => out.push((bill_id, vec![line])),
+        }
+    }
+    Ok(out)
 }

@@ -12,6 +12,7 @@ pub mod invoice_review;
 pub mod pages;
 pub mod permissions;
 pub mod purchase_orders;
+pub mod quantity;
 pub mod workflow;
 
 /// Money is integer cents, always.

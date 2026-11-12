@@ -51,3 +51,42 @@ test('a person suspends and reactivates a PO, and sets the over-period policy', 
   if (await toggle.isChecked()) await toggle.click();
   await expect(toggle).not.toBeChecked();
 });
+
+test('quantities show ordered, billed and remaining on the bill', async ({ page }) => {
+  await page.goto('/settings/purchase-orders');
+  const toggle = page.getByRole('switch', { name: 'Use purchase orders', exact: true });
+  if (!(await toggle.isChecked())) await toggle.click();
+  await expect(toggle).toBeChecked();
+  try {
+    const v = await vendor('Quantity Hauler');
+    const created = await agent<{ id: string }>('po.create', {
+      vendor_id: v, po_number: 'PO-QTY-1', owner: 'robert', authorized_cents: 100_000,
+      lines: [{ description: 'Haul', quantity: 3, unit: 'load', unit_price_cents: 10_000, amount_cents: 30_000 }],
+    });
+    await command(page, 'po.set_vendor_settings', { vendor_id: v, require_po: true });
+    await command(page, 'po.activate', { po_id: created.id });
+    const b = await agent<{ bill: { id: string } }>('bill.create', {
+      vendor_id: v, invoice_number: 'QTY-1', invoice_date: '2027-01-15', amount_cents: 20_000,
+      lines: [{ description: 'Haul', amount_cents: 20_000, quantity: '2', unit: 'load', unit_price_cents: 10_000 }],
+    });
+    // Reserve through the confirmed preview, as the app does.
+    const preview = await page.request.post('/api/commands/po.match_apply', {
+      headers: { 'x-payvy-client': 'web' },
+      data: { mode: 'preview', input: { bill_id: b.bill.id, allocations: [{ po_id: created.id, amount_cents: 20_000 }] } },
+    });
+    const token = (await preview.json()).confirm_token as string;
+    const applied = await page.request.post('/api/commands/po.match_apply', {
+      headers: { 'x-payvy-client': 'web' },
+      data: { mode: 'commit', confirm_token: token, input: { bill_id: b.bill.id, allocations: [{ po_id: created.id, amount_cents: 20_000 }] } },
+    });
+    expect(applied.ok(), await applied.text()).toBe(true);
+
+    await page.goto(`/bills/${b.bill.id}`);
+    await expect(page.getByText('Quantities')).toBeVisible();
+    await expect(page.getByText(/2 of 3 load billed · 1 left/)).toBeVisible();
+  } finally {
+    await page.goto('/settings/purchase-orders');
+    if (await toggle.isChecked()) await toggle.click();
+    await expect(toggle).not.toBeChecked();
+  }
+});

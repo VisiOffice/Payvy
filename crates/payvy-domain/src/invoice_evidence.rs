@@ -155,6 +155,29 @@ fn decimal(s: &str) -> Option<(i128, i128)> {
         })?;
     Some((if negative { -v } else { v }, scale))
 }
+/// A quantity as an exact count of micro-units (1 = 1_000_000), so
+/// cumulative quantity arithmetic never touches a float. The parser
+/// allows at most 6 decimal places, so the conversion is exact.
+pub fn quantity_micro(s: &str) -> Option<i64> {
+    let (v, scale) = decimal(s)?;
+    let micro = v.checked_mul(1_000_000)?.checked_div(scale)?;
+    i64::try_from(micro).ok()
+}
+
+/// A micro-unit quantity back as a plain decimal string ("2.5", "3").
+pub fn format_micro(micro: i64) -> String {
+    let sign = if micro < 0 { "-" } else { "" };
+    let abs = (micro as i128).abs();
+    let whole = abs / 1_000_000;
+    let frac = abs % 1_000_000;
+    if frac == 0 {
+        format!("{sign}{whole}")
+    } else {
+        let frac = format!("{frac:06}");
+        format!("{sign}{whole}.{}", frac.trim_end_matches('0'))
+    }
+}
+
 pub fn product_cents(quantity: &str, rate: &str) -> Option<i64> {
     let (q, qs) = decimal(quantity)?;
     let (r, rs) = decimal(rate)?;

@@ -414,6 +414,17 @@ pub fn interpret(read: &Read) -> (Draft, Vec<Check>) {
                 description: l.description.trim().to_owned(),
                 amount_cents: c,
                 account: None,
+                quantity: l
+                    .details
+                    .as_ref()
+                    .and_then(|d| d.quantity.clone())
+                    .filter(|q| crate::invoice_evidence::quantity_micro(q).is_some()),
+                unit: l.details.as_ref().and_then(|d| d.unit.clone()),
+                unit_price_cents: l
+                    .details
+                    .as_ref()
+                    .and_then(|d| d.unit_price.as_deref())
+                    .and_then(|p| parse_money(p).ok()),
             }),
             Err(e) => {
                 lines_ok = false;
@@ -578,11 +589,7 @@ pub fn bill_lines(draft: &Draft) -> Option<Vec<Line>> {
     let mut lines = draft.lines.clone();
     match draft.tax_cents {
         _ if sum == total => {}
-        Some(tax) if tax > 0 && sum + tax == total => lines.push(Line {
-            description: "Tax".into(),
-            amount_cents: tax,
-            account: None,
-        }),
+        Some(tax) if tax > 0 && sum + tax == total => lines.push(Line::amount("Tax".into(), tax)),
         _ => return None,
     }
     Some(lines)

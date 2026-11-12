@@ -31,6 +31,7 @@ interface VendorPolicy {
   vendor_id: string;
   version: number;
   over_period: 'flag_only' | 'require_full_cover';
+  quantity_matching: 'flag_only' | 'enforce';
   updated_by: string | null;
 }
 
@@ -169,8 +170,15 @@ export function VendorPoSettings({ vendorId }: { vendorId: string }) {
                 label="An invoice outside a PO's period can't be covered by it"
                 value={policy.over_period === 'require_full_cover'}
                 isDisabled={busy || !canPolicy}
-                changeAction={(v: boolean) => void savePolicy(v ? 'require_full_cover' : 'flag_only')}
+                changeAction={(v: boolean) => void savePolicy({ over_period: v ? 'require_full_cover' : 'flag_only' })}
                 description="Off: an invoice dated outside its PO's service period is flagged beside the bill and never blocks payment. On: it doesn't count as covered, so the bill can't be paid until a person permits it."
+              />
+              <Switch
+                label="Over-billed quantities and rates block payment"
+                value={policy.quantity_matching === 'enforce'}
+                isDisabled={busy || !canPolicy}
+                changeAction={(v: boolean) => void savePolicy({ quantity_matching: v ? 'enforce' : 'flag_only' })}
+                description="Off: billing more than the ordered quantity, or at a different rate than the PO line's, is flagged beside the bill. On: it blocks payment until the allocation is reversed or a person permits it."
               />
               <Text type="supporting">
                 Policy version {policy.version === 0 ? '0 (the defaults; nobody has set a policy)' : policy.version}
@@ -186,10 +194,10 @@ export function VendorPoSettings({ vendorId }: { vendorId: string }) {
     </section>
   );
 
-  async function savePolicy(over_period: VendorPolicy['over_period']) {
+  async function savePolicy(patch: Partial<Pick<VendorPolicy, 'over_period' | 'quantity_matching'>>) {
     setBusy(true);
     try {
-      const r = await run<VendorPolicy>('po.policy_set', { vendor_id: vendorId, over_period });
+      const r = await run<VendorPolicy>('po.policy_set', { vendor_id: vendorId, ...patch });
       setPolicy(r.result);
       toast({ body: 'Matching policy saved' });
     } catch (e) {
