@@ -88,7 +88,7 @@ export function Vendors() {
       {vendors && vendors.length === 0 && (
         <EmptyState title="No vendors yet" description="Vendors are added as their bills come in, or add one now to set it up ahead of time." />
       )}
-      {vendors && vendors.length > 0 && <Table data={vendors} columns={columns} idKey="id" hasHover />}
+      {vendors && vendors.length > 0 && <div className="payvy-table payvy-grid"><Table data={vendors} columns={columns} idKey="id" hasHover /></div>}
       {adding && <VendorDialog onClose={() => setAdding(false)} onSaved={(v) => navigate(`/vendors/${v.id}`)} />}
     </Page>
   );

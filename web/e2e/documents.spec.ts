@@ -46,16 +46,23 @@ test('dropping a PDF on the inbox adds it, and a file over 25 MB is refused by n
   await vendor('Dropped Hauling');
   const file = pdf(['Dropped Hauling', 'Invoice DR-4410', `Ref ${Date.now()}`, 'Date 11/03/2026', 'Total 42.00']);
   await page.goto('/inbox');
+  await expect(page.getByRole('button', { name: 'Add invoices' })).toBeVisible();
 
-  await dragFile(page, 'dragenter', { name: 'dropped.pdf', type: 'application/pdf', base64: file.toString('base64') });
-  await expect(page.getByText('Drop to add invoices')).toBeVisible();
+  // The page listens for drags once it has mounted; a drag sent before then is lost, so try again.
+  await expect(async () => {
+    await dragFile(page, 'dragenter', { name: 'dropped.pdf', type: 'application/pdf', base64: file.toString('base64') });
+    await expect(page.getByText('Drop to add invoices')).toBeVisible({ timeout: 1000 });
+  }).toPass();
   await dragFile(page, 'drop', { name: 'dropped.pdf', type: 'application/pdf', base64: file.toString('base64') });
   await expect(page).toHaveURL(/\/inbox\/[0-9a-f-]{36}$/);
   await expect(page.getByLabel('Invoice number')).toHaveValue('DR-4410');
 
   await page.goto('/inbox');
-  await dragFile(page, 'dragenter', { name: 'too-big.pdf', type: 'application/pdf', bytes: 26 * 1024 * 1024 });
-  await expect(page.getByText('Drop to add invoices')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Add invoices' })).toBeVisible();
+  await expect(async () => {
+    await dragFile(page, 'dragenter', { name: 'too-big.pdf', type: 'application/pdf', bytes: 26 * 1024 * 1024 });
+    await expect(page.getByText('Drop to add invoices')).toBeVisible({ timeout: 1000 });
+  }).toPass();
   await dragFile(page, 'drop', { name: 'too-big.pdf', type: 'application/pdf', bytes: 26 * 1024 * 1024 });
   await expect(page.getByRole('region', { name: 'Notifications' }).getByText('too-big.pdf is larger than 25 MB')).toBeVisible();
   await expect(page).toHaveURL(/\/inbox$/);
