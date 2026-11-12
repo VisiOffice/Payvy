@@ -77,7 +77,7 @@ function numbers(r: Glance): string {
  * Fetched with the client header like every signed-in call (an <img> can't
  * send one), and only once it scrolls into view.
  */
-export function Cover({ doc, size = 'row' }: { doc: Row; size?: 'row' | 'card' }) {
+export function Cover({ doc }: { doc: Row }) {
   const [src, setSrc] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
   const box = useRef<HTMLSpanElement>(null);
@@ -101,7 +101,7 @@ export function Cover({ doc, size = 'row' }: { doc: Row; size?: 'row' | 'card' }
   }, [url, doc.page_count]);
   const glyph = failed || doc.page_count === 0 || !src;
   return (
-    <span ref={box} className={`payvy-cover payvy-cover-${size}${glyph ? ' payvy-cover-glyph' : ''}`} aria-hidden="true">
+    <span ref={box} className={`payvy-cover payvy-cover-card${glyph ? ' payvy-cover-glyph' : ''}`} aria-hidden="true">
       {glyph ? (pdf ? 'PDF' : 'IMG') : (
         <img src={src} alt="" decoding="async"
           style={doc.cover.rotation ? { transform: `rotate(${doc.cover.rotation}deg)` } : undefined} />
@@ -184,7 +184,6 @@ export function InboxTable({ docs, undoSplit }: { docs: Row[]; undoSplit: (d: Ro
     <div className="payvy-inbox-scroll">
       <table className="payvy-inbox-table">
         <thead><tr>
-          <th className="payvy-col-cover"><span className="payvy-sr-only">First page</span></th>
           <SortHeader k="vendor" label="Vendor" sort={sort} setSort={setSort} />
           <th>Invoices</th>
           <SortHeader k="amount" label="Amount" sort={sort} setSort={setSort} className="payvy-num" />
@@ -198,7 +197,6 @@ export function InboxTable({ docs, undoSplit }: { docs: Row[]; undoSplit: (d: Ro
             const due = dueLabel(r?.due_date);
             return (
               <tr key={d.id}>
-                <td className="payvy-col-cover"><Cover doc={d} /></td>
                 <td><VendorCell r={r} /><FileCell d={d} undoSplit={undoSplit} /></td>
                 <td>{r && r.invoice_count > 0 ? <><span className="payvy-inbox-count">{r.invoice_count === 1 ? '1 invoice' : `${r.invoice_count} invoices`}</span><span className="payvy-muted payvy-mono">{numbers(r)}</span></> : <span className="payvy-muted">—</span>}</td>
                 <td className="payvy-num">{r?.total_cents != null ? money(r.total_cents) : <span className="payvy-muted">—</span>}</td>
@@ -220,7 +218,7 @@ function Card({ d, undoSplit }: { d: Row; undoSplit: (d: Row) => void }) {
   return (
     <li className="payvy-inbox-card">
       <Link href={`/inbox/${d.id}`} className="payvy-inbox-card-open"><span className="payvy-sr-only">{d.filename}</span></Link>
-      <Cover doc={d} size="card" />
+      <Cover doc={d} />
       <div>
         <VendorCell r={r} />
         {r?.total_cents != null && <span className="payvy-inbox-amount">{money(r.total_cents)}</span>}
@@ -260,7 +258,7 @@ export function InboxBoard({ docs, filed, undoSplit }: { docs: Row[]; filed: Row
 }
 
 /** A key typed for a field or with a modifier isn't a shortcut. */
-function typing(e: KeyboardEvent): boolean {
+export function typing(e: KeyboardEvent): boolean {
   if (e.metaKey || e.ctrlKey || e.altKey || e.defaultPrevented) return true;
   const t = e.target as HTMLElement | null;
   return !!t && (t.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName) || !!t.closest('[role="dialog"],[role="alertdialog"],[role="listbox"],[role="menu"]'));

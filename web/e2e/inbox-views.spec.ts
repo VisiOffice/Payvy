@@ -27,10 +27,8 @@ test('the inbox shows what was read, as a table or a board, switched with T and 
   await expect(row.getByText('1 invoice')).toBeVisible();
   await expect(row.getByText('SR-7781', { exact: true })).toBeVisible();
   await expect(row.getByText('$185.00')).toBeVisible();
-  // Covers load as their rows scroll into view.
-  await row.scrollIntoViewIfNeeded();
-  const cover = row.locator('img');
-  await expect.poll(() => cover.evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth)).toBeGreaterThan(0);
+  // The table is text only; the first page shows on the board.
+  await expect(row.locator('img')).toHaveCount(0);
 
   await page.screenshot({ path: info.outputPath('inbox-table.png'), fullPage: true, animations: 'disabled' });
 
@@ -50,6 +48,10 @@ test('the inbox shows what was read, as a table or a board, switched with T and 
   }
   const card = page.getByRole('listitem').filter({ has: page.getByRole('link', { name: 'inbox-views-sr-7781.pdf', exact: true }) });
   await expect(card.getByText('$185.00')).toBeVisible();
+  // Its first page loads as the card scrolls into view.
+  await card.scrollIntoViewIfNeeded();
+  const cover = card.locator('img');
+  await expect.poll(() => cover.evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth)).toBeGreaterThan(0);
   await expect(page.getByRole('radio', { name: 'Board' })).toBeChecked();
   await page.screenshot({ path: info.outputPath('inbox-board.png'), fullPage: true, animations: 'disabled' });
 
@@ -59,6 +61,18 @@ test('the inbox shows what was read, as a table or a board, switched with T and 
   await page.keyboard.press('t');
   await expect(page.getByRole('region', { name: 'To review' })).toBeVisible();
   await expect(page.getByRole('radio', { name: 'Table' })).toBeChecked();
+
+  // F, N and R pick Filed, Not bills and To review; from the board they bring the table back.
+  await page.keyboard.press('f');
+  await expect(page.getByRole('radio', { name: 'Filed' })).toBeChecked();
+  await page.keyboard.press('n');
+  await expect(page.getByRole('radio', { name: 'Not bills' })).toBeChecked();
+  await page.keyboard.press('b');
+  await page.keyboard.press('r');
+  await expect(page.getByRole('radio', { name: 'Table' })).toBeChecked();
+  await expect(page.getByRole('radio', { name: 'To review' })).toBeChecked();
+  await expect(row).toBeVisible();
+  await page.screenshot({ path: info.outputPath('inbox-keys.png'), animations: 'disabled' });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 
   // The inbox used to be /documents; those links still open the same place.
