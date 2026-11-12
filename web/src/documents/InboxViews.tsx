@@ -2,6 +2,7 @@
 // file, and a board grouped by what each file needs next.
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link } from '@astryxdesign/core/Link';
+import { useNavigate } from 'react-router';
 import { Allowed } from '../permissions';
 import { date, dueLabel, money } from '../money';
 import { CHECK } from './checks';
@@ -180,6 +181,7 @@ function SortHeader({ k, label, sort, setSort, className }: { k: SortKey; label:
 export function InboxTable({ docs, undoSplit }: { docs: Row[]; undoSplit: (d: Row) => void }) {
   const [sort, setSort] = useState<[SortKey, 1 | -1]>(['received', 1]);
   const rows = useMemo(() => [...docs].sort((a, b) => SORTS[sort[0]](a, b) * sort[1]), [docs, sort]);
+  const current = useRowKeys(rows);
   return (
     <div className="payvy-inbox-scroll">
       <table className="payvy-inbox-table">
@@ -192,11 +194,11 @@ export function InboxTable({ docs, undoSplit }: { docs: Row[]; undoSplit: (d: Ro
           <SortHeader k="received" label="Received" sort={sort} setSort={setSort} />
         </tr></thead>
         <tbody>
-          {rows.map(d => {
+          {rows.map((d, i) => {
             const r = d.reading;
             const due = dueLabel(r?.due_date);
             return (
-              <tr key={d.id}>
+              <tr key={d.id} data-row={i} aria-current={i === current ? 'true' : undefined}>
                 <td><VendorCell r={r} /><FileCell d={d} undoSplit={undoSplit} /></td>
                 <td>{r && r.invoice_count > 0 ? <><span className="payvy-inbox-count">{r.invoice_count === 1 ? '1 invoice' : `${r.invoice_count} invoices`}</span><span className="payvy-muted payvy-mono">{numbers(r)}</span></> : <span className="payvy-muted">—</span>}</td>
                 <td className="payvy-num">{r?.total_cents != null ? money(r.total_cents) : <span className="payvy-muted">—</span>}</td>
@@ -210,6 +212,46 @@ export function InboxTable({ docs, undoSplit }: { docs: Row[]; undoSplit: (d: Ro
       </table>
     </div>
   );
+}
+
+/**
+ * J or Down moves to the next row, K or Up to the one before, Enter opens it
+ * and Escape lets go. The first press picks the first row. Returns the row.
+ */
+function useRowKeys(rows: Row[]): number | null {
+  const [at, setAt] = useState<number | null>(null);
+  const navigate = useNavigate();
+  const state = useRef({ at, rows });
+  state.current = { at, rows };
+  // A shorter list (a search, a filed document) keeps the cursor on a row that exists.
+  useEffect(() => { setAt(a => (a == null || !rows.length ? null : Math.min(a, rows.length - 1))); }, [rows.length]);
+  useEffect(() => {
+    if (at == null) return;
+    document.querySelector(`.payvy-inbox-table tr[data-row="${at}"]`)?.scrollIntoView({ block: 'nearest' });
+  }, [at]);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (typing(e) || e.shiftKey) return;
+      const { at, rows } = state.current;
+      if (!rows.length) return;
+      const k = e.key;
+      if (k === 'j' || k === 'J' || k === 'ArrowDown') {
+        e.preventDefault();
+        setAt(at == null ? 0 : Math.min(at + 1, rows.length - 1));
+      } else if (k === 'k' || k === 'K' || k === 'ArrowUp') {
+        e.preventDefault();
+        setAt(at == null ? 0 : Math.max(at - 1, 0));
+      } else if (k === 'Enter' && at != null && rows[at] && !(e.target as HTMLElement | null)?.closest('a,button')) {
+        e.preventDefault();
+        navigate(`/inbox/${rows[at]!.id}`);
+      } else if (k === 'Escape' && at != null) {
+        setAt(null);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [navigate]);
+  return at;
 }
 
 function Card({ d, undoSplit }: { d: Row; undoSplit: (d: Row) => void }) {

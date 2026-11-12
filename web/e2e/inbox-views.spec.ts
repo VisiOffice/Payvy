@@ -81,3 +81,37 @@ test('the inbox shows what was read, as a table or a board, switched with T and 
   await page.goto('/documents');
   await expect(page).toHaveURL('/inbox');
 });
+
+test('J and K, or the arrows, move through the inbox table; Enter opens the row', async ({ page }, info) => {
+  const tag = `keys-${Date.now()}`;
+  for (const n of [1, 2]) {
+    const doc = (await agent<{ id: string }>('document.upload', {
+      filename: `${tag}-${n}.pdf`,
+      content_base64: pdf(['Sonoran Pest Control', 'Invoice SR-7781', 'Total 185.00', `${tag} ${n}`]).toString('base64'),
+    })).id;
+    await agent('document.extract', { document_id: doc });
+  }
+  await page.goto('/inbox');
+  await page.evaluate(() => localStorage.removeItem('payvy.inbox.view'));
+  await page.reload();
+  await expect(page.getByText('or drop files anywhere on this page')).toBeVisible();
+
+  const rows = page.locator('.payvy-inbox-table tbody tr');
+  await expect(rows.nth(1)).toBeVisible();
+  const current = page.locator('.payvy-inbox-table tbody tr[aria-current="true"]');
+  await expect(current).toHaveCount(0);
+
+  await page.keyboard.press('j');
+  await expect(rows.nth(0)).toHaveAttribute('aria-current', 'true');
+  await page.keyboard.press('ArrowDown');
+  await expect(rows.nth(1)).toHaveAttribute('aria-current', 'true');
+  await expect(current).toHaveCount(1);
+  await page.keyboard.press('k');
+  await expect(rows.nth(0)).toHaveAttribute('aria-current', 'true');
+  await page.keyboard.press('ArrowDown');
+  await page.screenshot({ path: info.outputPath('inbox-keys.png'), animations: 'disabled' });
+
+  const href = await rows.nth(1).getByRole('link').first().getAttribute('href');
+  await page.keyboard.press('Enter');
+  await expect(page).toHaveURL(new RegExp(`${href}$`));
+});
