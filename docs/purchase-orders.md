@@ -154,6 +154,19 @@ overrider releases it". The payment worker, which only picks up
 and names the person step. This is what keeps one person's override from
 becoming a payment with no second person involved.
 
+## The gate holds its locks
+
+`ensure_payable` (in `bill.release` and `bill.auto_pay`) first locks the bill's
+POs — in the sorted order `match_apply` uses — and its live allocation rows,
+then evaluates the exceptions. A concurrent `po.suspend`, `po.close` or
+`po.cancel` (an UPDATE of the PO row) or `po.allocation_reverse` (an UPDATE of
+an allocation row) waits for the release transaction, and the gate's re-read
+then sees their result; a release never goes through on state that changed
+underneath it. The race is covered deterministically in
+`crates/payvy-server/tests/release_race.rs`: the test holds the PO (or
+allocation) lock, proves the release waits, changes the state, and proves
+the waiting release then refuses.
+
 ## Overrides and separation of duties
 
 `po.override` permits one bill's PO exception (Confirmed tier, person only, Admin), bound to the

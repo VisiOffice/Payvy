@@ -1538,6 +1538,16 @@ async fn preparer_refusal(
 /// unresolved exception. Called by bill.release, bill.auto_pay and
 /// bill.mark_paid before any money moves or is recorded.
 pub async fn ensure_payable(cx: &mut Cx<'_>, bill: &store::Bill) -> Result<(), CommandError> {
+    // Serialize against changes that would alter the answer: lock the
+    // bill's POs (sorted, as match_apply does) and its allocation rows,
+    // then evaluate. A concurrent po.suspend/close (an UPDATE of the PO
+    // row) or po.allocation_reverse (an UPDATE of an allocation row)
+    // waits for this transaction, and the gate never acts on state that
+    // changed underneath it.
+    let allocs = po_store::allocations_for_bill(&mut cx.tx, bill.id).await?;
+    let po_ids: Vec<Uuid> = allocs.iter().map(|a| a.po_id).collect();
+    po_store::lock_pos(&mut cx.tx, &po_ids).await?;
+    po_store::lock_allocations_for_bill(&mut cx.tx, bill.id).await?;
     // Every standing exception must be permitted; an override for one
     // kind never clears another.
     for ex in bill_exceptions(cx, bill).await? {
