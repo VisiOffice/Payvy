@@ -39,7 +39,7 @@ export function Bills({ mine = false }: { mine?: boolean }) {
 
   return <Page title={mine ? 'Waiting on you' : 'All bills'} eyebrow="Accounts payable"
     description="Every invoice, from arrival to payment."
-    actions={<Button label="Add invoices" href="/documents" variant="primary" size="sm" />}>
+    actions={<Button label="Add invoices" href="/inbox" variant="primary" size="sm" />}>
     <div className="payvy-toolbar">
       <TextInput label="Search bills" isLabelHidden type="search" placeholder="Search vendor or invoice…" value={search} onChange={setSearch} width="100%" />
       <Selector label="Bill status" isLabelHidden value={status} onChange={setStatus} width={190} options={[

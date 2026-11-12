@@ -22,9 +22,9 @@ test('an invoice is checked, becomes a bill, and is released', async ({ page }) 
   await vendor('Desert Plumbing & Drain');
   const doc = await inboxDocument('desert-plumbing-5521.pdf');
 
-  await page.goto('/documents');
+  await page.goto('/inbox');
   await page.getByRole('link', { name: 'desert-plumbing-5521.pdf' }).click();
-  await expect(page).toHaveURL(`/documents/${doc}`);
+  await expect(page).toHaveURL(`/inbox/${doc}`);
 
   // Filled in from what the model read, and found on the page.
   await expect(page.getByLabel('Invoice number')).toHaveValue('DP-5521');
@@ -52,7 +52,7 @@ test('an invoice is checked, becomes a bill, and is released', async ({ page }) 
   await expect(page.getByRole('button', { name: 'Pay…' })).toHaveCount(0);
 
   // The document is filed with the bill.
-  await page.goto(`/documents/${doc}`);
+  await page.goto(`/inbox/${doc}`);
   await expect(page.getByText('This document is a bill')).toBeVisible();
 });
 
@@ -117,7 +117,7 @@ test('a copy the vendor sent again stacks on the bill it belongs to', async ({ p
   const existing = await bill({ vendor_id: king, invoice_number: '189727', invoice_date: '2026-11-01', amount_cents: 45_900 });
   const doc = await inboxDocument('king-environmental-189727.pdf');
 
-  await page.goto(`/documents/${doc}`);
+  await page.goto(`/inbox/${doc}`);
   // The pre-check says what Create bill will do before it is pressed, and
   // which kind of copy this is at the amount on the form.
   await expect(page.getByText('Create bill will stack this copy on an existing bill')).toBeVisible();
@@ -146,7 +146,7 @@ test('a copy entered on purpose as a separate bill makes its own bill', async ({
   ).id;
   await agent('document.extract', { document_id: doc });
 
-  await page.goto(`/documents/${doc}`);
+  await page.goto(`/inbox/${doc}`);
   await expect(page.getByText('Create bill will stack this copy on an existing bill')).toBeVisible();
   await page.getByRole('button', { name: "It's a separate bill" }).click();
   await expect(page).toHaveURL(/\/bills\/[0-9a-f-]{36}$/);
@@ -156,12 +156,12 @@ test('a copy entered on purpose as a separate bill makes its own bill', async ({
 
 test('a statement is set aside as not a bill', async ({ page }) => {
   const doc = await inboxDocument('acme-supply-statement.pdf');
-  await page.goto(`/documents/${doc}`);
+  await page.goto(`/inbox/${doc}`);
   await page.getByRole('button', { name: 'Not a bill' }).click();
   const dialog = page.getByRole('dialog');
   await dialog.getByLabel('Why').fill('Monthly statement, not an invoice');
   await dialog.getByRole('button', { name: 'Set aside' }).click();
-  await expect(page).toHaveURL('/documents');
+  await expect(page).toHaveURL('/inbox');
   await expect(page.getByRole('link', { name: 'acme-supply-statement.pdf' })).toHaveCount(0);
 
   await page.getByRole('radio', { name: 'Not bills' }).click();

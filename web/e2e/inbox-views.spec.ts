@@ -15,7 +15,7 @@ test('the inbox shows what was read, as a table or a board, switched with T and 
   ).id;
   await agent('document.extract', { document_id: doc });
 
-  await page.goto('/documents');
+  await page.goto('/inbox');
   await expect(page.getByRole('heading', { name: 'Inbox', level: 1 })).toBeVisible();
   await page.evaluate(() => localStorage.removeItem('payvy.inbox.view'));
   await page.reload();
@@ -60,4 +60,10 @@ test('the inbox shows what was read, as a table or a board, switched with T and 
   await expect(page.getByRole('region', { name: 'To review' })).toBeVisible();
   await expect(page.getByRole('radio', { name: 'Table' })).toBeChecked();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+
+  // The inbox used to be /documents; those links still open the same place.
+  await page.goto(`/documents/${doc}`);
+  await expect(page).toHaveURL(`/inbox/${doc}`);
+  await page.goto('/documents');
+  await expect(page).toHaveURL('/inbox');
 });

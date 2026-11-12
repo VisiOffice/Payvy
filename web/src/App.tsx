@@ -14,6 +14,13 @@ import { DocumentLoading } from './documents/Loading';
 import { Vendors } from './pages/Vendors';
 
 // The bill page brings pdf.js; load it only when a bill is opened.
+/** /documents/:id → /inbox/:id, keeping any query or hash. */
+function MovedDocument() {
+  const { id } = useParams();
+  const { search, hash } = useLocation();
+  return <Navigate to={`/inbox/${id ?? ''}${search}${hash}`} replace />;
+}
+
 const BillPage = lazy(() => import('./pages/Bill').then((m) => ({ default: m.BillPage })));
 const Workflows = lazy(() => import('./pages/Workflows').then((m) => ({ default: m.Workflows })));
 const Bank = lazy(() => import('./pages/Bank').then((m) => ({ default: m.Bank })));
@@ -106,15 +113,18 @@ export function App() {
               </Suspense>
             }
           />
-          <Route path="/documents" element={<Documents />} />
+          <Route path="/inbox" element={<Documents />} />
           <Route
-            path="/documents/:id"
+            path="/inbox/:id"
             element={
               <Suspense fallback={<DocumentLoading />}>
                 <DocumentReview key={location.pathname} />
               </Suspense>
             }
           />
+          {/* The inbox was /documents: older links, bookmarks and history still open it. */}
+          <Route path="/documents" element={<Navigate to="/inbox" replace />} />
+          <Route path="/documents/:id" element={<MovedDocument />} />
           <Route
             path="/workflows"
             element={

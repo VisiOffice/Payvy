@@ -275,7 +275,7 @@ export function BillPage() {
         <Text type="supporting">Recorded by {detail.invoice_review.created_by}. Review history and excluded rows remain with the source document.</Text>
         {detail.invoice_review.summary_reason && <Banner status="warning" title="Summary-only bill" description={detail.invoice_review.summary_reason} />}
         {detail.invoice_review.payload.rows.filter(row => row.details && row.excluded_reason === null).map(row => <VStack key={row.id} gap={1}><Text>{row.description} · {row.amount}</Text><Text type="supporting">{Object.entries(row.details ?? {}).filter(([,v]) => typeof v === 'string').map(([k,v]) => `${k.replaceAll('_',' ')}: ${v}`).join(' · ')}</Text>{row.source_resolution && <Text type="supporting">Source check: {row.source_resolution}</Text>}{row.quantity_resolution && <Text type="supporting">Quantity check: {row.quantity_resolution}</Text>}</VStack>)}
-        <Link href={`/documents/${detail.invoice_review.document_id}`}>View source and review history</Link>
+        <Link href={`/inbox/${detail.invoice_review.document_id}`}>View source and review history</Link>
       </VStack></Card>}
       {detail.lines.length > 0 && (
         <VStack gap={2}>
@@ -322,7 +322,7 @@ export function BillPage() {
               <VStack gap={0}>
                 <Text>
                   {i === 0 ? 'First received' : `Copy ${i + 1}`} · {money(a.amount_cents)}
-                  {a.document_id && <> · <Link href={`/documents/${a.document_id}`}>Document</Link></>}
+                  {a.document_id && <> · <Link href={`/inbox/${a.document_id}`}>Document</Link></>}
                 </Text>
                 <Text type="supporting">
                   {date(a.received_at)} · by {a.received_by}

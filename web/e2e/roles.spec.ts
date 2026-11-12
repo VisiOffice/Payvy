@@ -40,7 +40,7 @@ test('roles combine, restrict real sessions, and update without signing in again
     await expect(clerk.getByText("You don't have access to these settings")).toBeVisible();
     const denied = await clerk.request.post('/api/commands/person.set_roles', { headers: { 'x-payvy-client': 'web' }, data: { mode: 'commit', input: { actor: 'role-clerk', roles: ['admin'] } } });
     expect(denied.status()).toBe(403);
-    await clerk.goto('/documents');
+    await clerk.goto('/inbox');
     await expect(clerk.getByRole('region', { name: 'Add invoices' })).toBeVisible();
 
     const v = await vendor('Role Workflow Vendor');
@@ -65,7 +65,7 @@ test('roles combine, restrict real sessions, and update without signing in again
     await clerk.evaluate(() => window.dispatchEvent(new Event('focus')));
     await clerk.getByRole('button', { name: 'Approve', exact: true }).click();
     await expect(clerk.getByRole('button', { name: 'Pay…', exact: true })).toBeVisible();
-    await clerk.goto('/documents');
+    await clerk.goto('/inbox');
     await expect(clerk.getByRole('region', { name: 'Add invoices' })).toHaveCount(0);
     await clerk.goto('/vendors');
     await expect(clerk.getByRole('button', { name: 'Add vendor', exact: true })).toHaveCount(0);

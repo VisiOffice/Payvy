@@ -80,7 +80,7 @@ test('click text to copy it, then click a field to paste it', async ({ page, con
   const vendorName = `American Reclamation ${tag}`;
   await agent('vendor.create', { name: vendorName });
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
-  await page.goto(`/documents/${doc}`);
+  await page.goto(`/inbox/${doc}`);
   await expect(counter(page)).toHaveText('Page 1 of 2');
 
   // Hover: the run lights up with a tip.
@@ -173,7 +173,7 @@ test('click text to copy it, then click a field to paste it', async ({ page, con
 test('focus a field, then click text on the page; on page 2, and turned', async ({ page }, info) => {
   const tag = `${Date.now()}`;
   const doc = await invoice(tag);
-  await page.goto(`/documents/${doc}`);
+  await page.goto(`/inbox/${doc}`);
   await expect(counter(page)).toHaveText('Page 1 of 2');
   await expect(run(page, '85273')).toBeAttached();
 
@@ -264,7 +264,7 @@ test('a filed document still copies, and pastes nowhere', async ({ page, context
     document_id: doc,
   });
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
-  await page.goto(`/documents/${doc}`);
+  await page.goto(`/inbox/${doc}`);
   await expect(page.getByText('This document is a bill')).toBeVisible();
   await run(page, '$8,034.89').click();
   await expect(chip(page)).toContainText('Copied “$8,034.89”');
@@ -278,7 +278,7 @@ test.describe('on a phone', () => {
   test('tap text to copy it, then tap a field', async ({ page }, info) => {
     const tag = `${Date.now()}`;
     const doc = await invoice(tag);
-    await page.goto(`/documents/${doc}`);
+    await page.goto(`/inbox/${doc}`);
     await page.getByRole('radio', { name: 'Original document' }).tap();
     await expect(counter(page)).toHaveText('Page 1 of 2');
     await run(page, '$8,034.89').tap();
