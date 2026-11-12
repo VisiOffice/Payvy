@@ -2,7 +2,7 @@
 // T and B switch between them.
 import { expect, test } from '@playwright/test';
 import { agent, vendor } from './api';
-import { pdf } from './pdf';
+import { pdf, pdfPages } from './pdf';
 
 test('the inbox shows what was read, as a table or a board, switched with T and B', async ({ page }, info) => {
   // A file of its own (the server refuses the same file twice), read by the
@@ -151,6 +151,33 @@ test('side by side: the list beside the review, J/K move it, and making a bill m
   await expect(page.locator('.payvy-inbox-side-pane .payvy-review-filename')).toHaveText(second!);
   await page.keyboard.press('k');
   await expect(items.nth(0)).toHaveAttribute('aria-current', 'true');
+  // A file of several invoices: I, P and T switch its view, and T stays with it.
+  const multi = `${tag}-multi`;
+  const many = (await agent<{ id: string }>('document.upload', {
+    filename: `${multi}.pdf`,
+    // The fake reader's six-page Saguaro file: SS-101 on pages 1–3, then SS-102 and SS-103.
+    content_base64: pdfPages([
+      ['Saguaro Storage Co', 'Invoice SS-101', 'Continued', multi],
+      ['Saguaro Storage Co', 'Invoice SS-101 continued', multi],
+      ['Saguaro Storage Co', 'Invoice SS-101 total $300.00', multi],
+      ['Saguaro Storage Co', 'Invoice SS-102 total $120.00', multi],
+      ['Saguaro Storage Co', 'Invoice SS-103 total $45.50', multi],
+      ['Saguaro Storage Co', 'Remittance slip', multi],
+    ]).toString('base64'),
+  })).id;
+  expect(many).toBeTruthy();
+  await page.reload();
+  await page.getByRole('textbox', { name: 'Search documents' }).fill(multi);
+  await page.getByRole('heading', { name: 'Inbox', level: 1 }).click();
+  // A person reads it here (an agent's reading would split it into separate files at once).
+  await page.locator('.payvy-inbox-side-pane').getByRole('button', { name: 'Read it' }).click();
+  await expect(page.getByRole('radio', { name: 'Invoices' })).toBeChecked();
+  for (const [key, name] of [['p', 'Pages'], ['t', 'Table'], ['i', 'Invoices']] as const) {
+    await page.keyboard.press(key);
+    await expect(page.getByRole('radio', { name, exact: true }).last()).toBeChecked();
+    await expect(page.getByRole('list', { name: 'Documents' })).toBeVisible();
+  }
+
   // Making a bill keeps you in the inbox and puts the next file in front of you.
   await vendor('Dropped Hauling').catch(() => undefined);
   const made = `${tag}-bill`;

@@ -382,6 +382,8 @@ export function useInboxView(): [View, (v: View) => void] {
       const k = e.key.toLowerCase();
       const v: View | null = k === 't' ? 'table' : k === 'b' ? 'board' : k === 's' ? 'side' : null;
       if (!v) return;
+      // Side by side, a file of several invoices has its own Invoices/Pages/Table switch: T is its.
+      if (k === 't' && document.querySelector('.payvy-inbox-side-pane .payvy-split-mode')) return;
       e.preventDefault();
       setView(v);
     };

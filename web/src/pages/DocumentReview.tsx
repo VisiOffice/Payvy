@@ -153,8 +153,9 @@ interface ListedBill {
 /**
  * The review of one document. On its own page it takes the id from the URL.
  * `embedded` is the inbox's side-by-side pane: J/K belong to the list there,
- * so pages turn with the arrows only, the I/T/P keys stay off, and making a
- * bill or setting the file aside calls `onDone` instead of leaving the inbox.
+ * so pages turn with the arrows only, and making a bill or setting the file
+ * aside calls `onDone` instead of leaving the inbox. I/T/P still switch a
+ * file of several invoices; the inbox leaves T to it while that switch shows.
  */
 export function DocumentReview({ id: given, embedded = false, onDone }: { id?: string; embedded?: boolean; onDone?: () => void } = {}) {
   const can = useCan();
@@ -187,7 +188,6 @@ export function DocumentReview({ id: given, embedded = false, onDone }: { id?: s
   // I, T, and P only apply once the file is several invoices and the switch is on screen.
   const multi = useRef(false);
   useEffect(() => {
-    if (embedded) return;
     const onKey = (e: KeyboardEvent) => {
       if (!multi.current || typing(e)) return;
       const k = e.key.toLowerCase();
@@ -198,7 +198,7 @@ export function DocumentReview({ id: given, embedded = false, onDone }: { id?: s
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [embedded]);
+  }, []);
   /** How many invoices the cards hold, after any pages moved. */
   const [splitCount, setSplitCount] = useState<number | null>(null);
   const [thumbnails, setThumbnails] = useState<boolean | null>(thumbnailsChoice);
