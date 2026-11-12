@@ -172,7 +172,7 @@ test('side by side: the list beside the review, J/K move it, and making a bill m
   // A person reads it here (an agent's reading would split it into separate files at once).
   await page.locator('.payvy-inbox-side-pane').getByRole('button', { name: 'Read it' }).click();
   await expect(page.getByRole('radio', { name: 'Invoices' })).toBeChecked();
-  for (const [key, name] of [['p', 'Pages'], ['t', 'Table'], ['i', 'Invoices']] as const) {
+  for (const [key, name] of [['p', 'Pages'], ['l', 'List'], ['i', 'Invoices']] as const) {
     await page.keyboard.press(key);
     await expect(page.getByRole('radio', { name, exact: true }).last()).toBeChecked();
     await expect(page.getByRole('list', { name: 'Documents' })).toBeVisible();
