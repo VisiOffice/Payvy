@@ -1034,6 +1034,18 @@ export interface EmailGetInput {
   email_id: string;
 }
 
+export interface LedgerPostBillInput {
+  bill_id: string;
+}
+
+export interface LedgerPostPaymentInput {
+  payment_id: string;
+}
+
+export interface LedgerVoidInput {
+  bill_id: string;
+}
+
 export interface EventListInput {
   entity_id?: string;
   limit?: number;
@@ -1140,6 +1152,9 @@ export interface CommandInputs {
   "email.import": EmailImportInput;
   "email.list": EmailListInput;
   "email.get": EmailGetInput;
+  "ledger.post_bill": LedgerPostBillInput;
+  "ledger.post_payment": LedgerPostPaymentInput;
+  "ledger.void": LedgerVoidInput;
   "event.list": EventListInput;
 }
 
@@ -1248,5 +1263,8 @@ export const COMMANDS: Record<CommandName, { tier: Tier; personOnly: boolean; su
   "email.import": { tier: "routine", personOnly: false, summary: "Read a raw email (an .eml file, base64) into the inbox: its PDF and image attachments become documents, including those of a forwarded email. The inbound webhook uses this too. Refused if the same email is already here. The result lists what was skipped and why." },
   "email.list": { tier: "read", personOnly: false, summary: "Emails received, newest first: sender, subject and what was skipped." },
   "email.get": { tier: "read", personOnly: false, summary: "One email: its details, the documents it brought in, and a 15-minute download link for the original message." },
+  "ledger.post_bill": { tier: "routine", personOnly: false, summary: "Post one bill to the connected ledger. The same bill posted again returns the first ledger id and sends nothing. A changed bill after posting is a conflict. A rejected or void bill is refused. Preview sends nothing." },
+  "ledger.post_payment": { tier: "routine", personOnly: false, summary: "Record one sent payment in the ledger, applied to its posted bill and drawn on the mapped ledger bank account. Payvy has already paid through the customer's bank. Preview sends nothing." },
+  "ledger.void": { tier: "routine", personOnly: true, summary: "Void the ledger's copy of a bill. A posted payment is voided first, and if that void is refused the bill stays posted. Only a person with admin may do this. Preview sends nothing." },
   "event.list": { tier: "read", personOnly: false, summary: "The audit log, newest first: every change, who made it and when. Filter to one bill, vendor or proposal with entity_id." },
 };

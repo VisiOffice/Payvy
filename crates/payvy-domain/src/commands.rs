@@ -856,6 +856,31 @@ pub const COMMANDS: &[CommandSpec] = &[
         permission: Permission::Read,
         input_schema: r#"{"type":"object","required":["email_id"],"properties":{"email_id":{"type":"string","format":"uuid"}}}"#,
     },
+    // ── Ledger ──────────────────────────────────────────────────────────────
+    CommandSpec {
+        name: "ledger.post_bill",
+        summary: "Post one bill to the connected ledger. The same bill posted again returns the first ledger id and sends nothing. A changed bill after posting is a conflict. A rejected or void bill is refused. Preview sends nothing.",
+        tier: RiskTier::Routine,
+        person_only: false,
+        permission: Permission::Prepare,
+        input_schema: r#"{"type":"object","additionalProperties":false,"required":["bill_id"],"properties":{"bill_id":{"type":"string","format":"uuid"}}}"#,
+    },
+    CommandSpec {
+        name: "ledger.post_payment",
+        summary: "Record one sent payment in the ledger, applied to its posted bill and drawn on the mapped ledger bank account. Payvy has already paid through the customer's bank. Preview sends nothing.",
+        tier: RiskTier::Routine,
+        person_only: false,
+        permission: Permission::Prepare,
+        input_schema: r#"{"type":"object","additionalProperties":false,"required":["payment_id"],"properties":{"payment_id":{"type":"string","format":"uuid"}}}"#,
+    },
+    CommandSpec {
+        name: "ledger.void",
+        summary: "Void the ledger's copy of a bill. A posted payment is voided first, and if that void is refused the bill stays posted. Only a person with admin may do this. Preview sends nothing.",
+        tier: RiskTier::Routine,
+        person_only: true,
+        permission: Permission::Admin,
+        input_schema: r#"{"type":"object","additionalProperties":false,"required":["bill_id"],"properties":{"bill_id":{"type":"string","format":"uuid"}}}"#,
+    },
     // ── Audit ───────────────────────────────────────────────────────────────
     CommandSpec {
         name: "event.list",

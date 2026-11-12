@@ -5,6 +5,8 @@
 pub use payvy_domain::permissions::Role;
 mod invoice_reviews;
 pub use invoice_reviews::*;
+mod ledger;
+pub use ledger::*;
 mod notifications;
 mod roles;
 pub use notifications::*;
@@ -883,6 +885,16 @@ pub async fn close_bill(
         .bind(bill_id)
         .bind(state.as_str())
         .bind(reason)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
+/// The ledger hashes the memo. A changed memo after posting is a conflict.
+pub async fn set_bill_memo(tx: &mut Tx, id: Uuid, memo: Option<&str>) -> anyhow::Result<()> {
+    sqlx::query("UPDATE bills SET memo = $2 WHERE id = $1")
+        .bind(id)
+        .bind(memo)
         .execute(&mut **tx)
         .await?;
     Ok(())
