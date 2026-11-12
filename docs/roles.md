@@ -58,7 +58,11 @@ Taking the Approver role away (`person.set_roles`) or removing the person
 (`person.remove`) is refused exactly while they are the **last person who
 could still approve** a waiting bill's step: an "all" step needs everyone
 who hasn't approved yet, an "any" step (named, or open to anyone) needs
-only one eligible approver left. Settle those bills first (they can approve
+only one eligible approver left. Eligible mirrors the approval rules for
+that bill: whoever already approved a step on it can't approve another,
+and under the submitter-can't-approve rule, whoever entered the bill or
+uploaded its document can't approve it — having the role is not enough.
+Settle those bills first (they can approve
 or reject them). At other times role changes stay possible, and queued
 notifications still recheck the recipient's roles before sending.
 

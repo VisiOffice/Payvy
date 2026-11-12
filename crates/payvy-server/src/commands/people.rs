@@ -144,6 +144,10 @@ fn validate_roles(mut roles: Vec<Role>) -> Result<Vec<Role>, CommandError> {
 /// refused exactly when the actor is that last eligible approver —
 /// an "all" step needs everyone who hasn't approved yet; an "any" step
 /// (named or open to anyone) needs only one eligible approver left.
+/// "Eligible" mirrors the approval rules for that bill: whoever already
+/// approved a step on it can't approve another, and (when the company
+/// rule is on) whoever entered it or uploaded its document can't
+/// approve it at all — having the role is not enough.
 /// Role changes at other times stay possible, and queued notices
 /// recheck eligibility before send.
 async fn approver_strand_refusal(cx: &mut Cx<'_>, actor: &str) -> Result<(), CommandError> {
@@ -160,7 +164,9 @@ async fn approver_strand_refusal(cx: &mut Cx<'_>, actor: &str) -> Result<(), Com
         let r = store::actor_roles(&mut cx.tx, cx.org, &p.actor).await?;
         can_approve.insert(p.actor, Permission::Approve.allows(&r));
     }
-    let eligible = |name: &str| can_approve.get(name).copied().unwrap_or(false);
+    let submitter_rule = store::approval_rules(&mut cx.tx)
+        .await?
+        .submitter_cannot_approve;
     let bills = store::list_bills(&mut cx.tx, Some(State::Open), None, None, 5_000).await?;
     if bills.is_empty() {
         return Ok(());
@@ -173,6 +179,7 @@ async fn approver_strand_refusal(cx: &mut Cx<'_>, actor: &str) -> Result<(), Com
             .collect();
     let ids: Vec<uuid::Uuid> = bills.iter().map(|b| b.id).collect();
     let (approvals, signals) = store::facts(&mut cx.tx, &ids).await?;
+    let uploaders = store::bill_uploaders(&mut cx.tx, &ids).await?;
     let limits = store::auto_pay_limits(&mut cx.tx).await?;
     let builtin = Workflow::builtin_default();
     for bill in &bills {
@@ -220,14 +227,30 @@ async fn approver_strand_refusal(cx: &mut Cx<'_>, actor: &str) -> Result<(), Com
         else {
             continue;
         };
-        // Is this actor the last person who could still approve it?
+        // Who could still approve this step of this bill: has the role,
+        // hasn't already approved a step on it, and (under the company
+        // rule) didn't enter it or upload its document.
+        let already: Vec<&str> = a.iter().map(|x| x.actor.as_str()).collect();
+        let uploaded: Vec<&str> = uploaders
+            .iter()
+            .filter(|(b, _)| *b == bill.id)
+            .map(|(_, u)| u.as_str())
+            .collect();
+        let eligible = |name: &str| {
+            can_approve.get(name).copied().unwrap_or(false)
+                && !already.contains(&name)
+                && !(submitter_rule && (name == bill.created_by || uploaded.contains(&name)))
+        };
+        if !eligible(actor) {
+            continue;
+        }
+        // Is this actor the last eligible person who could approve it?
         let last_eligible = match require {
-            // Everyone listed must approve: anyone still waiting is needed.
+            // Everyone still waiting must approve: each of them is needed.
             Require::All => waiting_on.iter().any(|w| w == actor),
-            Require::Any if approvers.is_empty() => {
-                // Open to anyone: last only if nobody else here can approve.
-                !can_approve.iter().any(|(name, ok)| *ok && name != actor)
-            }
+            Require::Any if approvers.is_empty() => !can_approve
+                .keys()
+                .any(|name| name != actor && eligible(name)),
             Require::Any => {
                 approvers.iter().any(|a| a == actor)
                     && !approvers.iter().any(|a| a != actor && eligible(a))
