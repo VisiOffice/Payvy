@@ -381,7 +381,7 @@
       "name": "po.close",
       "permission": "admin",
       "person_only": true,
-      "summary": "Close an active purchase order (person only), with a reason: fulfilled, expired, settled outside Payvy, or superseded. Refused while allocations are still reserved.",
+      "summary": "Close an active purchase order (person only), with a reason: fulfilled, expired, settled outside Payvy, or superseded. Allocations already made stand and nothing is released implicitly; their bills wait (ineligible_po) until the allocation is reversed or permitted.",
       "tier": "routine"
     },
     {
@@ -389,7 +389,7 @@
       "name": "po.cancel",
       "permission": "admin",
       "person_only": true,
-      "summary": "Cancel a draft or active purchase order (person only), with a reason. Refused while allocations are still reserved.",
+      "summary": "Cancel a draft or active purchase order (person only), with a reason. Allocations already made stand and nothing is released implicitly; their bills wait (ineligible_po) until the allocation is reversed or permitted.",
       "tier": "routine"
     },
     {

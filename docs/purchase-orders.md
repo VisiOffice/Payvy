@@ -29,6 +29,14 @@ While on, whether a vendor's bills require a PO and its overage caps stay per ve
 already in flight, because the gate is on money leaving rather than on the workflow a bill
 pinned.
 
+## Closing and canceling with allocations standing
+
+Closing or canceling (Q6, as proposed in review) stops new allocations — only active
+POs take them — but reserved and consumed allocations already made stand, and nothing
+is released implicitly. Their bills carry a blocking `ineligible_po` exception until
+the allocation is reversed with `po.allocation_reverse` or a person permits the bill
+with `po.override`.
+
 ## Suspended purchase orders
 
 `po.suspend` (person only, Admin, with a reason) pauses an active PO without ending it:

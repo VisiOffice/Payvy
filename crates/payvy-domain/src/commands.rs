@@ -427,7 +427,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "po.close",
-        summary: "Close an active purchase order (person only), with a reason: fulfilled, expired, settled outside Payvy, or superseded. Refused while allocations are still reserved.",
+        summary: "Close an active purchase order (person only), with a reason: fulfilled, expired, settled outside Payvy, or superseded. Allocations already made stand and nothing is released implicitly; their bills wait (ineligible_po) until the allocation is reversed or permitted.",
         tier: RiskTier::Routine,
         person_only: true,
         permission: Permission::Admin,
@@ -435,7 +435,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "po.cancel",
-        summary: "Cancel a draft or active purchase order (person only), with a reason. Refused while allocations are still reserved.",
+        summary: "Cancel a draft or active purchase order (person only), with a reason. Allocations already made stand and nothing is released implicitly; their bills wait (ineligible_po) until the allocation is reversed or permitted.",
         tier: RiskTier::Routine,
         person_only: true,
         permission: Permission::Admin,
