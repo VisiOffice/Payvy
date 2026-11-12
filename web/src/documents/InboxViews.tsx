@@ -1,6 +1,6 @@
 // The inbox two ways: a table to scan and sort what the reader found in each
 // file, and a board grouped by what each file needs next.
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link } from '@astryxdesign/core/Link';
 import { useNavigate } from 'react-router';
 import { Allowed } from '../permissions';
@@ -38,7 +38,7 @@ export type Row = Doc & {
   cover: { page: number; rotation: number };
 };
 
-export type View = 'table' | 'board';
+export type View = 'table' | 'board' | 'side';
 
 /** What a person still has to do for a document in To review, in words. */
 export function needs(d: Row): string[] {
@@ -179,9 +179,10 @@ function SortHeader({ k, label, sort, setSort, className }: { k: SortKey; label:
 
 /** Spreadsheet-style: one row per file, with what was read from it. */
 export function InboxTable({ docs, undoSplit }: { docs: Row[]; undoSplit: (d: Row) => void }) {
+  const navigate = useNavigate();
   const [sort, setSort] = useState<[SortKey, 1 | -1]>(['received', 1]);
   const rows = useMemo(() => [...docs].sort((a, b) => SORTS[sort[0]](a, b) * sort[1]), [docs, sort]);
-  const current = useRowKeys(rows);
+  const [current] = useRowKeys(rows, { scope: '.payvy-inbox-table', onOpen: (d) => navigate(`/inbox/${d.id}`) });
   return (
     <div className="payvy-inbox-scroll">
       <table className="payvy-inbox-table">
@@ -216,42 +217,101 @@ export function InboxTable({ docs, undoSplit }: { docs: Row[]; undoSplit: (d: Ro
 
 /**
  * J or Down moves to the next row, K or Up to the one before, Enter opens it
- * and Escape lets go. The first press picks the first row. Returns the row.
+ * and Escape lets go. Without `initial`, the first press picks the first row.
+ * `scope` is the list's selector, for scrolling the row into view; arrows
+ * pressed inside `arrowsBelongTo` are left alone (they scroll or move there).
  */
-function useRowKeys(rows: Row[]): number | null {
-  const [at, setAt] = useState<number | null>(null);
-  const navigate = useNavigate();
-  const state = useRef({ at, rows });
-  state.current = { at, rows };
+export function useRowKeys(rows: Row[], { scope, onOpen, initial = null, arrowsBelongTo }: {
+  scope: string;
+  onOpen: (d: Row) => void;
+  initial?: number | null;
+  arrowsBelongTo?: string;
+}): [number | null, (i: number | null) => void] {
+  const [at, setAt] = useState<number | null>(rows.length ? initial : null);
+  const state = useRef({ at, rows, onOpen });
+  state.current = { at, rows, onOpen };
   // A shorter list (a search, a filed document) keeps the cursor on a row that exists.
-  useEffect(() => { setAt(a => (a == null || !rows.length ? null : Math.min(a, rows.length - 1))); }, [rows.length]);
+  useEffect(() => {
+    setAt(a => (!rows.length ? null : a == null ? (initial == null ? null : Math.min(initial, rows.length - 1)) : Math.min(a, rows.length - 1)));
+  }, [rows.length, initial]);
   useEffect(() => {
     if (at == null) return;
-    document.querySelector(`.payvy-inbox-table tr[data-row="${at}"]`)?.scrollIntoView({ block: 'nearest' });
-  }, [at]);
+    document.querySelector(`${scope} [data-row="${at}"]`)?.scrollIntoView({ block: 'nearest' });
+  }, [at, scope]);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (typing(e) || e.shiftKey) return;
-      const { at, rows } = state.current;
+      const { at, rows, onOpen } = state.current;
       if (!rows.length) return;
       const k = e.key;
+      const arrow = k === 'ArrowDown' || k === 'ArrowUp';
+      if (arrow && arrowsBelongTo && (e.target as HTMLElement | null)?.closest(arrowsBelongTo)) return;
       if (k === 'j' || k === 'J' || k === 'ArrowDown') {
         e.preventDefault();
         setAt(at == null ? 0 : Math.min(at + 1, rows.length - 1));
       } else if (k === 'k' || k === 'K' || k === 'ArrowUp') {
         e.preventDefault();
         setAt(at == null ? 0 : Math.max(at - 1, 0));
-      } else if (k === 'Enter' && at != null && rows[at] && !(e.target as HTMLElement | null)?.closest('a,button')) {
+      } else if (k === 'Enter' && at != null && rows[at] && !(e.target as HTMLElement | null)?.closest('a,button,input,textarea,select')) {
         e.preventDefault();
-        navigate(`/inbox/${rows[at]!.id}`);
-      } else if (k === 'Escape' && at != null) {
+        onOpen(rows[at]!);
+      } else if (k === 'Escape' && at != null && initial == null) {
         setAt(null);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [navigate]);
-  return at;
+  }, [initial, arrowsBelongTo]);
+  return [at, setAt];
+}
+
+const DocumentReview = lazy(() => import('../pages/DocumentReview').then((m) => ({ default: m.DocumentReview })));
+
+/**
+ * The inbox beside the review: a slim list on the left, the chosen document's
+ * review on the right. J/K (or Up/Down outside the review) move through the
+ * list and the review follows; Left/Right turn its pages. Enter puts the
+ * cursor in the review's first field. When a bill is made or a file set
+ * aside, the list reloads and the next one is in front of you.
+ */
+export function InboxSide({ docs, onDone }: { docs: Row[]; onDone: () => void }) {
+  const focusReview = () => {
+    const field = document.querySelector<HTMLElement>('.payvy-inbox-side-pane .payvy-review-body input, .payvy-inbox-side-pane .payvy-review-body [role="combobox"]');
+    field?.focus();
+  };
+  const [at, setAt] = useRowKeys(docs, { scope: '.payvy-inbox-side-list', onOpen: focusReview, initial: 0, arrowsBelongTo: '.payvy-inbox-side-pane' });
+  const chosen = at != null ? docs[at] : undefined;
+  return (
+    <div className="payvy-inbox-side">
+      <ol className="payvy-inbox-side-list" aria-label="Documents">
+        {docs.map((d, i) => {
+          const r = d.reading;
+          return (
+            <li key={d.id} data-row={i}>
+              <button type="button" aria-current={i === at ? 'true' : undefined} onClick={() => setAt(i)}>
+                <span className="payvy-inbox-side-top">
+                  <strong>{r?.vendor.name ?? r?.vendor.printed ?? d.filename}</strong>
+                  <span className="payvy-num">{r?.total_cents != null ? money(r.total_cents) : '—'}</span>
+                </span>
+                <span className="payvy-inbox-side-sub">
+                  <span className="payvy-muted payvy-mono">{r && r.invoice_count > 1 ? `${r.invoice_count} invoices` : r ? numbers(r) : ''}</span>
+                  <span className="payvy-muted">{date(d.received_at)}</span>
+                </span>
+                <span className="payvy-inbox-side-file payvy-muted">{d.filename}</span>
+              </button>
+            </li>
+          );
+        })}
+      </ol>
+      <div className="payvy-inbox-side-pane">
+        {chosen ? (
+          <Suspense fallback={<div className="payvy-inbox-side-empty" role="status">Loading…</div>}>
+            <DocumentReview key={chosen.id} id={chosen.id} embedded onDone={onDone} />
+          </Suspense>
+        ) : <div className="payvy-inbox-side-empty">Choose a document on the left.</div>}
+      </div>
+    </div>
+  );
 }
 
 function Card({ d, undoSplit }: { d: Row; undoSplit: (d: Row) => void }) {
@@ -307,10 +367,10 @@ export function typing(e: KeyboardEvent): boolean {
 }
 
 const VIEW_KEY = 'payvy.inbox.view';
-/** The chosen view, remembered in this browser; T and B switch it. */
+/** The chosen view, remembered in this browser; T, B and S switch it. */
 export function useInboxView(): [View, (v: View) => void] {
   const [view, setViewState] = useState<View>(() => {
-    try { return localStorage.getItem(VIEW_KEY) === 'board' ? 'board' : 'table'; } catch { return 'table'; }
+    try { const v = localStorage.getItem(VIEW_KEY); return v === 'board' || v === 'side' ? v : 'table'; } catch { return 'table'; }
   });
   const setView = (v: View) => {
     setViewState(v);
@@ -320,9 +380,10 @@ export function useInboxView(): [View, (v: View) => void] {
     const onKey = (e: KeyboardEvent) => {
       if (typing(e)) return;
       const k = e.key.toLowerCase();
-      if (k !== 't' && k !== 'b') return;
+      const v: View | null = k === 't' ? 'table' : k === 'b' ? 'board' : k === 's' ? 'side' : null;
+      if (!v) return;
       e.preventDefault();
-      setView(k === 'b' ? 'board' : 'table');
+      setView(v);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);

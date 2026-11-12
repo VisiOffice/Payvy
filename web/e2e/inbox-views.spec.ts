@@ -1,7 +1,7 @@
 // The inbox shows what was read from each file, as a table or a board, and
 // T and B switch between them.
 import { expect, test } from '@playwright/test';
-import { agent } from './api';
+import { agent, vendor } from './api';
 import { pdf } from './pdf';
 
 test('the inbox shows what was read, as a table or a board, switched with T and B', async ({ page }, info) => {
@@ -114,4 +114,73 @@ test('J and K, or the arrows, move through the inbox table; Enter opens the row'
   const href = await rows.nth(1).getByRole('link').first().getAttribute('href');
   await page.keyboard.press('Enter');
   await expect(page).toHaveURL(new RegExp(`${href}$`));
+});
+
+test('side by side: the list beside the review, J/K move it, and making a bill moves on to the next', async ({ page }, info) => {
+  test.setTimeout(60_000);
+  const tag = `side-${Date.now()}`;
+  for (const n of [1, 2]) {
+    const doc = (await agent<{ id: string }>('document.upload', {
+      filename: `${tag}-${n}.pdf`,
+      content_base64: pdf(['Sonoran Pest Control', 'Invoice SR-7781', 'Total 185.00', `${tag} ${n}`]).toString('base64'),
+    })).id;
+    await agent('document.extract', { document_id: doc });
+  }
+  for (const width of [1440, 2560]) {
+    await page.setViewportSize({ width, height: 1000 });
+    await page.goto('/inbox');
+    // Only this test's files: other tests leave theirs in the inbox.
+    await page.getByRole('textbox', { name: 'Search documents' }).fill(tag);
+    await page.getByRole('heading', { name: 'Inbox', level: 1 }).click();
+    await page.keyboard.press('s');
+    const list = page.getByRole('list', { name: 'Documents' });
+    await expect(list).toBeVisible();
+    const items = list.getByRole('button');
+    await expect(items.first()).toHaveAttribute('aria-current', 'true');
+    await expect(page.locator('.payvy-inbox-side-pane').getByLabel('Invoice number')).toHaveValue('SR-7781');
+    await page.screenshot({ path: info.outputPath(`side-${width}.png`), animations: 'disabled' });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  }
+
+  // J moves the list and the review follows.
+  const list = page.getByRole('list', { name: 'Documents' });
+  const items = list.getByRole('button');
+  const second = await items.nth(1).locator('.payvy-inbox-side-file').textContent();
+  await page.keyboard.press('j');
+  await expect(items.nth(1)).toHaveAttribute('aria-current', 'true');
+  await expect(page.locator('.payvy-inbox-side-pane .payvy-review-filename')).toHaveText(second!);
+  await page.keyboard.press('k');
+  await expect(items.nth(0)).toHaveAttribute('aria-current', 'true');
+  // Making a bill keeps you in the inbox and puts the next file in front of you.
+  await vendor('Dropped Hauling').catch(() => undefined);
+  const made = `${tag}-bill`;
+  for (const n of [1, 2]) {
+    const doc = (await agent<{ id: string }>('document.upload', {
+      filename: `${made}-${n}.pdf`,
+      content_base64: pdf(['Dropped Hauling', 'Invoice DR-4410', 'Date 11/03/2026', 'Total 42.00', `${made} ${n}`]).toString('base64'),
+    })).id;
+    await agent('document.extract', { document_id: doc });
+  }
+  await page.reload();
+  await page.getByRole('textbox', { name: 'Search documents' }).fill(made);
+  await page.getByRole('heading', { name: 'Inbox', level: 1 }).click();
+  const pane = page.locator('.payvy-inbox-side-pane');
+  await expect(pane.locator('.payvy-review-filename')).toHaveText(`${made}-1.pdf`);
+  // Choose the vendor in the form: other tests may have added one of the same name.
+  const trigger = pane.locator('[data-copy-field="vendor_name"] button').first();
+  if (!(await pane.getByRole('button', { name: 'Create bill', exact: true }).isEnabled())) {
+    await trigger.click();
+    await page.getByRole('option', { name: 'Dropped Hauling' }).first().click();
+  }
+  await pane.getByRole('button', { name: 'Create bill', exact: true }).click();
+  await expect(page).toHaveURL(/\/inbox$/);
+  await expect(pane.locator('.payvy-review-filename')).toHaveText(`${made}-2.pdf`);
+  await expect(list.getByRole('button')).toHaveCount(1);
+  await page.getByRole('textbox', { name: 'Search documents' }).fill('');
+
+  // The view is remembered; T goes back to the table.
+  await page.reload();
+  await expect(page.getByRole('list', { name: 'Documents' })).toBeVisible();
+  await page.keyboard.press('t');
+  await expect(page.locator('.payvy-inbox-table')).toBeVisible();
 });
