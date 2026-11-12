@@ -175,16 +175,18 @@ export function DocumentReview() {
   /** The page the viewer shows: the original's page number. */
   const [evidenceFocus, setEvidenceFocus] = useState<SourceEvidence | null>(null);
   const [current, setCurrent] = useState<number | null>(null);
-  /** A file of several invoices shows them as cards, or its pages one at a time. */
-  const [splitMode, setSplitMode] = useState<'invoices' | 'pages'>('invoices');
-  // I and P show the file as invoice cards or page by page.
+  /** A file of several invoices: cards, a table, or its pages one at a time. */
+  const [splitMode, setSplitMode] = useState<'invoices' | 'pages' | 'table'>('invoices');
+  // I, T, and P only apply once the file is several invoices and the switch is on screen.
+  const multi = useRef(false);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (typing(e)) return;
+      if (!multi.current || typing(e)) return;
       const k = e.key.toLowerCase();
-      if (k !== 'i' && k !== 'p') return;
+      const mode = k === 'i' ? 'invoices' : k === 't' ? 'table' : k === 'p' ? 'pages' : null;
+      if (!mode) return;
       e.preventDefault();
-      setSplitMode(k === 'i' ? 'invoices' : 'pages');
+      setSplitMode(mode);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -352,6 +354,7 @@ export function DocumentReview() {
   // Some pages, not all: they become their own document, filed with the bill.
   const partial = visible.length > 1 && picked.length > 0 && picked.length < visible.length;
   const groups = doc.status === 'inbox' ? invoicesHere(detail) : [];
+  multi.current = groups.length > 1;
   // The suggested lines only add up while the amount is the one they were read with.
   const lines: BillLine[] | undefined =
     latest?.bill_input?.lines && amountCents === latest.bill_input.amount_cents ? latest.bill_input.lines : undefined;
@@ -369,7 +372,7 @@ export function DocumentReview() {
   const invoiceCount = splitCount ?? groups.length;
   // In the invoice cards, "Create N bills" is the one way to make them all;
   // one invoice is reviewed from its card.
-  const cards = groups.length > 1 && splitMode === 'invoices';
+  const cards = groups.length > 1 && splitMode !== 'pages';
   const thumbnailsOpen = thumbnails ?? (visible.length > 1 && visible.length <= FEW_PAGES);
   function tick(page: number, on: boolean) {
     setSelected((s) => {
@@ -592,8 +595,10 @@ export function DocumentReview() {
               <strong>This file has {invoiceCount} {invoiceCount === 1 ? 'invoice' : 'invoices'}.</strong>{' '}
               {splitMode === 'invoices'
                 ? 'Arrange their pages in the invoice cards, then create them all at once, or review one at a time.'
-                : 'Tick the pages of one invoice and create its bill. The other pages stay here.'}
-              {(
+                : splitMode === 'table'
+                  ? 'Every invoice is listed with its pages and amount. Create them all at once, or review one at a time.'
+                  : 'Tick the pages of one invoice and create its bill. The other pages stay here.'}
+              {splitMode !== 'table' && (
                 <> <button type="button" className={`payvy-text-button${splitMode === 'invoices' ? ' payvy-phone-only' : ''}`} onClick={() => { setSplitMode('invoices'); setMobileView('original'); }}>See all {invoiceCount} {invoiceCount === 1 ? 'invoice' : 'invoices'}</button></>
               )}
             </p>
@@ -737,23 +742,24 @@ export function DocumentReview() {
                 newer={reviewDetail.extraction_id !== reviewExtraction} useNew={useNewReading} partial={partial || groups.length > 1} split={partial ? splitForReview : null}
               />}
               {!activeReview && lines && (
-                <VStack gap={1}>
+                <div className="payvy-lines">
                   <Text type="label">Lines</Text>
-                  {lines.map((l, i) => (
-                    <HStack key={i} hAlign="between" gap={3}>
-                      <Text>{l.description}</Text>
-                      <Text hasTabularNumbers>{money(l.amount_cents)}</Text>
-                    </HStack>
-                  ))}
-                  {amountCents !== null && (
-                    <HStack hAlign="between" gap={3} className="payvy-total">
-                      <Text weight="semibold">Total</Text>
-                      <Text weight="semibold" hasTabularNumbers>
-                        {money(amountCents)}
-                      </Text>
-                    </HStack>
-                  )}
-                </VStack>
+                  <table>
+                    <thead>
+                      <tr><th>Description</th><th>Amount</th></tr>
+                    </thead>
+                    <tbody>
+                      {lines.map((l, i) => (
+                        <tr key={i}><td>{l.description}</td><td>{money(l.amount_cents)}</td></tr>
+                      ))}
+                    </tbody>
+                    {amountCents !== null && (
+                      <tfoot>
+                        <tr><th>Total</th><td>{money(amountCents)}</td></tr>
+                      </tfoot>
+                    )}
+                  </table>
+                </div>
               )}
               {!activeReview && latest?.bill_input?.lines && !lines && (
                 <Text type="supporting">
@@ -828,7 +834,7 @@ export function DocumentReview() {
               }
             /></div>
           )}
-          {cards ? <div className="payvy-review-primary"><div><strong>Create the bills from the invoice cards</strong><p>Use Create {invoiceCount} bills there, or Review this one on a card to make one bill at a time.</p></div></div> : <div className="payvy-review-primary"><div><strong>{!canCreate ? activeReview ? 'Save and resolve the invoice review' : 'Complete the details' : open.length ? 'Review the checks above' : 'Ready for your review'}</strong><p>{missing.length
+          {cards ? <div className="payvy-review-primary"><div><strong>Create the bills from the invoice {splitMode === 'table' ? 'table' : 'cards'}</strong><p>Use Create {invoiceCount} bills there, or Review this one on a {splitMode === 'table' ? 'row' : 'card'} to make one bill at a time.</p></div></div> : <div className="payvy-review-primary"><div><strong>{!canCreate ? activeReview ? 'Save and resolve the invoice review' : 'Complete the details' : open.length ? 'Review the checks above' : 'Ready for your review'}</strong><p>{missing.length
                   ? `To create the bill, ${missing.join(' and ')}.`
                   : visible.length > 1 && picked.length === 0
                     ? 'Tick the pages for this bill.'
@@ -847,14 +853,16 @@ export function DocumentReview() {
         {detail.bill_batch && <BatchProgress batch={detail.bill_batch} />}
         {groups.length > 1 && (
           <div className="payvy-split-mode payvy-view-switch">
-            <SegmentedControl label="Show the file as" value={splitMode} onChange={(v) => setSplitMode(v as 'invoices' | 'pages')}>
+            <SegmentedControl label="Show the file as" value={splitMode} onChange={(v) => setSplitMode(v as 'invoices' | 'pages' | 'table')}>
               <SegmentedControlItem value="invoices" label="Invoices" aria-keyshortcuts="I" icon={<Kbd keys="i" aria-hidden />} />
               <SegmentedControlItem value="pages" label="Pages" aria-keyshortcuts="P" icon={<Kbd keys="p" aria-hidden />} />
+              <SegmentedControlItem value="table" label="Table" aria-keyshortcuts="T" icon={<Kbd keys="t" aria-hidden />} />
             </SegmentedControl>
           </div>
         )}
-        {groups.length > 1 && splitMode === 'invoices' ? (
+        {groups.length > 1 && splitMode !== 'pages' ? (
           <SplitView
+            view={splitMode === 'table' ? 'table' : 'cards'}
             key={`${doc.id}-${detail.pages.version}-${latest?.extraction.id ?? ''}`}
             detail={detail}
             invoices={groups}

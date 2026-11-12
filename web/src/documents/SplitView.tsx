@@ -235,6 +235,7 @@ export function SplitView({
   onOpenPage,
   onCount,
   onDone,
+  view = 'cards',
 }: {
   detail: DocumentDetail;
   invoices: SuggestedInvoice[];
@@ -247,6 +248,8 @@ export function SplitView({
   onCount: (n: number) => void;
   /** After Create: the document again, with the batch's progress. */
   onDone: () => void;
+  /** Cards can move pages. The table is the same invoices, one row each. */
+  view?: 'cards' | 'table';
 }) {
   const doc = detail.document;
   const pdf = doc.content_type === 'application/pdf';
@@ -423,6 +426,40 @@ export function SplitView({
       </header>
       {error && <p role="alert" className="payvy-split-error">{error}</p>}
       <p className="payvy-sr-only" aria-live="polite">{said}</p>
+      {view === 'table' ? (
+        <div className="payvy-split-table-wrap">
+          <table className="payvy-split-table" data-unlocked={locked ? undefined : true}>
+            <thead>
+              <tr>
+                <th>Invoice</th>
+                <th>Pages</th>
+                <th>Amount</th>
+                {!locked && <th><span className="payvy-sr-only">Review</span></th>}
+              </tr>
+            </thead>
+            <tbody>
+              {layout.groups.map((g, i) => (
+                <tr key={g.key} onClick={locked ? undefined : () => onReview(g.pages, g.read)}>
+                  <td><strong>{invoiceName(g, i)}</strong></td>
+                  <td>{describePages(g.pages)}{!g.read && <span className="payvy-muted"> · read when created</span>}</td>
+                  <td>{g.read?.total_cents != null ? money(g.read.total_cents) : '—'}</td>
+                  {!locked && (
+                    <td>
+                      <Button label={`Review ${invoiceName(g, i)}`} size="sm" variant="ghost" onClick={(e) => { e.stopPropagation(); onReview(g.pages, g.read); }}>
+                        <span className="payvy-split-review-full">Review this one</span>
+                        <span className="payvy-split-review-short">Review</span>
+                      </Button>
+                    </td>
+                  )}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {layout.leftover.length > 0 && (
+            <p className="payvy-muted">{describePages(layout.leftover)} {layout.leftover.length === 1 ? 'stays' : 'stay'} in To review, not part of any bill.</p>
+          )}
+        </div>
+      ) : (
       <DndContext sensors={sensors} collisionDetection={closestCorners} onDragStart={onDragStart} onDragOver={onDragOver} onDragEnd={onDragEnd} onDragCancel={() => { setDragging(null); if (before.current) setLayout(before.current); }}>
         <ul className="payvy-split-grid" aria-label="Invoices in this file">
           {layout.groups.map((g, i) => (
@@ -497,6 +534,7 @@ export function SplitView({
         </Drop>
         <DragOverlay>{dragging !== null ? <span className="payvy-split-page payvy-split-lifted"><Thumb documentId={doc.id} pdf={pdf} page={dragging} rotation={rotation(dragging)} /></span> : null}</DragOverlay>
       </DndContext>
+      )}
 
       {confirming && (
         <Dialog isOpen onOpenChange={(open) => !open && setConfirming(false)} width={480} purpose="form">

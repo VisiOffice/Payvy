@@ -86,6 +86,28 @@ test('several invoices as cards: moved by keyboard and by drag, then created as 
   await page.keyboard.press('i');
   await expect(page.getByRole('radio', { name: 'Invoices' })).toBeChecked();
 
+  // T lists the same invoices, one row each. A row opens that invoice; I returns to the cards.
+  await page.keyboard.press('t');
+  await expect(page.getByRole('radio', { name: 'Table' })).toBeChecked();
+  const row = (name: string) => page.locator('.payvy-split-table tbody tr').filter({ hasText: name });
+  await expect(page.locator('.payvy-split-table tbody tr')).toHaveCount(4);
+  await expect(row('Invoice SS-101')).toContainText('pages 1–3');
+  await expect(row('Invoice SS-101')).toContainText('$300.00');
+  await expect(row('Invoice SS-102')).toContainText('page 4');
+  await expect(row('Invoice SS-102')).toContainText('$120.00');
+  await expect(row('Invoice SS-102').getByRole('button', { name: 'Review Invoice SS-102' })).toBeVisible();
+  await expect(row('Invoice SS-103')).toContainText('page 5');
+  await expect(row('Invoice SS-103')).toContainText('$45.50');
+  await expect(row('Invoice 4')).toContainText('page 6');
+  await expect(row('Invoice 4')).toContainText('read when created');
+  await row('Invoice SS-103').getByText('page 5').click();
+  await expect(page.getByRole('radio', { name: 'Pages' })).toBeChecked();
+  await expect(page.getByLabel('Invoice number')).toHaveValue('SS-103');
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  await page.keyboard.press('i');
+  await expect(page.getByRole('radio', { name: 'Invoices' })).toBeChecked();
+  await expect(card(page, 'Invoice SS-101')).toBeVisible();
+
   // One confirm, with the count and the total as read.
   await page.getByRole('button', { name: 'Create 4 bills' }).click();
   const dialog = page.getByRole('dialog');
