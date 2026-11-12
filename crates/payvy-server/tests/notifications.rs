@@ -212,6 +212,17 @@ async fn rechecks_role_membership_progress_and_reminder_preferences_before_send(
     enabled(&db, true, true).await;
     let bill = invoice(&db, standard(), &agent("import")).await;
     let ids = queue(&db, bill).await;
+    // A named approver's role can't be taken away while a bill waits on
+    // them, so Sam first rejects this bill (it keeps its pinned workflow);
+    // Alex's queued notice then cancels on the role recheck at send.
+    commit(
+        &db.state,
+        &Actor::person(DEFAULT_ORG, "sam"),
+        "bill.reject",
+        json!({"bill_id":bill,"reason":"not ours"}),
+    )
+    .await
+    .unwrap();
     commit(
         &db.state,
         &person("operator"),
@@ -256,8 +267,25 @@ async fn rechecks_role_membership_progress_and_reminder_preferences_before_send(
         deliver(&db, reminders[0]).await.unwrap()["result"]["notification"]["status"],
         "cancelled"
     );
+    // Bill3 still waits on Alex; Sam settles it before Alex can go.
+    commit(
+        &db.state,
+        &Actor::person(DEFAULT_ORG, "sam"),
+        "bill.reject",
+        json!({"bill_id":bill3,"reason":"not ours"}),
+    )
+    .await
+    .unwrap();
     let bill4 = invoice(&db, standard(), &agent("import")).await;
     let ids = queue(&db, bill4).await;
+    commit(
+        &db.state,
+        &Actor::person(DEFAULT_ORG, "sam"),
+        "bill.reject",
+        json!({"bill_id":bill4,"reason":"not ours"}),
+    )
+    .await
+    .unwrap();
     commit(
         &db.state,
         &person("operator"),

@@ -85,11 +85,49 @@ pub struct Propose {
     reason: Option<String>,
 }
 
+/// Named approvers who are people in this company but can't approve
+/// bills (no Approver or Admin role): the workflow would strand every
+/// bill that reaches their step, since bills pin their workflow version.
+/// Actors who aren't people here are left alone — a person may be added
+/// under that name later.
+async fn approver_refusal(cx: &mut Cx<'_>, workflow: &Workflow) -> Result<(), CommandError> {
+    use payvy_domain::permissions::Permission;
+    use payvy_domain::workflow::StepKind;
+    let mut roles_of = std::collections::HashMap::new();
+    for p in store::people(&mut cx.tx, cx.org).await? {
+        roles_of.insert(
+            p.actor.clone(),
+            store::actor_roles(&mut cx.tx, cx.org, &p.actor).await?,
+        );
+    }
+    let mut refused = Vec::new();
+    for step in &workflow.steps {
+        if let StepKind::Approve { approvers, .. } = &step.kind {
+            for name in approvers {
+                if let Some(roles) = roles_of.get(name)
+                    && !Permission::Approve.allows(roles)
+                {
+                    refused.push(format!("step {}: {name}", step.id));
+                }
+            }
+        }
+    }
+    if refused.is_empty() {
+        Ok(())
+    } else {
+        Err(CommandError::Conflict(format!(
+            "{} can't approve bills: give them the Approver (or Admin) role first, or name someone else",
+            refused.join(", ")
+        )))
+    }
+}
+
 pub async fn propose(cx: &mut Cx<'_>, input: Propose) -> Result<Value, CommandError> {
     input
         .workflow
         .validate()
         .map_err(|e| CommandError::Invalid(e.to_string()))?;
+    approver_refusal(cx, &input.workflow).await?;
     if let Some(id) = input.vendor_id
         && store::get_vendor(&mut cx.tx, id).await?.is_none()
     {
@@ -140,6 +178,10 @@ pub async fn decide(cx: &mut Cx<'_>, input: Decide, accept: bool) -> Result<Valu
             "this proposal is already {}",
             row.status
         )));
+    }
+    // Rechecked at acceptance: roles may have changed since it was proposed.
+    if accept {
+        approver_refusal(cx, &row.workflow).await?;
     }
     store::decide_proposal(&mut cx.tx, &row, accept, &cx.actor.name).await?;
     let kind = if accept {

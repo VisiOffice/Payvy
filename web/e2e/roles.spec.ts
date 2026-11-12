@@ -43,15 +43,13 @@ test('roles combine, restrict real sessions, and update without signing in again
     await clerk.goto('/inbox');
     await expect(clerk.getByRole('button', { name: 'Add invoices' })).toBeVisible();
 
+    // A workflow can't name someone who can't approve: an AP clerk is refused by name.
     const v = await vendor('Role Workflow Vendor');
-    const wf = await agent<{ proposal_id: string }>('workflow.propose', { vendor_id: v, workflow: { steps: [
+    const steps = [
       { id: 'approval', type: 'approve', approvers: ['role-clerk'] },
       { id: 'payment', type: 'pay', by: ['role-clerk'] },
-    ] } });
-    await command(page, 'workflow.accept', { proposal_id: wf.proposal_id });
-    const id = await bill({ vendor_id: v, invoice_number: 'ROLE-1', invoice_date: '2026-11-10', amount_cents: 12300 });
-    await clerk.goto(`/bills/${id}`);
-    await expect(clerk.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(0);
+    ];
+    await expect(agent('workflow.propose', { vendor_id: v, workflow: { steps } })).rejects.toThrow(/role-clerk can't approve bills/);
 
     await page.getByRole('button', { name: 'Edit roles for Role Clerk', exact: true }).click();
     await choose(page, 'AP clerk');
@@ -63,10 +61,15 @@ test('roles combine, restrict real sessions, and update without signing in again
 
     // Returning to an already-open page refreshes access without reloading it.
     await clerk.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await expect(clerk.getByRole('button', { name: 'Add invoices' })).toHaveCount(0);
+
+    // Now an approver, the same workflow is accepted, and they approve and can pay.
+    const wf = await agent<{ proposal_id: string }>('workflow.propose', { vendor_id: v, workflow: { steps } });
+    await command(page, 'workflow.accept', { proposal_id: wf.proposal_id });
+    const id = await bill({ vendor_id: v, invoice_number: 'ROLE-1', invoice_date: '2026-11-10', amount_cents: 12300 });
+    await clerk.goto(`/bills/${id}`);
     await clerk.getByRole('button', { name: 'Approve', exact: true }).click();
     await expect(clerk.getByRole('button', { name: 'Pay…', exact: true })).toBeVisible();
-    await clerk.goto('/inbox');
-    await expect(clerk.getByRole('button', { name: 'Add invoices' })).toHaveCount(0);
     await clerk.goto('/vendors');
     await expect(clerk.getByRole('button', { name: 'Add vendor', exact: true })).toHaveCount(0);
 
