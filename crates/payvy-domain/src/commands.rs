@@ -792,6 +792,14 @@ pub const COMMANDS: &[CommandSpec] = &[
         input_schema: r#"{"type":"object","required":["document_id","expected_version","groups"],"properties":{"document_id":{"type":"string","format":"uuid"},"expected_version":{"type":"integer","minimum":0,"description":"pages.version from document.get"},"groups":{"type":"array","minItems":1,"description":"One list per new document: page numbers of the original, in the order to show them","items":{"type":"array","minItems":1,"items":{"type":"integer","minimum":1}}}}}"#,
     },
     CommandSpec {
+        name: "document.create_bills",
+        summary: "Make a bill of each invoice in a file of several, in one request: the file is split at once (one new document per group of pages, as document.split does), and the server then reads each part and creates its bill in the background, as the person who asked. A part that reads cleanly becomes a bill; a copy of an invoice already here stacks on that bill (a resend, or a revision when the amount differs); any other part waits in To review for a person, with the reason. Pages in leftover are part of no bill and stay with this document. groups and leftover together must name every visible page once. request_id makes it safe to retry: the same request_id returns the batch already made instead of splitting again. document.get on this document shows the batch's progress (bill_batch).",
+        tier: RiskTier::Routine,
+        person_only: true,
+        permission: Permission::Prepare,
+        input_schema: r#"{"type":"object","required":["document_id","expected_version","request_id","groups"],"properties":{"document_id":{"type":"string","format":"uuid"},"expected_version":{"type":"integer","minimum":0,"description":"pages.version from document.get"},"request_id":{"type":"string","format":"uuid","description":"A new id per request; a retry with the same id returns the same batch"},"groups":{"type":"array","minItems":1,"maxItems":200,"description":"One list per invoice, in order: page numbers of the original, in the order to show them","items":{"type":"array","minItems":1,"items":{"type":"integer","minimum":1}}},"leftover":{"type":"array","description":"Visible pages that are part of no bill; they stay with this document","items":{"type":"integer","minimum":1}}}}"#,
+    },
+    CommandSpec {
         name: "document.unsplit",
         summary: "Undo a split: a document split from another gives its pages back to it (in their original place where it can tell), and the other document comes back to the inbox if it had no pages left. The split document becomes split and leaves the inbox. Refused once the split document is filed with a bill or set aside, or when the document it came from is locked.",
         tier: RiskTier::Routine,

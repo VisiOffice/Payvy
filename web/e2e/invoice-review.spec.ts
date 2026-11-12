@@ -111,6 +111,8 @@ test('multi-invoice review splits the selected pages before creating a bill', as
   await page.goto(`/inbox/${doc.id}`);
   await page.getByRole('button',{name:'Read it',exact:true}).click();
   await expect(page.getByText('This file has 2 invoices')).toBeVisible();
+  // One invoice at a time is the Pages view; the cards make them all at once.
+  await page.getByRole('radio',{name:'Pages',exact:true}).click();
   await expect(page.getByRole('button',{name:/^Create bill/})).toBeDisabled();
   await page.getByRole('button',{name:'Split selected pages',exact:true}).click();
   await expect(page).not.toHaveURL(new RegExp(doc.id));

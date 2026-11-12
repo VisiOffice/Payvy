@@ -131,6 +131,33 @@ export interface DocumentDetail {
   split_from: SplitFrom | null;
   /** Documents split from this one, in page order. */
   split_into: SplitPart[];
+  /** The newest "Create N bills" made from this document, if any. */
+  bill_batch?: BillBatch | null;
+}
+
+/** One invoice of a batch, and what became of it. */
+export interface BillBatchPart {
+  position: number;
+  document_id: string;
+  filename: string | null;
+  pages: number[];
+  invoice_number: string | null;
+  total_cents: number | null;
+  state: 'reading' | 'created' | 'stacked' | 'needs_you' | 'withdrawn';
+  bill_id: string | null;
+  note: string | null;
+}
+
+/** "Create N bills" on a file of several invoices: split at once, each part read and billed on the server. */
+export interface BillBatch {
+  id: string;
+  document_id: string;
+  request_id: string;
+  requested_by: string;
+  requested_at: string;
+  done: boolean;
+  counts: Record<BillBatchPart['state'], number>;
+  parts: BillBatchPart[];
 }
 
 export const FIELDS: { key: Exclude<keyof Read, 'lines'>; label: string; isDate?: boolean; isAmount?: boolean }[] = [

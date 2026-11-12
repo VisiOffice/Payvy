@@ -17,6 +17,9 @@
   "dependencies": {
     "@astryxdesign/core": "0.7.12",
     "@astryxdesign/theme-neutral": "0.7.12",
+    "@dnd-kit/core": "6.3.1",
+    "@dnd-kit/sortable": "10.0.0",
+    "@dnd-kit/utilities": "3.2.2",
     "@stylexjs/stylex": "0.19.1",
     "pdfjs-dist": "6.5.438",
     "react": "19.3.1",

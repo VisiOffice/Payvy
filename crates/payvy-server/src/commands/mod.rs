@@ -5,6 +5,7 @@
 mod approval_rules;
 mod auto_pay;
 mod bank;
+mod bill_batches;
 mod bills;
 mod documents;
 mod email;
@@ -204,6 +205,10 @@ pub async fn run(
         cleanup_extraction_claim(state, actor.org_id, extraction_claim).await;
         return Err(anyhow::Error::from(error).into());
     }
+    // A new batch: wake the worker rather than wait for its next pass.
+    if !preview && spec.name == "document.create_bills" {
+        state.bill_batches.notify_one();
+    }
 
     let mut out = json!({
         "command": spec.name,
@@ -314,6 +319,7 @@ async fn execute(cx: &mut Cx<'_>, name: &str, input: &Value) -> Result<Value, Co
         "document.extract" => extract::extract(cx, parse(input)?).await,
         "document.arrange" => documents::arrange(cx, parse(input)?).await,
         "document.split" => documents::split(cx, parse(input)?).await,
+        "document.create_bills" => bill_batches::create(cx, parse(input)?).await,
         "document.unsplit" => documents::unsplit(cx, parse(input)?).await,
         "email.address" => email::address(cx, parse(input)?).await,
         "email.new_address" => email::new_address(cx, parse(input)?).await,

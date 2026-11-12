@@ -966,6 +966,29 @@ export interface DocumentSplitInput {
   groups: [[number, ...number[]], ...[number, ...number[]][]];
 }
 
+export interface DocumentCreateBillsInput {
+  document_id: string;
+  /**
+   * pages.version from document.get
+   */
+  expected_version: number;
+  /**
+   * A new id per request; a retry with the same id returns the same batch
+   */
+  request_id: string;
+  /**
+   * One list per invoice, in order: page numbers of the original, in the order to show them
+   *
+   * @minItems 1
+   * @maxItems 200
+   */
+  groups: [[number, ...number[]], ...[number, ...number[]][]];
+  /**
+   * Visible pages that are part of no bill; they stay with this document
+   */
+  leftover?: number[];
+}
+
 export interface DocumentUnsplitInput {
   /**
    * The document that was split off
@@ -1099,6 +1122,7 @@ export interface CommandInputs {
   "document.extract": DocumentExtractInput;
   "document.arrange": DocumentArrangeInput;
   "document.split": DocumentSplitInput;
+  "document.create_bills": DocumentCreateBillsInput;
   "document.unsplit": DocumentUnsplitInput;
   "document.trash": DocumentTrashInput;
   "email.address": EmailAddressInput;
@@ -1206,6 +1230,7 @@ export const COMMANDS: Record<CommandName, { tier: Tier; personOnly: boolean; su
   "document.extract": { tier: "routine", personOnly: false, summary: "Read an inbox document with the configured model: vendor, invoice number, dates, lines and total, checked against each other and matched to a vendor on file. Returns the checks, whether it is ready, and bill_input: the bill.create input it suggests, to enter as is or corrected. Nothing becomes a bill until bill.create. New documents are read automatically when the server's reader is on. Refused if the document was already read, unless again is true. The model gets the original file and, when the document is only some of its pages (split from it, or with pages hidden), is told which pages to read. When it finds several invoices in the file, the reading lists them (invoices) and fails the one_invoice check; an agent's reading then splits the file straight away into one document per invoice (split.to_read: read each next), which document.unsplit undoes. A person's reading only suggests. A document already split from another is never split again this way." },
   "document.arrange": { tier: "routine", personOnly: false, summary: "Set a document's page order, rotation and hidden pages in one change, as a new version of its arrangement; the original file never changes. List every page of this document once, by its page number in the original file, in the order to show them; at least one must stay visible. expected_version is the version from document.get: if someone changed the pages since, it is refused and you get the document again. Refused for a document set aside as not a bill, and once its bill has an approval or is no longer open (pages lock after approval). A bill still waiting for its first approval moves to the new version, and its history says so." },
   "document.split": { tier: "routine", personOnly: false, summary: "Move groups of pages into new documents, one per group, for a file holding several invoices. Each new document is a view of the same original file (nothing is copied), shows only its pages in the order given with their rotation, records which document it came from, and is in the inbox to be read and entered. The moved pages leave this document's next arrangement version; if none are left it becomes split and leaves the inbox. expected_version is pages.version from document.get. Refused for a document set aside or locked, for a stale version, for groups that overlap, name pages this document doesn't have, or would leave a new document with nothing to show. Takes effect at once; document.unsplit undoes it." },
+  "document.create_bills": { tier: "routine", personOnly: true, summary: "Make a bill of each invoice in a file of several, in one request: the file is split at once (one new document per group of pages, as document.split does), and the server then reads each part and creates its bill in the background, as the person who asked. A part that reads cleanly becomes a bill; a copy of an invoice already here stacks on that bill (a resend, or a revision when the amount differs); any other part waits in To review for a person, with the reason. Pages in leftover are part of no bill and stay with this document. groups and leftover together must name every visible page once. request_id makes it safe to retry: the same request_id returns the batch already made instead of splitting again. document.get on this document shows the batch's progress (bill_batch)." },
   "document.unsplit": { tier: "routine", personOnly: false, summary: "Undo a split: a document split from another gives its pages back to it (in their original place where it can tell), and the other document comes back to the inbox if it had no pages left. The split document becomes split and leaves the inbox. Refused once the split document is filed with a bill or set aside, or when the document it came from is locked." },
   "document.trash": { tier: "routine", personOnly: false, summary: "Take a document out of the inbox because it isn't a bill (a statement, a marketing email, a duplicate). The file is kept." },
   "email.address": { tier: "read", personOnly: false, summary: "This organization's inbound address. Bills emailed or forwarded to it land in the document inbox; a +tag after the token is allowed (token+fuel@...). Null until a person creates one with email.new_address." },

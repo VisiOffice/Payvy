@@ -367,6 +367,11 @@ async fn main() -> anyhow::Result<()> {
                     if extract_auto && state.storage.is_some() {
                         tokio::spawn(payvy_server::extract_worker::run(state.clone()));
                     }
+                    // Bills asked for from a file of several invoices are
+                    // read and made whether or not the background reader is on.
+                    if state.storage.is_some() {
+                        tokio::spawn(payvy_server::bill_batch_worker::run(state.clone()));
+                    }
                 }
                 None => tracing::warn!(
                     "no extraction model configured; documents aren't read automatically"
