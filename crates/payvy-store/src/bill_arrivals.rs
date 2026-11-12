@@ -169,8 +169,8 @@ pub async fn set_bill_amount(
         .await?;
     for (i, line) in lines.iter().enumerate() {
         sqlx::query(
-            "INSERT INTO bill_lines (id, org_id, bill_id, position, description, amount_cents, account) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            "INSERT INTO bill_lines (id, org_id, bill_id, position, description, amount_cents, account, quantity_micro, unit, unit_price_cents) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
         )
         .bind(Uuid::new_v4())
         .bind(org_id)
@@ -179,6 +179,9 @@ pub async fn set_bill_amount(
         .bind(&line.description)
         .bind(line.amount_cents)
         .bind(&line.account)
+        .bind(line.quantity.as_deref().and_then(payvy_domain::invoice_evidence::quantity_micro))
+        .bind(&line.unit)
+        .bind(line.unit_price_cents)
         .execute(&mut **tx)
         .await?;
     }

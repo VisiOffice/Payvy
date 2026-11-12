@@ -75,6 +75,71 @@ about the bill changing, so an override permits the shortfall either way it is
 labelled today. Its fingerprint binds to the family name `uncovered`, which also
 keeps overrides written before `over_available` existed valid.
 
+## Quantity matching
+
+Bill lines carry the quantity, unit and unit price as printed (from extraction's
+line details, the invoice review, or `bill.create` input); PO lines already stored
+theirs. Quantities are exact micro-units — no float enters the arithmetic
+(`payvy-domain::quantity`, `invoice_evidence::quantity_micro`).
+
+A bill line belongs to a PO line by normalized description, with the unit agreeing
+when both sides state one. More than one fit is `ambiguous_line`, none is
+`unmatched_line`; both are identification findings and never silently map a line.
+Against that mapping, quantities are cumulative across every live allocation to
+the PO: billing past the ordered quantity is `quantity_over`, and a billed rate
+one cent off the PO line's rate is `rate_mismatch` (exact to the cent).
+
+The registry's `quantity_matching` policy decides what findings do, under the
+version the bill pinned: `flag_only` (default) shows them beside the bill — with
+ordered/billed/remaining per line and on `po.match_preview` candidates — and
+never blocks; `enforce` makes `quantity_over` and `rate_mismatch` block payment
+like other exceptions (overridable). Lines without quantities, on either side,
+are amount-only and not quantity-checked.
+
+Counting rules: a bill counts against a PO only in the share that PO carries of
+it — this PO's allocations divided by the bill's allocations across all POs, so
+a partly allocated bill is not shrunk by its unallocated remainder, and a bill
+split across POs counts its share against each. "Earlier bills" means bills
+whose first allocation to the PO came first (`po_allocations.seq`, backfilled
+in creation order); a bill that is reversed and re-allocated takes a new place
+at the back of that queue.
+
+A bill can stand under several exceptions at once (say, partly uncovered and
+quantity-over). The gate requires each to be permitted: an override for one
+kind never clears another, and `po.override` permits the first unpermitted one
+each time it is used.
+
+## Before deploying the all-exceptions gate (PR #21)
+
+Bills that pass today on one override but carry a second, unpermitted exception
+become blocked — the safe direction, but know first. Read-only; run per company
+(set `payvy.org_id` or run as a role that can see the company):
+
+```sql
+WITH covered AS (
+    SELECT bill_id, sum(amount_cents)::bigint AS c FROM po_allocations
+    WHERE state <> 'released' AND bill_id IS NOT NULL GROUP BY bill_id)
+SELECT b.id, v.name AS vendor, b.invoice_number, o.exception_kind AS override_for
+FROM bills b
+JOIN vendors v ON v.id = b.vendor_id
+JOIN po_overrides o ON o.bill_id = b.id AND o.bill_amount_cents = b.amount_cents
+LEFT JOIN covered c ON c.bill_id = b.id
+LEFT JOIN vendor_po_settings s ON s.vendor_id = b.vendor_id
+WHERE b.state = 'open'
+  AND (
+       (COALESCE(c.c, 0) < b.amount_cents
+        AND o.exception_kind NOT IN ('uncovered', 'over_available', 'no_po'))
+    OR (COALESCE(s.require_funding, false)
+        AND NOT EXISTS (SELECT 1 FROM signals g WHERE g.bill_id = b.id AND g.key = 'customer_funded'))
+    OR EXISTS (SELECT 1 FROM po_allocations a JOIN purchase_orders p ON p.id = a.po_id
+               WHERE a.bill_id = b.id AND a.state <> 'released' AND p.status <> 'active'))
+ORDER BY b.received_at;
+```
+
+Quantity findings under an enforcing policy are computed by the server, not
+stored; check bills on vendors whose policy enforces `quantity_matching`
+separately in the app after deploy.
+
 ## Overrides and separation of duties
 
 `po.override` permits one bill's PO exception (Confirmed tier, person only, Admin), bound to the

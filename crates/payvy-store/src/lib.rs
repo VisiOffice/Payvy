@@ -667,8 +667,8 @@ pub async fn insert_bill(
     .await?;
     for (i, line) in new.lines.iter().enumerate() {
         sqlx::query(
-            "INSERT INTO bill_lines (id, org_id, bill_id, position, description, amount_cents, account)
-             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            "INSERT INTO bill_lines (id, org_id, bill_id, position, description, amount_cents, account, quantity_micro, unit, unit_price_cents)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
         )
         .bind(Uuid::new_v4())
         .bind(org_id)
@@ -677,6 +677,9 @@ pub async fn insert_bill(
         .bind(&line.description)
         .bind(line.amount_cents)
         .bind(&line.account)
+        .bind(line.quantity.as_deref().and_then(payvy_domain::invoice_evidence::quantity_micro))
+        .bind(&line.unit)
+        .bind(line.unit_price_cents)
         .execute(&mut **tx)
         .await?;
     }
@@ -733,16 +736,22 @@ pub async fn list_bills(
 }
 
 pub async fn bill_lines(tx: &mut Tx, bill_id: Uuid) -> anyhow::Result<Vec<Line>> {
-    let rows = sqlx::query("SELECT description, amount_cents, account FROM bill_lines WHERE bill_id = $1 ORDER BY position")
+    let rows = sqlx::query("SELECT description, amount_cents, account, quantity_micro, unit, unit_price_cents FROM bill_lines WHERE bill_id = $1 ORDER BY position")
         .bind(bill_id)
         .fetch_all(&mut **tx)
         .await?;
     Ok(rows
         .into_iter()
-        .map(|r| Line {
-            description: r.get("description"),
-            amount_cents: r.get("amount_cents"),
-            account: r.get("account"),
+        .map(|r| {
+            let micro: Option<i64> = r.get("quantity_micro");
+            Line {
+                description: r.get("description"),
+                amount_cents: r.get("amount_cents"),
+                account: r.get("account"),
+                quantity: micro.map(payvy_domain::invoice_evidence::format_micro),
+                unit: r.get("unit"),
+                unit_price_cents: r.get("unit_price_cents"),
+            }
         })
         .collect())
 }

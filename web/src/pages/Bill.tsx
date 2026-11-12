@@ -67,10 +67,14 @@ interface Detail {
     uncovered_cents: number;
     allocations: { allocation_id: string; po_id: string; po_number: string | null; amount_cents: number; state: string; kind: string }[];
     exception: { kind: string; excess_cents: number; detail: string } | null;
+    /** Every standing exception, each with its own permitted state. */
+    exceptions: { kind: string; excess_cents: number; detail: string; overridden: boolean; overridden_by: string | null }[];
     overridden: boolean;
     /** Policy findings that show beside the bill without blocking it. */
     notices: { kind: string; po_number: string | null; detail: string }[];
-    policy: { over_period: string; version: number | null };
+    quantity_lines: { po_number: string; description: string; unit: string | null; ordered: string; billed: string; remaining: string; unit_price_cents: number | null }[];
+    quantity_findings: { kind: string; detail: string; po_number: string }[];
+    policy: { over_period: string; quantity_matching: string; version: number | null };
   };
   arrivals: {
     id: string;
@@ -410,7 +414,7 @@ export function BillPage() {
 }
 
 interface PoPreview {
-  candidates: { po_id: string; po_number: string; available_cents: number; proposed_cents: number; verified_reference: boolean; over_period: boolean }[];
+  candidates: { po_id: string; po_number: string; available_cents: number; proposed_cents: number; verified_reference: boolean; over_period: boolean; quantity_findings: { kind: string; detail: string }[] }[];
 }
 
 /** PO matching beside the invoice: identify, reserve, accept, override.
@@ -440,9 +444,11 @@ function PoPanel({ billId, po, onChange }: {
       .catch(() => setPreview(null));
   }, [billId]);
   useEffect(loadPreview, [loadPreview]);
+  // The override form permits the first exception still standing.
+  const firstUnpermitted = po.exceptions.find((e) => !e.overridden);
   useEffect(() => {
-    if (po.exception) setExcess(dollars(po.exception.excess_cents));
-  }, [po.exception?.excess_cents]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (firstUnpermitted) setExcess(dollars(firstUnpermitted.excess_cents));
+  }, [firstUnpermitted?.excess_cents]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function apply(poId: string) {
     const amount = toCents(amounts[poId] ?? '');
@@ -492,20 +498,59 @@ function PoPanel({ billId, po, onChange }: {
       <Text>
         Covered {money(po.covered_cents)} · Uncovered {money(po.uncovered_cents)}
       </Text>
-      {po.exception && !po.overridden && (
-        <Banner
-          status="warning"
-          title={`Can't be paid yet: ${po.exception.kind.replaceAll('_', ' ')}`}
-          description={po.exception.detail}
-        />
+      {po.exceptions.map((e, i) =>
+        e.overridden ? (
+          <Banner
+            key={i}
+            status="info"
+            title={`Permitted: ${e.kind.replaceAll('_', ' ')}`}
+            description={`${e.detail}${e.overridden_by ? ` Permitted by ${e.overridden_by}, who can't release this bill.` : ''}`}
+          />
+        ) : (
+          <Banner
+            key={i}
+            status="warning"
+            title={`Can't be paid yet: ${e.kind.replaceAll('_', ' ')}`}
+            description={e.detail}
+          />
+        ),
       )}
-      {po.overridden && <HStack gap={2} vAlign="center" wrap="wrap">
+      {po.overridden && po.exceptions.length <= 1 && <HStack gap={2} vAlign="center" wrap="wrap">
         <Badge label="Exception permitted by override" variant="warning" />
         {po.overridden_by && <Text type="supporting">Permitted by {po.overridden_by}, who can't release this bill.</Text>}
       </HStack>}
       {po.notices.map((n, i) => (
         <Banner key={i} status="info" title={`Flagged: ${n.kind.replaceAll('_', ' ')}`} description={n.detail} />
       ))}
+      {po.policy.quantity_matching === 'enforce' &&
+        po.quantity_findings
+          // Blocking findings already show in the exception banner above.
+          .filter((f) => !(po.exception && (f.kind === 'quantity_over' || f.kind === 'rate_mismatch')))
+          .map((f, i) => (
+          <Banner
+            key={i}
+            status={f.kind === 'quantity_over' || f.kind === 'rate_mismatch' ? 'warning' : 'info'}
+            title={`${f.kind.replaceAll('_', ' ')} · ${f.po_number}`}
+            description={f.detail}
+          />
+        ))}
+      {po.quantity_lines.length > 0 && (
+        <VStack gap={1}>
+          <Text weight="semibold">Quantities</Text>
+          {po.quantity_lines.map((q, i) => (
+            <HStack key={i} hAlign="between" gap={3}>
+              <Text>
+                {q.description} <Text type="supporting">· {q.po_number}</Text>
+              </Text>
+              <Text hasTabularNumbers>
+                {q.billed} of {q.ordered}
+                {q.unit ? ` ${q.unit}` : ''} billed · {q.remaining} left
+                {q.unit_price_cents != null ? ` · at ${money(q.unit_price_cents)}` : ''}
+              </Text>
+            </HStack>
+          ))}
+        </VStack>
+      )}
       {po.allocations.map((a) => (
         <HStack key={a.allocation_id} hAlign="between" gap={3} vAlign="center">
           <Text>
@@ -520,7 +565,7 @@ function PoPanel({ billId, po, onChange }: {
       {candidates.map((c) => (
         <HStack key={c.po_id} gap={2} vAlign="end">
           <TextInput
-            label={`${c.po_number} (${money(c.available_cents)} available)${c.over_period ? ' · outside its period' : ''}`}
+            label={`${c.po_number} (${money(c.available_cents)} available)${c.over_period ? ' · outside its period' : ''}${c.quantity_findings.length ? ` · ${c.quantity_findings.length} quantity finding${c.quantity_findings.length === 1 ? '' : 's'}` : ''}`}
             value={amounts[c.po_id] ?? ''}
             onChange={(v: string) => setAmounts((m) => ({ ...m, [c.po_id]: v }))}
           />

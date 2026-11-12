@@ -52,9 +52,37 @@ impl OverPeriod {
     }
 }
 
+/// How quantity/rate findings are treated (quantity matching).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QuantityMatching {
+    /// Findings show beside the bill; they never block (the default).
+    FlagOnly,
+    /// quantity_over and rate_mismatch block payment like other exceptions.
+    Enforce,
+}
+
+impl QuantityMatching {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            QuantityMatching::FlagOnly => "flag_only",
+            QuantityMatching::Enforce => "enforce",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "flag_only" => QuantityMatching::FlagOnly,
+            "enforce" => QuantityMatching::Enforce,
+            _ => return None,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Policies {
     pub over_period: OverPeriod,
+    pub quantity_matching: QuantityMatching,
 }
 
 impl Default for Policies {
@@ -62,6 +90,7 @@ impl Default for Policies {
     fn default() -> Self {
         Policies {
             over_period: OverPeriod::FlagOnly,
+            quantity_matching: QuantityMatching::FlagOnly,
         }
     }
 }

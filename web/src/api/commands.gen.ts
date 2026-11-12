@@ -438,6 +438,12 @@ export interface BillCreateInput {
     description: string;
     amount_cents: number;
     account?: string;
+    /**
+     * As printed, e.g. 2.5; quantity-checked against PO lines when allocated
+     */
+    quantity?: string;
+    unit?: string;
+    unit_price_cents?: number;
   }[];
   allow_duplicate?: boolean;
   /**
@@ -681,6 +687,10 @@ export interface PoPolicyGetInput {
 export interface PoPolicySetInput {
   vendor_id: string;
   over_period?: "flag_only" | "require_full_cover";
+  /**
+   * enforce: quantity_over and rate_mismatch block payment
+   */
+  quantity_matching?: "flag_only" | "enforce";
   reason?: string;
 }
 
@@ -1194,7 +1204,7 @@ export const COMMANDS: Record<CommandName, { tier: Tier; personOnly: boolean; su
   "po.import": { tier: "routine", personOnly: false, summary: "Import a purchase order from another system by external source/id (idempotent). Always lands as a draft: a person activates it with po.activate. opening_consumed_cents records amounts already billed in the source system and is not counted twice on a re-import." },
   "po.vendor_settings": { tier: "read", personOnly: false, summary: "A vendor's purchase-order settings: whether its bills require a PO, and its overage caps (dollar and/or percentage in basis points). Caps are pinned onto each PO revision when it is made." },
   "po.set_vendor_settings": { tier: "routine", personOnly: true, summary: "Set a vendor's purchase-order settings (person only): whether its bills require a PO, and overage caps. Zero overage is the default; an absent cap is not configured, a cap of 0 is zero. Existing PO revisions keep the allowance pinned on them." },
-  "po.policy_get": { tier: "read", personOnly: false, summary: "A vendor's PO policies in force (the enumerated registry): over_period (flag_only or require_full_cover) and the version. Version 0 is the defaults: flag; do not silently match." },
+  "po.policy_get": { tier: "read", personOnly: false, summary: "A vendor's PO policies in force (the enumerated registry): over_period (flag_only or require_full_cover), quantity_matching (flag_only or enforce), and the version. Version 0 is the defaults: flag; do not silently match." },
   "po.policy_set": { tier: "routine", personOnly: true, summary: "Set a vendor's PO policies (person only): a new immutable version supersedes the old; bills already created keep the version they pinned. Asking for what is already in force is refused. Agents may not set policy." },
   "po.match_preview": { tier: "read", personOnly: false, summary: "Which of a bill's vendor's active POs it could go against: available amounts, a proposed allocation and any exception (no PO, over available). Writes and reserves nothing." },
   "po.match_apply": { tier: "confirmed", personOnly: false, summary: "Reserve bill amounts against purchase orders. Atomic across every PO in the call: all affected POs are locked in a consistent order, the whole set is validated (active, vendor, available plus the revision's pinned allowance, total not over the bill), then everything reserves together or nothing does. Reserving is preparation, not approval." },

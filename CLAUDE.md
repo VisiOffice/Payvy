@@ -98,6 +98,14 @@ Conventions follow Visirent (`~/Code/visirent`).
   unchanged. A PO can be suspended (`po.suspend`/`po.reactivate`, person-only Admin):
   allocations stand, new ones refused, its bills carry `suspended_po` until reactivated
   or overridden. Agents may not set policy. See `docs/purchase-orders.md`.
+- **Quantity matching is cumulative, exact, and policy-gated** (`payvy-domain/src/quantity.rs`).
+  Bill lines carry quantity/unit/unit-price as printed (extraction details, invoice review,
+  or `bill.create`); a bill line maps to a PO line by normalized description (+unit when
+  both state one) — unmatched/ambiguous are findings, never silent mappings. Quantities are
+  exact micro-units, rates exact to the cent: over-ordered is `quantity_over`, a cent off
+  the PO rate is `rate_mismatch`. The registry's `quantity_matching` policy (pinned like
+  the rest) is `flag_only` by default and `enforce` to block payment. Amount-only lines
+  are never quantity-checked. See `docs/purchase-orders.md`.
 - **Rho is a read-only connection** (`payvy-pay`'s `Rho`, mode `read_only`): it coexists with
   the paying bank (one live paying connection per org, plus one read-only connection per
   provider), its client has no pay method, and `bill.release` with only Rho behaves exactly

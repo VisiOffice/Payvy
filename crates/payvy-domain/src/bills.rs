@@ -44,6 +44,27 @@ pub struct Line {
     /// The expense account in the books it posts to, e.g. "6100 Repairs".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account: Option<String>,
+    /// Quantity as printed/entered ("2.5"), for quantity matching against
+    /// PO lines. Absent: the line is amount-only and is not quantity-checked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quantity: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit_price_cents: Option<Cents>,
+}
+
+impl Line {
+    pub fn amount(description: String, amount_cents: Cents) -> Self {
+        Line {
+            description,
+            amount_cents,
+            account: None,
+            quantity: None,
+            unit: None,
+            unit_price_cents: None,
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -173,11 +194,7 @@ mod tests {
         let lines = |amounts: &[i64]| {
             amounts
                 .iter()
-                .map(|&amount_cents| Line {
-                    description: "Printed line".into(),
-                    amount_cents,
-                    account: None,
-                })
+                .map(|&amount_cents| Line::amount("Printed line".into(), amount_cents))
                 .collect::<Vec<_>>()
         };
         assert!(validate(9000, "SIGNED", &lines(&[10000, -1000, 0]), d, None).is_ok());
@@ -195,16 +212,8 @@ mod tests {
     fn lines_must_add_up() {
         let d = NaiveDate::from_ymd_opt(2026, 11, 1).unwrap();
         let lines = vec![
-            Line {
-                description: "Haul".into(),
-                amount_cents: 30_000,
-                account: None,
-            },
-            Line {
-                description: "Disposal".into(),
-                amount_cents: 12_500,
-                account: None,
-            },
+            Line::amount("Haul".into(), 30_000),
+            Line::amount("Disposal".into(), 12_500),
         ];
         assert!(validate(42_500, "A1", &lines, d, None).is_ok());
         assert_eq!(

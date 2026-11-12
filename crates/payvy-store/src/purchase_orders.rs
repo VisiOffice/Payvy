@@ -450,6 +450,25 @@ pub async fn insert_override(
     Ok(id)
 }
 
+/// Every override ever recorded for this bill, newest first.
+pub async fn overrides_for_bill(tx: &mut Tx, bill_id: Uuid) -> anyhow::Result<Vec<Override>> {
+    let rows = sqlx::query("SELECT id, bill_id, exception_kind, authorized_excess_cents, bill_amount_cents, fingerprint, reason, created_by FROM po_overrides WHERE bill_id = $1 ORDER BY created_at DESC")
+        .bind(bill_id).fetch_all(&mut **tx).await?;
+    Ok(rows
+        .iter()
+        .map(|r| Override {
+            id: r.get("id"),
+            bill_id: r.get("bill_id"),
+            exception_kind: r.get("exception_kind"),
+            authorized_excess_cents: r.get("authorized_excess_cents"),
+            bill_amount_cents: r.get("bill_amount_cents"),
+            fingerprint: r.get("fingerprint"),
+            reason: r.get("reason"),
+            created_by: r.get("created_by"),
+        })
+        .collect())
+}
+
 pub async fn latest_override(tx: &mut Tx, bill_id: Uuid) -> anyhow::Result<Option<Override>> {
     let row = sqlx::query("SELECT id, bill_id, exception_kind, authorized_excess_cents, bill_amount_cents, fingerprint, reason, created_by FROM po_overrides WHERE bill_id = $1 ORDER BY created_at DESC LIMIT 1")
         .bind(bill_id).fetch_optional(&mut **tx).await?;
@@ -551,6 +570,8 @@ pub struct PolicyVersion {
     pub status: String,
     /// flag_only | require_full_cover (payvy-domain::purchase_orders::OverPeriod)
     pub over_period: String,
+    /// flag_only | enforce (payvy-domain::purchase_orders::QuantityMatching)
+    pub quantity_matching: String,
     pub reason: Option<String>,
     pub created_by: String,
     pub created_at: DateTime<Utc>,
@@ -563,6 +584,7 @@ fn policy_version(r: &PgRow) -> PolicyVersion {
         version: r.get("version"),
         status: r.get("status"),
         over_period: r.get("over_period"),
+        quantity_matching: r.get("quantity_matching"),
         reason: r.get("reason"),
         created_by: r.get("created_by"),
         created_at: r.get("created_at"),
@@ -571,7 +593,7 @@ fn policy_version(r: &PgRow) -> PolicyVersion {
 
 macro_rules! policy_cols {
     () => {
-        "id, vendor_id, version, status, over_period, reason, created_by, created_at"
+        "id, vendor_id, version, status, over_period, quantity_matching, reason, created_by, created_at"
     };
 }
 
@@ -603,11 +625,13 @@ pub async fn policy_by_id(tx: &mut Tx, id: Uuid) -> anyhow::Result<Option<Policy
 /// A person's change: the active version is superseded and a new one takes
 /// its place. Old versions are never edited, so a bill's pin keeps meaning
 /// what it meant when the bill was created.
+#[allow(clippy::too_many_arguments)]
 pub async fn set_policy(
     tx: &mut Tx,
     org: Uuid,
     vendor_id: Uuid,
     over_period: &str,
+    quantity_matching: &str,
     reason: Option<&str>,
     by: &str,
     now: DateTime<Utc>,
@@ -634,12 +658,75 @@ pub async fn set_policy(
     .get("v");
     let id = Uuid::new_v4();
     sqlx::query(
-        "INSERT INTO vendor_po_policies (id, org_id, vendor_id, version, status, over_period, reason, created_by, created_at) VALUES ($1,$2,$3,$4,'active',$5,$6,$7,$8)",
+        "INSERT INTO vendor_po_policies (id, org_id, vendor_id, version, status, over_period, quantity_matching, reason, created_by, created_at) VALUES ($1,$2,$3,$4,'active',$5,$6,$7,$8,$9)",
     )
-    .bind(id).bind(org).bind(vendor_id).bind(version).bind(over_period).bind(reason).bind(by).bind(now)
+    .bind(id).bind(org).bind(vendor_id).bind(version).bind(over_period).bind(quantity_matching).bind(reason).bind(by).bind(now)
     .execute(&mut **tx)
     .await?;
     policy_by_id(tx, id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("the policy version just written is missing"))
+}
+
+/// One bill's stake in a PO: when it first allocated, how much of the
+/// bill this PO carries (the split share), and its lines.
+#[derive(Debug, Clone)]
+pub struct AllocatedBill {
+    pub bill_id: Uuid,
+    pub first_seq: i64,
+    pub allocated_cents: Cents,
+    /// The bill's live allocations across every PO: the denominator of
+    /// its split share, so an unallocated remainder never shrinks it.
+    pub total_allocated_cents: Cents,
+    pub bill_amount_cents: Cents,
+    pub lines: Vec<payvy_domain::bills::Line>,
+}
+
+/// Every bill with a live (not released) allocation to this PO, once each
+/// (a bill may hold several allocations), in first-allocation order.
+pub async fn allocated_bill_lines(tx: &mut Tx, po_id: Uuid) -> anyhow::Result<Vec<AllocatedBill>> {
+    let rows = sqlx::query(
+        "WITH per_bill AS (\
+             SELECT a.bill_id, min(a.seq) AS first_seq, sum(a.amount_cents)::bigint AS allocated, \
+                    (SELECT sum(x.amount_cents)::bigint FROM po_allocations x \
+                      WHERE x.bill_id = a.bill_id AND x.state <> 'released') AS total_allocated \
+             FROM po_allocations a \
+             WHERE a.po_id = $1 AND a.state <> 'released' AND a.bill_id IS NOT NULL \
+             GROUP BY a.bill_id) \
+         SELECT pb.bill_id AS bill_id, pb.first_seq AS first_seq, pb.allocated AS allocated, pb.total_allocated AS total_allocated, \
+                b.amount_cents AS bill_amount, bl.description, bl.amount_cents, bl.account, \
+                bl.quantity_micro, bl.unit, bl.unit_price_cents \
+         FROM per_bill pb \
+         JOIN bills b ON b.id = pb.bill_id \
+         JOIN bill_lines bl ON bl.bill_id = pb.bill_id \
+         ORDER BY pb.first_seq, pb.bill_id, bl.position",
+    )
+    .bind(po_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    let mut out: Vec<AllocatedBill> = Vec::new();
+    for r in &rows {
+        let bill_id: Uuid = r.get("bill_id");
+        let micro: Option<i64> = r.get("quantity_micro");
+        let line = payvy_domain::bills::Line {
+            description: r.get("description"),
+            amount_cents: r.get("amount_cents"),
+            account: r.get("account"),
+            quantity: micro.map(payvy_domain::invoice_evidence::format_micro),
+            unit: r.get("unit"),
+            unit_price_cents: r.get("unit_price_cents"),
+        };
+        match out.iter_mut().find(|b| b.bill_id == bill_id) {
+            Some(b) => b.lines.push(line),
+            None => out.push(AllocatedBill {
+                bill_id,
+                first_seq: r.get("first_seq"),
+                allocated_cents: r.get("allocated"),
+                total_allocated_cents: r.get("total_allocated"),
+                bill_amount_cents: r.get("bill_amount"),
+                lines: vec![line],
+            }),
+        }
+    }
+    Ok(out)
 }

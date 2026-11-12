@@ -215,6 +215,17 @@ pub fn validate(r: &Review) -> Validation {
                     description: row.description.trim().into(),
                     amount_cents,
                     account: None,
+                    quantity: row
+                        .details
+                        .as_ref()
+                        .and_then(|d| d.quantity.clone())
+                        .filter(|q| crate::invoice_evidence::quantity_micro(q).is_some()),
+                    unit: row.details.as_ref().and_then(|d| d.unit.clone()),
+                    unit_price_cents: row
+                        .details
+                        .as_ref()
+                        .and_then(|d| d.unit_price.as_deref())
+                        .and_then(|p| parse_money(p).ok()),
                 });
             }
             Err(_) => {
@@ -245,11 +256,7 @@ pub fn validate(r: &Review) -> Validation {
             Ok(tax) if tax >= 0 => {
                 sum = sum.and_then(|s| s.checked_add(tax));
                 if tax > 0 {
-                    lines.push(Line {
-                        description: "Tax".into(),
-                        amount_cents: tax,
-                        account: None,
-                    });
+                    lines.push(Line::amount("Tax".into(), tax));
                 }
             }
             _ => {
