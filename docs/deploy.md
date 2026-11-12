@@ -104,6 +104,19 @@ and uses no repository secrets.
 - **Database:** the `payvy-db` accessory (Postgres 18.6), data in `/root/payvy-db/data`. The
   init script `deploy/postgres-init/01-app-role.sh` creates the `payvy` role, which owns the
   database but is not a superuser, so row-level security holds in production.
+- **Database backups:** nightly at 09:17 UTC, root's crontab on the host runs
+  `deploy/backup-db.sh` (installed to `/root/bin` by `deploy/install-backups.sh`). It dumps as the
+  Postgres superuser inside `payvy-db` (so row-level security hides nothing), encrypts with
+  `BACKUP_ENCRYPTION_KEY` (AES-256, PBKDF2) and uploads to the B2 bucket `payvy-db-backups`
+  under `backups/{daily,weekly,monthly}/`. The bucket's lifecycle rules keep dailies 30 days,
+  weeklies 90 and monthlies a year; the script never deletes. Credentials live in
+  `/root/payvy-backup.env` (mode 600), written from 1Password (vault Payvy: "Payvy prod - B2
+  payvy-db-backups keyID/applicationKey", "Payvy prod - DB backup encryption key"). Log:
+  `/var/log/payvy-backup.log`. `deploy/restore-check.sh` restores the newest backup into a
+  scratch database and compares row counts with the live one; run it now and then. Restoring
+  for real: download and decrypt as restore-check does, then `pg_restore` into a fresh database.
+  Without the encryption key the backups are unreadable, and without `PAYVY_SECRETS_KEY` a
+  restore still needs every bank reconnected; both are in 1Password.
 - **API traffic:** Cloudflare DNS (`dev.payvy.com`, DNS-only A record) → host nginx, TLS from
   certbot (`deploy/nginx-payvy-beta.conf`) → kamal-proxy on `127.0.0.1:8090` → the app on
   7430. kamal-proxy is shared: its `proxy.run` settings must match the other apps on the box.
