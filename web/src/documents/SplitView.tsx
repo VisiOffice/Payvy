@@ -2,7 +2,7 @@
 // between cards by dragging (pointer or keyboard) or with each page's Move
 // menu, and "Create N bills" splits the file and makes a bill of each part
 // that reads cleanly.
-import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
+import { Fragment, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
 import {
   closestCorners,
   DndContext,
@@ -412,7 +412,10 @@ export function SplitView({
       <header className="payvy-split-header">
         <div>
           <strong>{vendorName ? `${vendorName} · ` : ''}{n} {n === 1 ? 'invoice' : 'invoices'} in this file</strong>
-          <p className="payvy-split-explain" data-leftover={layout.leftover.length > 0 || undefined}>{explain(visible.length, layout)}</p>
+          <p className="payvy-split-explain" data-leftover={layout.leftover.length > 0 || undefined}>{explain(visible.length, layout).split(' · ').map((part, i) => (
+            // Each part keeps to one line; a narrow view wraps between them.
+            <Fragment key={i}>{i > 0 && ' · '}<span>{part}</span></Fragment>
+          ))}</p>
         </div>
         {canCreate && !locked && (
           <Button label={createLabel} variant="primary" isDisabled={n === 0 || busy} onClick={() => setConfirming(true)} />
