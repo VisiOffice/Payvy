@@ -467,14 +467,21 @@ body { -webkit-font-smoothing: antialiased; }
 .payvy-split-move { all: unset; cursor: pointer; color: var(--color-text-accent); font-size: 10px; }
 .payvy-split-move:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; border-radius: 2px; }
 .payvy-split-table-wrap { min-width: 0; }
-.payvy-split-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.payvy-split-table th, .payvy-split-table td { padding: 10px 12px; text-align: left; vertical-align: middle; border-bottom: 1px solid var(--color-border); }
-.payvy-split-table th { font-size: 11px; font-weight: 500; color: var(--color-text-secondary); }
+/* The same spreadsheet look as the inbox table: framed, shaded small-capital headers, gridlines between columns. */
+.payvy-split-table-frame { border: 1px solid var(--color-border); border-radius: 8px; background: var(--color-background-card); overflow: hidden; overflow-x: auto; }
+.payvy-split-table { width: 100%; border-collapse: collapse; font-size: 13px; text-align: left; }
+.payvy-split-table th { background: var(--color-background-muted); color: var(--color-text-secondary); font-size: 11px; font-weight: 500; padding: 8px 12px; white-space: nowrap; text-transform: uppercase; letter-spacing: .04em; }
+.payvy-split-table td { padding: 10px 12px; border-top: 1px solid var(--color-border); vertical-align: middle; }
+.payvy-split-table th + th, .payvy-split-table td + td { border-left: 1px solid var(--color-border); }
+/* Extra width goes to the invoice and its pages; the amount and Review keep their size. */
+.payvy-split-table th:nth-child(1) { width: 40%; }
+.payvy-split-table th:nth-child(n+3) { width: 1%; }
 .payvy-split-table td:nth-child(3), .payvy-split-table th:nth-child(3) { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .payvy-split-table td strong { font-weight: 600; }
 .payvy-split-table[data-unlocked] tbody tr { cursor: pointer; }
 .payvy-split-table[data-unlocked] tbody tr:hover td { background: var(--color-background-muted); }
-.payvy-split-table td:last-child { text-align: right; width: 1%; white-space: nowrap; }
+.payvy-split-table td:last-child { white-space: nowrap; }
+.payvy-split-table td:nth-child(4) { text-align: right; }
 .payvy-split-review-short { display: none; }
 .payvy-lines { min-width: 0; }
 .payvy-lines table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 13px; margin-top: 6px; }

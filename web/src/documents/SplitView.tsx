@@ -428,6 +428,7 @@ export function SplitView({
       <p className="payvy-sr-only" aria-live="polite">{said}</p>
       {view === 'table' ? (
         <div className="payvy-split-table-wrap">
+          <div className="payvy-split-table-frame">
           <table className="payvy-split-table" data-unlocked={locked ? undefined : true}>
             <thead>
               <tr>
@@ -455,6 +456,7 @@ export function SplitView({
               ))}
             </tbody>
           </table>
+          </div>
           {layout.leftover.length > 0 && (
             <p className="payvy-muted">{describePages(layout.leftover)} {layout.leftover.length === 1 ? 'stays' : 'stay'} in To review, not part of any bill.</p>
           )}
