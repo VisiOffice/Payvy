@@ -226,10 +226,12 @@ async fn detail(cx: &mut Cx<'_>, doc: store::Document) -> Result<Value, CommandE
         "locked_reason": locked,
         "versions": versions,
     });
+    let bill_batch = super::bill_batches::latest(cx, doc.id).await?;
     Ok(
         json!({ "document": doc, "download_url": url, "download_url_expires_in_seconds": 900,
                "pages": pages, "extractions": extractions, "history": history,
-               "split_from": split_from(&doc, &names), "split_into": split_into }),
+               "split_from": split_from(&doc, &names), "split_into": split_into,
+               "bill_batch": bill_batch }),
     )
 }
 

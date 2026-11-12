@@ -22,13 +22,12 @@ import { Button } from '@astryxdesign/core/Button';
 import { Dialog, DialogHeader } from '@astryxdesign/core/Dialog';
 import { DropdownMenu } from '@astryxdesign/core/DropdownMenu';
 import { HStack } from '@astryxdesign/core/HStack';
-import { Link } from '@astryxdesign/core/Link';
 import { VStack } from '@astryxdesign/core/VStack';
 import { run } from '../api/client';
+import type { CommandInputs } from '../api/commands.gen';
 import { money } from '../money';
-import { CHECK } from './checks';
 import { describePages, type PageRef } from './pages';
-import type { BillInput, DocumentDetail, SuggestedInvoice } from './types';
+import type { DocumentDetail, SuggestedInvoice } from './types';
 
 /** One invoice's pages as laid out here; `read` is what the reader found for them, if they're unchanged. */
 export interface Group {
@@ -226,48 +225,6 @@ function Drop({ id, className, label, children }: { id: string; className: strin
   );
 }
 
-type Outcome =
-  | { kind: 'working'; note: string }
-  | { kind: 'created'; bill: string; note: string }
-  | { kind: 'stacked'; bill: string; note: string }
-  | { kind: 'needs'; document: string | null; note: string };
-
-interface Reading {
-  ready: boolean;
-  review_required?: boolean;
-  failed_checks: string[];
-  bill_input: BillInput | null;
-  extraction?: { status: string };
-}
-
-/** A part's reading: read now, or, if the background reader got there first, its result. */
-async function readPart(id: string): Promise<Reading> {
-  try {
-    return (await run<Reading>('document.extract', { document_id: id })).result;
-  } catch {
-    for (let i = 0; i < 60; i++) {
-      const d = await run<DocumentDetail>('document.get', { document_id: id });
-      const x = d.result.extractions[0];
-      if (x) return x as unknown as Reading;
-      await new Promise((r) => setTimeout(r, 1500));
-    }
-    throw new Error('Still being read; open it in a minute');
-  }
-}
-
-/** Runs `work` over `items`, a few at a time. */
-async function pool<T>(items: T[], size: number, work: (t: T, i: number) => Promise<void>) {
-  let next = 0;
-  await Promise.all(
-    Array.from({ length: Math.min(size, items.length) }, async () => {
-      while (next < items.length) {
-        const i = next++;
-        await work(items[i]!, i);
-      }
-    }),
-  );
-}
-
 export function SplitView({
   detail,
   invoices,
@@ -275,6 +232,7 @@ export function SplitView({
   canCreate,
   onReview,
   onOpenPage,
+  onCount,
   onDone,
 }: {
   detail: DocumentDetail;
@@ -284,7 +242,9 @@ export function SplitView({
   /** Review one invoice by itself, in the form beside. */
   onReview: (pages: number[], read: SuggestedInvoice | null) => void;
   onOpenPage: (page: number) => void;
-  /** After Create: the document again, which may have left the inbox. */
+  /** How many invoices the cards hold now, for the summary beside. */
+  onCount: (n: number) => void;
+  /** After Create: the document again, with the batch's progress. */
   onDone: () => void;
 }) {
   const doc = detail.document;
@@ -301,14 +261,20 @@ export function SplitView({
   const [dragging, setDragging] = useState<number | null>(null);
   const before = useRef<Layout | null>(null);
   const [confirming, setConfirming] = useState(false);
-  const [outcomes, setOutcomes] = useState<Outcome[] | null>(null);
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // One id per layout: a retry or double click of the same layout is the
+  // same request, which the server answers with the batch it already made.
+  const request = useRef<string>(crypto.randomUUID());
   const [said, setSaid] = useState('');
   const counter = useRef(0);
+
+  useEffect(() => onCount(layout.groups.length), [layout.groups.length, onCount]);
 
   const update = (next: Layout) => {
     const l = reconcile(next, invoices);
     setLayout(l);
+    request.current = crypto.randomUUID();
     const fresh = layoutOf(invoices, visible);
     remember(doc.id, version, same(l.groups.flatMap((g) => g.pages), fresh.groups.flatMap((g) => g.pages)) && l.groups.length === fresh.groups.length ? null : l);
   };
@@ -413,59 +379,25 @@ export function SplitView({
   const createLabel = `Create ${n} ${n === 1 ? 'bill' : 'bills'}`;
 
   async function createAll() {
-    setConfirming(false);
+    setBusy(true);
     setError(null);
-    const groups = layout.groups;
-    setOutcomes(groups.map(() => ({ kind: 'working', note: 'Splitting the file…' })));
-    let parts: { id: string; filename: string }[];
     try {
-      parts = (
-        await run<{ documents: { id: string; filename: string }[] }>('document.split', {
-          document_id: doc.id,
-          expected_version: version,
-          groups: groups.map((g) => g.pages),
-        })
-      ).result.documents;
+      await run('document.create_bills', {
+        document_id: doc.id,
+        expected_version: version,
+        request_id: request.current,
+        groups: layout.groups.map((g) => g.pages) as CommandInputs['document.create_bills']['groups'],
+        leftover: layout.leftover,
+      });
       remember(doc.id, version, null);
+      setConfirming(false);
+      onDone();
     } catch (e) {
-      setOutcomes(null);
       setError(e instanceof Error ? e.message : String(e));
-      return;
+    } finally {
+      setBusy(false);
     }
-    const set = (i: number, o: Outcome) => setOutcomes((os) => (os ? os.map((x, j) => (j === i ? o : x)) : os));
-    parts.forEach((_, i) => set(i, { kind: 'working', note: 'Reading…' }));
-    await pool(parts, 3, async (part, i) => {
-      try {
-        const x = await readPart(part.id);
-        // A copy of a bill already here isn't a reason to stop: bill.create stacks it on that bill.
-        const blocking = x.failed_checks.filter((c) => c !== 'not_a_duplicate');
-        if (!x.bill_input || blocking.length > 0 || x.review_required) {
-          const why = blocking.map((c) => CHECK[c] ?? c).join(', ') || (x.review_required ? 'a line review' : '');
-          return set(i, { kind: 'needs', document: part.id, note: why ? `Needs you: ${why}` : 'Needs you' });
-        }
-        set(i, { kind: 'working', note: 'Creating the bill…' });
-        const b = await run<{ bill: { id: string }; arrival?: { kind: string; received_count: number } }>('bill.create', x.bill_input);
-        const a = b.result.arrival;
-        set(
-          i,
-          a
-            ? {
-                kind: 'stacked',
-                bill: b.result.bill.id,
-                note:
-                  a.kind === 'revision'
-                    ? `Stacked on an existing bill as a revision (received ${a.received_count} times)`
-                    : `Stacked on an existing bill as a resend (received ${a.received_count} times)`,
-              }
-            : { kind: 'created', bill: b.result.bill.id, note: `Bill created · ${money(x.bill_input.amount_cents)}` },
-        );
-      } catch (e) {
-        set(i, { kind: 'needs', document: part.id, note: `Needs you: ${e instanceof Error ? e.message : String(e)}` });
-      }
-    });
   }
-
-  const finished = outcomes?.every((o) => o.kind !== 'working');
 
   return (
     <div className="payvy-split-view">
@@ -475,7 +407,7 @@ export function SplitView({
           <p className="payvy-split-explain" data-leftover={layout.leftover.length > 0 || undefined}>{explain(visible.length, layout)}</p>
         </div>
         {canCreate && !locked && (
-          <Button label={createLabel} variant="primary" isDisabled={n === 0 || !!outcomes} onClick={() => setConfirming(true)} />
+          <Button label={createLabel} variant="primary" isDisabled={n === 0 || busy} onClick={() => setConfirming(true)} />
         )}
       </header>
       {error && <p role="alert" className="payvy-split-error">{error}</p>}
@@ -539,64 +471,20 @@ export function SplitView({
           <DialogHeader title={`${createLabel}?`} subtitle={known.length ? `${money(total)} as read${known.length < n ? `, for ${known.length} of ${n}` : ''}` : undefined} onOpenChange={(open) => !open && setConfirming(false)} />
           <VStack gap={4} padding={4}>
             <p>
-              Each invoice becomes its own document and is read on its own. Those that read cleanly become bills on your
-              workflow; the rest wait in To review for you. A copy of an invoice you already have stacks on that bill
-              instead of becoming a second one.
+              The file is split now, one document per invoice. Payvy then reads each one and makes it a bill on your
+              workflow when it reads cleanly; the rest wait in To review for you. A copy of an invoice you already have
+              stacks on that bill instead of becoming a second one. You can leave this page while it works.
             </p>
+            {error && <p role="alert" className="payvy-split-error">{error}</p>}
             {layout.leftover.length > 0 && <p>{describePages(layout.leftover)} {layout.leftover.length === 1 ? 'isn’t' : 'aren’t'} part of any bill and stay here.</p>}
             <HStack gap={2} hAlign="end">
               <Button label="Cancel" variant="ghost" onClick={() => setConfirming(false)} />
-              <Button label={createLabel} variant="primary" clickAction={createAll} />
+              <Button label={createLabel} variant="primary" isDisabled={busy} clickAction={createAll} />
             </HStack>
           </VStack>
         </Dialog>
       )}
 
-      {outcomes && (
-        <Dialog isOpen onOpenChange={(open) => !open && finished && (setOutcomes(null), onDone())} width={560} purpose="form">
-          <DialogHeader
-            title={finished ? 'Done' : `Creating ${n} bills…`}
-            subtitle={finished ? summary(outcomes) : 'Keep this page open until it finishes.'}
-            onOpenChange={(open) => !open && finished && (setOutcomes(null), onDone())}
-          />
-          <VStack gap={3} padding={4}>
-            <ol className="payvy-split-results" aria-label="Results">
-              {outcomes.map((o, i) => (
-                <li key={i} data-kind={o.kind}>
-                  <strong>{invoiceName(layout.groups[i] ?? { read: null }, i)}</strong>
-                  <span>
-                    {o.kind === 'created' || o.kind === 'stacked' ? (
-                      <Link href={`/bills/${o.bill}`}>{o.note}</Link>
-                    ) : o.kind === 'needs' && o.document ? (
-                      <Link href={`/inbox/${o.document}`}>{o.note}</Link>
-                    ) : (
-                      o.note
-                    )}
-                  </span>
-                </li>
-              ))}
-            </ol>
-            {finished && (
-              <HStack gap={2} hAlign="end">
-                <Button label="Close" variant="primary" onClick={() => { setOutcomes(null); onDone(); }} />
-              </HStack>
-            )}
-          </VStack>
-        </Dialog>
-      )}
     </div>
   );
-}
-
-function summary(os: Outcome[]): string {
-  const c = os.filter((o) => o.kind === 'created').length;
-  const s = os.filter((o) => o.kind === 'stacked').length;
-  const w = os.filter((o) => o.kind === 'needs').length;
-  return [
-    c && `${c} ${c === 1 ? 'bill' : 'bills'} created`,
-    s && `${s} stacked on existing bills`,
-    w && `${w} ${w === 1 ? 'needs' : 'need'} you`,
-  ]
-    .filter(Boolean)
-    .join(' · ');
 }

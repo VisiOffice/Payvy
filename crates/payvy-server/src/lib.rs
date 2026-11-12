@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod bill_batch_worker;
 pub mod commands;
 pub mod confirm;
 pub mod eval;
@@ -103,6 +104,9 @@ pub struct AppState {
     /// None when PAYVY_PUBLIC_URL isn't set: nobody can sign in to the web
     /// app, and API keys still work.
     pub auth: Option<Arc<auth::Auth>>,
+    /// Woken when someone asks for bills from a file of several invoices,
+    /// so the batch worker starts at once instead of on its next pass.
+    pub bill_batches: Arc<tokio::sync::Notify>,
     /// The built web app (web/dist), served for every path the API doesn't
     /// claim. None serves only the API.
     pub web_dir: Option<std::path::PathBuf>,
@@ -154,6 +158,7 @@ impl AppState {
             extractor: None,
             bank: None,
             auth: None,
+            bill_batches: Arc::new(tokio::sync::Notify::new()),
             web_dir: None,
         }
     }

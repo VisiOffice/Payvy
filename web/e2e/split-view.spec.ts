@@ -1,8 +1,8 @@
 // A file of several invoices as one card per invoice: the header explains
 // how the pages became invoices, pages move between cards with the Move
-// menu (keyboard) or by dragging, and "Create N bills" splits the file and
-// makes a bill of every part that reads cleanly, stacking a copy of a bill
-// already here on that bill.
+// menu (keyboard) or by dragging, and "Create N bills" splits the file at
+// once while the server reads each part and makes a bill of every part that
+// reads cleanly, stacking a copy of a bill already here on that bill.
 import { expect, test, type Page } from '@playwright/test';
 import { agent } from './api';
 import { pdfPages } from './pdf';
@@ -67,6 +67,10 @@ test('several invoices as cards: moved by keyboard and by drag, then created as 
   await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2, { steps: 12 });
   await page.mouse.up();
   await expect(explain(page)).toHaveText('6 pages → 4 invoices · SS-101 runs 3 pages · nothing left over');
+  // The side panel counts the cards as they are, and leaves creating to them.
+  await expect(page.getByText('This file has 4 invoices.')).toBeVisible();
+  await expect(page.getByRole('button', { name: /^Create bill/ })).toHaveCount(0);
+  await expect(page.getByText('Create the bills from the invoice cards')).toBeVisible();
   await page.screenshot({ path: info.outputPath('split-view.png'), animations: 'disabled' });
 
   // One confirm, with the count and the total as read.
@@ -75,17 +79,21 @@ test('several invoices as cards: moved by keyboard and by drag, then created as 
   await expect(dialog.getByText('$465.50 as read, for 3 of 4')).toBeVisible();
   await dialog.getByRole('button', { name: 'Create 4 bills' }).click();
 
-  // Each invoice's own result.
-  await expect(page.getByRole('heading', { name: 'Done' })).toBeVisible({ timeout: 30_000 });
-  const results = page.getByRole('list', { name: 'Results' });
-  await expect(results.getByRole('listitem').filter({ hasText: 'Invoice SS-101' })).toContainText('Bill created · $300.00');
-  await expect(results.getByRole('listitem').filter({ hasText: 'Invoice SS-102' })).toContainText('Bill created · $120.00');
-  await expect(results.getByRole('listitem').filter({ hasText: 'Invoice SS-103' })).toContainText('Stacked on an existing bill as a resend');
-  await expect(results.getByRole('listitem').filter({ hasText: 'Invoice 4' })).toContainText('Needs you');
-  await page.screenshot({ path: info.outputPath('split-view-done.png'), animations: 'disabled' });
-  await page.getByRole('dialog').getByRole('button', { name: 'Close', exact: true }).last().click();
-
+  // The server splits at once and reads and bills each part on its own;
+  // the page follows along.
+  const batch = page.getByRole('region', { name: 'Bills from this file' });
+  await expect(batch.getByText('2 bills created · 1 stacked on existing bills · 1 needs you')).toBeVisible({ timeout: 45_000 });
   // Every page went somewhere, so the file itself left the inbox.
   await expect(page.getByText('Its pages were moved to other documents')).toBeVisible();
   await expect(page.getByRole('list', { name: 'Split into' }).getByRole('listitem')).toHaveCount(4);
+
+  // It's still there when the page is opened again, each invoice's own result.
+  await page.reload();
+  await batch.getByText('Each invoice').click();
+  const results = batch.getByRole('list', { name: 'Results' });
+  await expect(results.getByRole('listitem').filter({ hasText: 'Invoice SS-101' })).toContainText('Bill created');
+  await expect(results.getByRole('listitem').filter({ hasText: 'Invoice SS-102' })).toContainText('Bill created');
+  await expect(results.getByRole('listitem').filter({ hasText: 'Invoice SS-103' })).toContainText('Stacked on an existing bill as a resend');
+  await expect(results.getByRole('listitem').filter({ hasText: 'Invoice 4' })).toContainText('Needs you');
+  await page.screenshot({ path: info.outputPath('split-view-done.png'), animations: 'disabled' });
 });

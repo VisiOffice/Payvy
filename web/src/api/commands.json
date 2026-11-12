@@ -737,6 +737,14 @@
       "tier": "routine"
     },
     {
+      "input_schema": "{\"type\":\"object\",\"required\":[\"document_id\",\"expected_version\",\"request_id\",\"groups\"],\"properties\":{\"document_id\":{\"type\":\"string\",\"format\":\"uuid\"},\"expected_version\":{\"type\":\"integer\",\"minimum\":0,\"description\":\"pages.version from document.get\"},\"request_id\":{\"type\":\"string\",\"format\":\"uuid\",\"description\":\"A new id per request; a retry with the same id returns the same batch\"},\"groups\":{\"type\":\"array\",\"minItems\":1,\"maxItems\":200,\"description\":\"One list per invoice, in order: page numbers of the original, in the order to show them\",\"items\":{\"type\":\"array\",\"minItems\":1,\"items\":{\"type\":\"integer\",\"minimum\":1}}},\"leftover\":{\"type\":\"array\",\"description\":\"Visible pages that are part of no bill; they stay with this document\",\"items\":{\"type\":\"integer\",\"minimum\":1}}}}",
+      "name": "document.create_bills",
+      "permission": "prepare",
+      "person_only": true,
+      "summary": "Make a bill of each invoice in a file of several, in one request: the file is split at once (one new document per group of pages, as document.split does), and the server then reads each part and creates its bill in the background, as the person who asked. A part that reads cleanly becomes a bill; a copy of an invoice already here stacks on that bill (a resend, or a revision when the amount differs); any other part waits in To review for a person, with the reason. Pages in leftover are part of no bill and stay with this document. groups and leftover together must name every visible page once. request_id makes it safe to retry: the same request_id returns the batch already made instead of splitting again. document.get on this document shows the batch's progress (bill_batch).",
+      "tier": "routine"
+    },
+    {
       "input_schema": "{\"type\":\"object\",\"required\":[\"document_id\"],\"properties\":{\"document_id\":{\"type\":\"string\",\"format\":\"uuid\",\"description\":\"The document that was split off\"}}}",
       "name": "document.unsplit",
       "permission": "prepare",

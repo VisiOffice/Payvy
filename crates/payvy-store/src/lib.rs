@@ -2978,3 +2978,244 @@ pub async fn set_extraction_analysis(
         .await?;
     Ok(())
 }
+
+// ── Bill batches ────────────────────────────────────────────────────────────
+
+/// "Create N bills" on a file of several invoices: one request, its parts.
+#[derive(Debug, Clone, Serialize)]
+pub struct BillBatch {
+    pub id: Uuid,
+    pub document_id: Uuid,
+    pub request_id: Uuid,
+    pub requested_by: String,
+    pub requested_at: DateTime<Utc>,
+}
+
+/// One invoice of a batch: its document, and what became of it.
+#[derive(Debug, Clone, Serialize)]
+pub struct BillBatchPart {
+    pub id: Uuid,
+    pub batch_id: Uuid,
+    pub position: i32,
+    pub document_id: Uuid,
+    pub pages: Vec<i32>,
+    pub invoice_number: Option<String>,
+    pub total_cents: Option<i64>,
+    /// reading, created, stacked, needs_you or withdrawn
+    pub state: String,
+    pub bill_id: Option<Uuid>,
+    pub note: Option<String>,
+    pub attempts: i32,
+    pub updated_at: DateTime<Utc>,
+}
+
+macro_rules! batch_cols {
+    () => {
+        "id, document_id, request_id, requested_by, requested_at"
+    };
+}
+macro_rules! part_cols {
+    () => {
+        "id, batch_id, position, document_id, pages, invoice_number, total_cents, state, bill_id, note, attempts, updated_at"
+    };
+}
+
+fn bill_batch(r: &sqlx::postgres::PgRow) -> BillBatch {
+    BillBatch {
+        id: r.get("id"),
+        document_id: r.get("document_id"),
+        request_id: r.get("request_id"),
+        requested_by: r.get("requested_by"),
+        requested_at: r.get("requested_at"),
+    }
+}
+
+fn bill_batch_part(r: &sqlx::postgres::PgRow) -> BillBatchPart {
+    BillBatchPart {
+        id: r.get("id"),
+        batch_id: r.get("batch_id"),
+        position: r.get("position"),
+        document_id: r.get("document_id"),
+        pages: r.get("pages"),
+        invoice_number: r.get("invoice_number"),
+        total_cents: r.get("total_cents"),
+        state: r.get("state"),
+        bill_id: r.get("bill_id"),
+        note: r.get("note"),
+        attempts: r.get("attempts"),
+        updated_at: r.get("updated_at"),
+    }
+}
+
+/// The batch a request made, if it was made already (a retry or double click).
+pub async fn bill_batch_by_request(
+    tx: &mut Tx,
+    request_id: Uuid,
+) -> anyhow::Result<Option<BillBatch>> {
+    let row = sqlx::query(concat!(
+        "SELECT ",
+        batch_cols!(),
+        " FROM bill_batches WHERE request_id = $1"
+    ))
+    .bind(request_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(row.as_ref().map(bill_batch))
+}
+
+/// The newest batch made from a document, if any.
+pub async fn latest_bill_batch(
+    tx: &mut Tx,
+    document_id: Uuid,
+) -> anyhow::Result<Option<BillBatch>> {
+    let row = sqlx::query(concat!(
+        "SELECT ",
+        batch_cols!(),
+        " FROM bill_batches WHERE document_id = $1 ORDER BY requested_at DESC, id LIMIT 1"
+    ))
+    .bind(document_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(row.as_ref().map(bill_batch))
+}
+
+pub async fn insert_bill_batch(
+    tx: &mut Tx,
+    org_id: Uuid,
+    document_id: Uuid,
+    request_id: Uuid,
+    requested_by: &str,
+    at: DateTime<Utc>,
+) -> anyhow::Result<BillBatch> {
+    let row = sqlx::query(concat!(
+        "INSERT INTO bill_batches (id, org_id, document_id, request_id, requested_by, requested_at)
+         VALUES ($1, $2, $3, $4, $5, $6) RETURNING ",
+        batch_cols!()
+    ))
+    .bind(Uuid::new_v4())
+    .bind(org_id)
+    .bind(document_id)
+    .bind(request_id)
+    .bind(requested_by)
+    .bind(at)
+    .fetch_one(&mut **tx)
+    .await?;
+    Ok(bill_batch(&row))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn insert_bill_batch_part(
+    tx: &mut Tx,
+    org_id: Uuid,
+    batch_id: Uuid,
+    position: i32,
+    document_id: Uuid,
+    pages: &[i32],
+    invoice_number: Option<&str>,
+    total_cents: Option<i64>,
+    at: DateTime<Utc>,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "INSERT INTO bill_batch_parts (id, org_id, batch_id, position, document_id, pages, invoice_number, total_cents, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+    )
+    .bind(Uuid::new_v4())
+    .bind(org_id)
+    .bind(batch_id)
+    .bind(position)
+    .bind(document_id)
+    .bind(pages)
+    .bind(invoice_number)
+    .bind(total_cents)
+    .bind(at)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// A batch's parts, in the order they were laid out.
+pub async fn bill_batch_parts(tx: &mut Tx, batch_id: Uuid) -> anyhow::Result<Vec<BillBatchPart>> {
+    let rows = sqlx::query(concat!(
+        "SELECT ",
+        part_cols!(),
+        " FROM bill_batch_parts WHERE batch_id = $1 ORDER BY position"
+    ))
+    .bind(batch_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    Ok(rows.iter().map(bill_batch_part).collect())
+}
+
+/// Up to `limit` parts still being read, claimed until `now + lease` so no
+/// other worker takes them meanwhile, each with who asked for the batch.
+pub async fn claim_bill_batch_parts(
+    tx: &mut Tx,
+    now: DateTime<Utc>,
+    lease: chrono::Duration,
+    limit: i64,
+) -> anyhow::Result<Vec<(BillBatchPart, String)>> {
+    let rows = sqlx::query(
+        "UPDATE bill_batch_parts p SET claimed_until = $1 + $2
+         FROM bill_batches b
+         WHERE b.id = p.batch_id AND p.id IN (
+             SELECT id FROM bill_batch_parts
+             WHERE state = 'reading' AND (claimed_until IS NULL OR claimed_until < $1)
+             ORDER BY updated_at, position LIMIT $3 FOR UPDATE SKIP LOCKED)
+         RETURNING p.id, p.batch_id, p.position, p.document_id, p.pages, p.invoice_number,
+                   p.total_cents, p.state, p.bill_id, p.note, p.attempts, p.updated_at, b.requested_by",
+    )
+    .bind(now)
+    .bind(lease)
+    .bind(limit)
+    .fetch_all(&mut **tx)
+    .await?;
+    let mut out: Vec<(BillBatchPart, String)> = rows
+        .iter()
+        .map(|r| (bill_batch_part(r), r.get("requested_by")))
+        .collect();
+    out.sort_by_key(|(p, _)| (p.batch_id, p.position));
+    Ok(out)
+}
+
+/// What became of a part; it is no longer claimed.
+pub async fn finish_bill_batch_part(
+    tx: &mut Tx,
+    id: Uuid,
+    state: &str,
+    bill_id: Option<Uuid>,
+    note: Option<&str>,
+    at: DateTime<Utc>,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "UPDATE bill_batch_parts SET state = $2, bill_id = $3, note = $4, updated_at = $5, claimed_until = NULL
+         WHERE id = $1",
+    )
+    .bind(id)
+    .bind(state)
+    .bind(bill_id)
+    .bind(note)
+    .bind(at)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// Not decided this time: try again on a later pass. `failed` counts it as a failed try.
+pub async fn release_bill_batch_part(
+    tx: &mut Tx,
+    id: Uuid,
+    failed: bool,
+    at: DateTime<Utc>,
+) -> anyhow::Result<i32> {
+    let row = sqlx::query(
+        "UPDATE bill_batch_parts SET claimed_until = NULL, updated_at = $3,
+                attempts = attempts + CASE WHEN $2 THEN 1 ELSE 0 END
+         WHERE id = $1 RETURNING attempts",
+    )
+    .bind(id)
+    .bind(failed)
+    .bind(at)
+    .fetch_one(&mut **tx)
+    .await?;
+    Ok(row.get("attempts"))
+}
