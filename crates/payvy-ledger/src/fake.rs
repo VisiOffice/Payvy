@@ -2,8 +2,9 @@
 //! scripted result, or a new id when the script is empty.
 //!
 //! A key that was already accepted returns that id only when the body matches.
-//! A different body is a conflict. Voiding an unknown or already-voided id is
-//! a conflict. The same attached file name and bytes return the same file id.
+//! A different body is a conflict. Voiding an unknown id is a conflict;
+//! voiding an already-voided id succeeds without another reversal. The same
+//! attached file name and bytes return the same file id.
 
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
@@ -89,6 +90,12 @@ impl FakeLedger {
     ) -> Result<String, LedgerError> {
         let mut inner = self.inner.lock().expect("fake ledger");
         if let Some(found) = inner.ids.get(key) {
+            if found.voided {
+                return Err(LedgerError::new(
+                    Code::Conflict,
+                    "this ledger record has been voided",
+                ));
+            }
             if found.hash == hash {
                 return Ok(found.id.clone());
             }
@@ -117,12 +124,6 @@ impl FakeLedger {
                 format!("unknown ledger id {external_id}"),
             ));
         };
-        if found.voided {
-            return Err(LedgerError::new(
-                Code::Conflict,
-                format!("{external_id} is already voided"),
-            ));
-        }
         found.voided = true;
         Ok(())
     }

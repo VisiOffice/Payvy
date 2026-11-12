@@ -6,11 +6,12 @@
 //! A repeat of the same request hash returns the first id and does not call
 //! the ledger again. A different hash after a post is a conflict. When a key
 //! the adapter already accepted arrives with a different body, the adapter
-//! refuses it and does not return the first id. This crate does not open a
-//! network connection: the server supplies a [`Ledger`], and tests supply
-//! [`FakeLedger`].
+//! refuses it and does not return the first id. The server supplies a [`Ledger`];
+//! [`VisiBooks`] records over HTTPS, and unit tests supply [`FakeLedger`].
 
 mod fake;
+mod visibooks;
+pub use visibooks::VisiBooks;
 
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -387,6 +388,8 @@ pub trait Ledger: Send + Sync {
         body: &'a PaymentBody,
     ) -> Pin<Box<dyn Future<Output = Result<Posted, LedgerError>> + Send + 'a>>;
 
+    /// Repeated voids of an existing record succeed without another reversal.
+    /// An unknown record is refused.
     fn void_bill<'a>(
         &'a self,
         external_id: &'a str,
@@ -1371,12 +1374,16 @@ mod tests {
                 .iter()
                 .any(|call| call.starts_with("void_bill"))
         );
-        let again = fake
-            .void_payment(&first.posted.external_id)
-            .await
-            .unwrap_err();
-        assert_eq!(again.code, Code::Conflict);
-        assert!(again.detail.contains("already voided"), "{}", again.detail);
+        // Recover the whole operation after a partially completed void. The
+        // first payment is already voided, so its replay must not stop recovery.
+        let count = void_posted(
+            &fake,
+            &bill.posted.external_id,
+            &[&first.posted.external_id, &second.posted.external_id],
+        )
+        .await
+        .unwrap();
+        assert_eq!(count, 2);
     }
 
     #[tokio::test]
@@ -1399,11 +1406,14 @@ mod tests {
         assert_eq!(unknown.code, Code::Conflict);
         assert!(unknown.detail.contains("unknown"), "{}", unknown.detail);
         fake.void_bill(&posted.posted.external_id).await.unwrap();
-        let twice = fake
-            .void_bill(&posted.posted.external_id)
+        fake.void_bill(&posted.posted.external_id).await.unwrap();
+        let PrepareError::Ledger(error) = submit_bill(&fake, &books(), &draft("b"), None)
             .await
-            .unwrap_err();
-        assert!(twice.detail.contains("already voided"), "{}", twice.detail);
+            .unwrap_err()
+        else {
+            panic!("voided post");
+        };
+        assert_eq!(error.code, Code::Conflict);
 
         let file = fake
             .attach_file(&posted.posted.external_id, "invoice.pdf", b"one")
