@@ -68,6 +68,9 @@ interface Detail {
     allocations: { allocation_id: string; po_id: string; po_number: string | null; amount_cents: number; state: string; kind: string }[];
     exception: { kind: string; excess_cents: number; detail: string } | null;
     overridden: boolean;
+    /** Policy findings that show beside the bill without blocking it. */
+    notices: { kind: string; po_number: string | null; detail: string }[];
+    policy: { over_period: string; version: number | null };
   };
   arrivals: {
     id: string;
@@ -407,7 +410,7 @@ export function BillPage() {
 }
 
 interface PoPreview {
-  candidates: { po_id: string; po_number: string; available_cents: number; proposed_cents: number; verified_reference: boolean }[];
+  candidates: { po_id: string; po_number: string; available_cents: number; proposed_cents: number; verified_reference: boolean; over_period: boolean }[];
 }
 
 /** PO matching beside the invoice: identify, reserve, accept, override.
@@ -500,6 +503,9 @@ function PoPanel({ billId, po, onChange }: {
         <Badge label="Exception permitted by override" variant="warning" />
         {po.overridden_by && <Text type="supporting">Permitted by {po.overridden_by}, who can't release this bill.</Text>}
       </HStack>}
+      {po.notices.map((n, i) => (
+        <Banner key={i} status="info" title={`Flagged: ${n.kind.replaceAll('_', ' ')}`} description={n.detail} />
+      ))}
       {po.allocations.map((a) => (
         <HStack key={a.allocation_id} hAlign="between" gap={3} vAlign="center">
           <Text>
@@ -514,7 +520,7 @@ function PoPanel({ billId, po, onChange }: {
       {candidates.map((c) => (
         <HStack key={c.po_id} gap={2} vAlign="end">
           <TextInput
-            label={`${c.po_number} (${money(c.available_cents)} available)`}
+            label={`${c.po_number} (${money(c.available_cents)} available)${c.over_period ? ' · outside its period' : ''}`}
             value={amounts[c.po_id] ?? ''}
             onChange={(v: string) => setAmounts((m) => ({ ...m, [c.po_id]: v }))}
           />

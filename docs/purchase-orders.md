@@ -29,6 +29,40 @@ While on, whether a vendor's bills require a PO and its overage caps stay per ve
 already in flight, because the gate is on money leaving rather than on the workflow a bill
 pinned.
 
+## Suspended purchase orders
+
+`po.suspend` (person only, Admin, with a reason) pauses an active PO without ending it:
+existing allocations stand and keep counting, new allocations are refused, and bills
+allocated to it carry a blocking `suspended_po` exception until `po.reactivate` (person
+only, Admin) makes it active again — or a person permits one bill with `po.override`.
+Suspending emits `po.suspended` with the reason; reactivating emits `po.reactivated`.
+A suspended PO can still be closed or canceled.
+
+## The enumerated policy registry
+
+Vendor/company-specific cases (an invoice larger than its order period, a suspended
+order) are data, never core code. Policies live in `vendor_po_policies`, versioned like
+workflows: `po.policy_set` (person only, Admin) supersedes the active version with a
+new immutable one and emits `po.policy_changed`; asking for what is already in force is
+refused. Every bill pins the version in force when it is created
+(`bills.policy_version_id`), so a policy change applies to new bills and never rewrites
+one in flight. A bill with no pin reads the defaults. `po.policy_get` reports the
+version in force (0 is the defaults). Agents may not set policy; agent-proposed policy
+changes are a later build.
+
+The first registered policy is `over_period` — an invoice whose date falls outside the
+service period of the PO it is allocated to:
+
+- `flag_only` (the default): flagged beside the bill (`notices` in the PO view, and
+  `over_period` on `po.match_preview` candidates), never blocks payment.
+- `require_full_cover`: the out-of-period allocations do not count as covering the
+  bill; the bill carries a blocking `over_period` exception until a person overrides.
+
+A partly covered bill's shortfall is `over_available` when none of the vendor's active
+POs has room for the rest (the cumulative caps are the limit), `uncovered` when room
+exists and just isn't used. Both are overridable like any other exception; the caps
+themselves are unchanged.
+
 ## Overrides and separation of duties
 
 `po.override` permits one bill's PO exception (Confirmed tier, person only, Admin), bound to the

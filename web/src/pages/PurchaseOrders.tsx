@@ -34,7 +34,7 @@ export interface PurchaseOrder extends Record<string, unknown> {
   vendor_id: string;
   vendor_name: string;
   po_number: string;
-  status: 'draft' | 'active' | 'closed' | 'canceled';
+  status: 'draft' | 'active' | 'suspended' | 'closed' | 'canceled';
   owner: string | null;
   activated_by: string | null;
   amounts: PoAmounts;
@@ -46,6 +46,7 @@ export interface PurchaseOrder extends Record<string, unknown> {
 const STATUS_BADGE: Record<PurchaseOrder['status'], { label: string; variant: 'success' | 'neutral' | 'warning' }> = {
   draft: { label: 'Draft', variant: 'neutral' },
   active: { label: 'Active', variant: 'success' },
+  suspended: { label: 'Suspended', variant: 'warning' },
   closed: { label: 'Closed', variant: 'neutral' },
   canceled: { label: 'Canceled', variant: 'warning' },
 };
@@ -93,7 +94,7 @@ function PurchaseOrderList() {
   const [selected, setSelected] = useState<PurchaseOrder | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
-  const [ending, setEnding] = useState<'po.close' | 'po.cancel' | null>(null);
+  const [ending, setEnding] = useState<'po.close' | 'po.cancel' | 'po.suspend' | null>(null);
   const [revise, setRevise] = useState('');
   const toast = useToast();
 
@@ -112,7 +113,7 @@ function PurchaseOrderList() {
   }, [selected?.id]);
   useEffect(load, [load]);
 
-  async function act(name: 'po.activate', po: PurchaseOrder) {
+  async function act(name: 'po.activate' | 'po.reactivate', po: PurchaseOrder) {
     try {
       const r = await run<PurchaseOrder>(name, { po_id: po.id });
       setSelected(r.result);
@@ -202,7 +203,13 @@ function PurchaseOrderList() {
             {selected.status === 'draft' && (
               <Button label="Activate" variant="primary" clickAction={() => act('po.activate', selected)} />
             )}
-            {(selected.status === 'draft' || selected.status === 'active') && (
+            {selected.status === 'active' && (
+              <Button label="Suspend…" variant="ghost" onClick={() => setEnding('po.suspend')} />
+            )}
+            {selected.status === 'suspended' && (
+              <Button label="Reactivate" variant="primary" clickAction={() => act('po.reactivate', selected)} />
+            )}
+            {(selected.status === 'draft' || selected.status === 'active' || selected.status === 'suspended') && (
               <>
                 <Button label="Close…" variant="ghost" onClick={() => setEnding('po.close')} />
                 <Button label="Cancel…" variant="ghost" onClick={() => setEnding('po.cancel')} />
@@ -230,8 +237,8 @@ function PurchaseOrderList() {
       )}
       {ending && selected && (
         <ReasonDialog
-          title={`${ending === 'po.close' ? 'Close' : 'Cancel'} ${selected.po_number}`}
-          actionLabel={ending === 'po.close' ? 'Close' : 'Cancel'}
+          title={`${ending === 'po.close' ? 'Close' : ending === 'po.suspend' ? 'Suspend' : 'Cancel'} ${selected.po_number}`}
+          actionLabel={ending === 'po.close' ? 'Close' : ending === 'po.suspend' ? 'Suspend' : 'Cancel'}
           isRequired
           onClose={() => setEnding(null)}
           onSubmit={async (reason) => {

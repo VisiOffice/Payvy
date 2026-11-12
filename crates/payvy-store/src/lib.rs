@@ -546,13 +546,16 @@ pub struct Bill {
     pub created_by: String,
     /// The page arrangement of its document it uses; None for the original.
     pub arrangement_id: Option<Uuid>,
+    /// The vendor PO policy version in force when this bill was created;
+    /// None reads the registry defaults (every bill before 0025).
+    pub policy_version_id: Option<Uuid>,
 }
 
 macro_rules! bill_cols {
     () => {
         "b.id, b.vendor_id, v.name AS vendor_name, b.workflow_id, b.invoice_number, b.invoice_date,
     b.due_date, b.amount_cents, b.memo, b.external_ref, b.state, b.received_at, b.released_at, b.released_by,
-    b.release_by_person, b.paid_on, b.paid_method, b.paid_reference, b.closed_reason, b.created_by, b.arrangement_id"
+    b.release_by_person, b.paid_on, b.paid_method, b.paid_reference, b.closed_reason, b.created_by, b.arrangement_id, b.policy_version_id"
     };
 }
 
@@ -580,6 +583,7 @@ fn bill(r: &PgRow) -> anyhow::Result<Bill> {
         closed_reason: r.get("closed_reason"),
         created_by: r.get("created_by"),
         arrangement_id: r.get("arrangement_id"),
+        policy_version_id: r.get("policy_version_id"),
     })
 }
 
@@ -597,6 +601,7 @@ pub struct NewBill<'a> {
     pub created_by: &'a str,
     pub received_at: DateTime<Utc>,
     pub arrangement_id: Option<Uuid>,
+    pub policy_version_id: Option<Uuid>,
 }
 
 #[derive(Debug)]
@@ -640,8 +645,8 @@ pub async fn insert_bill(
     let id = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO bills (id, org_id, vendor_id, workflow_id, invoice_number, invoice_key, invoice_date, due_date,
-                            amount_cents, memo, external_ref, created_by, received_at, arrangement_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
+                            amount_cents, memo, external_ref, created_by, received_at, arrangement_id, policy_version_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
     )
     .bind(id)
     .bind(org_id)
@@ -657,6 +662,7 @@ pub async fn insert_bill(
     .bind(new.created_by)
     .bind(new.received_at)
     .bind(new.arrangement_id)
+    .bind(new.policy_version_id)
     .execute(&mut **tx)
     .await?;
     for (i, line) in new.lines.iter().enumerate() {
