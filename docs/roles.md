@@ -55,10 +55,12 @@ rechecks — roles may have changed since the proposal. Naming someone who
 isn't a person here yet is allowed; they may be added under that name later.
 
 Taking the Approver role away (`person.set_roles`) or removing the person
-(`person.remove`) is refused exactly while an open bill is currently waiting
-on their approval step, and only then: settle those bills first (they can
-approve or reject them). At other times role changes stay possible, and
-queued notifications still recheck the recipient's roles before sending.
+(`person.remove`) is refused exactly while they are the **last person who
+could still approve** a waiting bill's step: an "all" step needs everyone
+who hasn't approved yet, an "any" step (named, or open to anyone) needs
+only one eligible approver left. Settle those bills first (they can approve
+or reject them). At other times role changes stay possible, and queued
+notifications still recheck the recipient's roles before sending.
 
 ## Agents and automated payments
 

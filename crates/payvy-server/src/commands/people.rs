@@ -138,20 +138,29 @@ fn validate_roles(mut roles: Vec<Role>) -> Result<Vec<Role>, CommandError> {
     }
     Ok(roles)
 }
-/// Taking away the approval ability of someone an open bill is
-/// currently waiting on would strand that bill: it keeps the workflow
-/// version it arrived under, and nobody else can give that step. So
-/// role loss (and removal) is refused exactly while a bill waits on
-/// their approval step — and only then; role changes at other times
-/// stay possible, and queued notices recheck eligibility before send.
+/// Taking away the approval ability of the last person who could still
+/// approve a waiting bill's step would strand that bill: it keeps the
+/// workflow version it arrived under. So role loss (and removal) is
+/// refused exactly when the actor is that last eligible approver —
+/// an "all" step needs everyone who hasn't approved yet; an "any" step
+/// (named or open to anyone) needs only one eligible approver left.
+/// Role changes at other times stay possible, and queued notices
+/// recheck eligibility before send.
 async fn approver_strand_refusal(cx: &mut Cx<'_>, actor: &str) -> Result<(), CommandError> {
     use payvy_domain::bills::State;
     use payvy_domain::permissions::Permission;
-    use payvy_domain::workflow::{self, Facts, Status, Workflow};
+    use payvy_domain::workflow::{self, Facts, Require, Status, StepKind, Workflow};
     let roles = store::actor_roles(&mut cx.tx, cx.org, actor).await?;
     if !Permission::Approve.allows(&roles) {
         return Ok(());
     }
+    // Who in the company can approve, by actor.
+    let mut can_approve: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
+    for p in store::people(&mut cx.tx, cx.org).await? {
+        let r = store::actor_roles(&mut cx.tx, cx.org, &p.actor).await?;
+        can_approve.insert(p.actor, Permission::Approve.allows(&r));
+    }
+    let eligible = |name: &str| can_approve.get(name).copied().unwrap_or(false);
     let bills = store::list_bills(&mut cx.tx, Some(State::Open), None, None, 5_000).await?;
     if bills.is_empty() {
         return Ok(());
@@ -195,14 +204,38 @@ async fn approver_strand_refusal(cx: &mut Cx<'_>, actor: &str) -> Result<(), Com
                 now: cx.now,
             },
         );
-        if let Status::AwaitingApproval {
+        let Status::AwaitingApproval {
             step_id,
             waiting_on,
         } = &progress.status
-            && (waiting_on.is_empty() || waiting_on.iter().any(|w| w == actor))
-        {
+        else {
+            continue;
+        };
+        let Some(step) = wf.steps.iter().find(|s| &s.id == step_id) else {
+            continue;
+        };
+        let StepKind::Approve {
+            approvers, require, ..
+        } = &step.kind
+        else {
+            continue;
+        };
+        // Is this actor the last person who could still approve it?
+        let last_eligible = match require {
+            // Everyone listed must approve: anyone still waiting is needed.
+            Require::All => waiting_on.iter().any(|w| w == actor),
+            Require::Any if approvers.is_empty() => {
+                // Open to anyone: last only if nobody else here can approve.
+                !can_approve.iter().any(|(name, ok)| *ok && name != actor)
+            }
+            Require::Any => {
+                approvers.iter().any(|a| a == actor)
+                    && !approvers.iter().any(|a| a != actor && eligible(a))
+            }
+        };
+        if last_eligible {
             return Err(CommandError::Conflict(format!(
-                "bill {} is waiting on {actor}'s approval (step {step_id}); have them approve or reject it first — it keeps the workflow version it arrived under",
+                "bill {} is waiting on {actor}'s approval (step {step_id}) and nobody else can still approve that step; have them approve or reject it first — it keeps the workflow version it arrived under",
                 bill.invoice_number
             )));
         }

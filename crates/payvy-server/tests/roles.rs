@@ -636,3 +636,52 @@ async fn workflows_cannot_name_approvers_without_the_approver_role_and_roles_can
     .unwrap();
     db.drop().await;
 }
+
+#[tokio::test]
+async fn role_loss_is_allowed_while_someone_else_can_still_approve_the_step() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let operator = person("operator");
+    add(&db, "dave", json!(["approver"])).await;
+    add(&db, "erin", json!(["approver"])).await;
+
+    // An "any one of Dave or Erin" step: Dave's role can go; Erin remains.
+    let v = vendor(&db.state, &operator, "Shared Vendor").await;
+    set_workflow(
+        &db.state,
+        &operator,
+        Some(&v),
+        json!([
+            { "id": "ok", "type": "approve", "approvers": ["dave", "erin"] },
+            { "id": "pay", "type": "pay", "release": "manual" }]),
+    )
+    .await;
+    bill(&db.state, &operator, &v, "S-1", 10_000).await;
+    assign(&db, "dave", json!(["ap_clerk"])).await.unwrap();
+    assign(&db, "dave", json!(["approver"])).await.unwrap();
+
+    // A step open to anyone: Erin's role can go; Dave remains.
+    let v2 = vendor(&db.state, &operator, "Open Vendor").await;
+    set_workflow(
+        &db.state,
+        &operator,
+        Some(&v2),
+        json!([
+            { "id": "ok", "type": "approve", "approvers": [] },
+            { "id": "pay", "type": "pay", "release": "manual" }]),
+    )
+    .await;
+    bill(&db.state, &operator, &v2, "S-2", 10_000).await;
+    assign(&db, "erin", json!(["ap_clerk"])).await.unwrap();
+
+    // But Dave, now the company's only approver with bills waiting on an
+    // open step, is the last eligible approver: refused.
+    let e = assign(&db, "dave", json!(["ap_clerk"])).await.unwrap_err();
+    assert!(matches!(e, CommandError::Conflict(_)), "{e}");
+    assert!(
+        e.to_string().contains("nobody else can still approve"),
+        "{e}"
+    );
+    db.drop().await;
+}
