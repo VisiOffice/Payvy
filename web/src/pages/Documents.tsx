@@ -1,4 +1,4 @@
-import { Allowed } from '../permissions';
+import { Allowed, useCan } from '../permissions';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { Banner } from '@astryxdesign/core/Banner';
@@ -36,31 +36,39 @@ function chosen(list: File[]): { ok: File[]; problems: string[] } {
   return { ok, problems };
 }
 /**
- * True while files are dragged over the window. A counter covers entering a
- * child, which fires leave and enter together. The overlay does not take
- * pointer events, so the drop still lands here.
+ * True while files are dragged over the window and this page will take them.
+ * The listeners stay up either way: a file drag is always cancelled, so the
+ * browser never opens it in the tab. When uploads aren't allowed the cursor
+ * says so and nothing is taken. A counter covers entering a child, which
+ * fires leave and enter together.
  */
 function useFileDrag(onDrop: (files: File[]) => void, enabled: boolean): boolean {
   const [over, setOver] = useState(false);
   const depth = useRef(0);
   const drop = useRef(onDrop);
+  const allow = useRef(enabled);
   drop.current = onDrop;
+  allow.current = enabled;
   useEffect(() => {
-    if (!enabled) { depth.current = 0; setOver(false); return; }
+    if (!enabled) { depth.current = 0; setOver(false); }
+  }, [enabled]);
+  useEffect(() => {
     const hasFiles = (e: DragEvent) => Array.from(e.dataTransfer?.types ?? []).includes('Files');
     const enter = (e: DragEvent) => {
       if (!hasFiles(e)) return;
       e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = allow.current ? 'copy' : 'none';
+      if (!allow.current) return;
       depth.current += 1;
       setOver(true);
     };
     const overEv = (e: DragEvent) => {
       if (!hasFiles(e)) return;
       e.preventDefault();
-      if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+      if (e.dataTransfer) e.dataTransfer.dropEffect = allow.current ? 'copy' : 'none';
     };
     const leave = (e: DragEvent) => {
-      if (!hasFiles(e)) return;
+      if (!hasFiles(e) || !allow.current) return;
       depth.current = Math.max(0, depth.current - 1);
       if (depth.current === 0) setOver(false);
     };
@@ -69,6 +77,7 @@ function useFileDrag(onDrop: (files: File[]) => void, enabled: boolean): boolean
       e.preventDefault();
       depth.current = 0;
       setOver(false);
+      if (!allow.current) return;
       const files = Array.from(e.dataTransfer?.files ?? []);
       if (files.length) drop.current(files);
     };
@@ -85,25 +94,17 @@ function useFileDrag(onDrop: (files: File[]) => void, enabled: boolean): boolean
       window.removeEventListener('drop', dropped);
       window.removeEventListener('dragend', end);
     };
-  }, [enabled]);
-  return over;
+  }, []);
+  return over && enabled;
 }
 
-/** The file picker, and a full-page target that appears only while files are dragged over the window. */
+/** The file picker. The drop target is the page itself. */
 function AddInvoices({ busy, onFiles }: { busy: boolean; onFiles: (files: File[]) => void }) {
   const input = useRef<HTMLInputElement>(null);
-  const toast = useToast();
-  const take = (list: File[]) => {
-    const { ok, problems } = chosen(list);
-    if (problems.length) toast({ body: `${problems.join('. ')}.`, type: 'error' });
-    if (ok.length) onFiles(ok);
-  };
-  const over = useFileDrag(take, !busy);
   return (
     <>
       <Button label="Add invoices" tooltip="PDFs, scans, or photos, up to 25 MB each" onClick={() => input.current?.click()} isDisabled={busy} />
-      <input ref={input} type="file" className="payvy-sr-only" accept={ACCEPT} multiple tabIndex={-1} aria-hidden="true" onChange={e => { take(Array.from(e.target.files ?? [])); e.target.value = ''; }} />
-      {over && <div className="payvy-drop-overlay" role="status"><strong>Drop to add invoices</strong><p>PDFs, scans, or photos · up to 25 MB each</p></div>}
+      <input ref={input} type="file" className="payvy-sr-only" accept={ACCEPT} multiple tabIndex={-1} aria-hidden="true" onChange={e => { onFiles(Array.from(e.target.files ?? [])); e.target.value = ''; }} />
     </>
   );
 }
@@ -139,6 +140,10 @@ export function Documents() {
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [uploading, setUploading] = useState<{ title: string; detail: string } | null>(null);
+  const canUpload = useCan()('document.upload');
+  const accept = useRef<(files: File[]) => void>(() => {});
+  // Listeners stay mounted. A drop is taken only while this person may upload and nothing is already uploading.
+  const dragging = useFileDrag((files) => accept.current(files), canUpload && !uploading);
   const request = useRef(0);
   const navigate = useNavigate();
   const toast = useToast();
@@ -185,6 +190,11 @@ export function Documents() {
     } finally { setUploading(null); }
     if (status === 'inbox') load(); else setStatus('inbox');
   }
+  accept.current = (list) => {
+    const { ok, problems } = chosen(list);
+    if (problems.length) toast({ body: `${problems.join('. ')}.`, type: 'error' });
+    if (ok.length) void upload(ok);
+  };
   /** Puts a split document's pages back where they came from. */
   async function undoSplit(d: Row) {
     try {
@@ -217,10 +227,11 @@ export function Documents() {
       </div>
       <div className="payvy-documents-actions">
         <div className="payvy-documents-search"><TextInput label="Search documents" isLabelHidden placeholder="Search vendors, invoices, files…" value={search} onChange={setSearch} /></div>
-        <Allowed command="document.upload"><AddInvoices busy={!!uploading} onFiles={upload} /></Allowed>
+        <Allowed command="document.upload"><AddInvoices busy={!!uploading} onFiles={(files) => accept.current(files)} /></Allowed>
         <Button label="Refresh" variant="ghost" onClick={refresh} />
       </div>
     </div>
+    {dragging && <div className="payvy-drop-overlay" role="status"><strong>Drop to add invoices</strong><p>PDFs, scans, or photos · up to 25 MB each</p></div>}
     {uploading && <div role="status" className="payvy-upload-progress"><Spinner size="sm" /><div><strong>{uploading.title}</strong><p>{uploading.detail}</p></div></div>}
     {error && <Banner status="error" title="Couldn't load documents" description={error} endContent={<Button label="Try again" variant="secondary" onClick={load} />} />}
     {!docs && !error && <div className="payvy-document-list-loading" aria-busy="true"><div role="status" className="payvy-loading-message"><Spinner size="sm" />Loading documents</div><div aria-hidden="true">{[0, 1, 2].map(i => <div className="payvy-document-row-placeholder" key={i}><span className="payvy-file-glyph" /><span className="payvy-skeleton" /><span className="payvy-skeleton" /></div>)}</div></div>}
