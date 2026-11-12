@@ -219,6 +219,35 @@ function readCholla(pages: number[] | null): Read | null {
   return chollaRead(pages[0]! - 2);
 }
 
+const gila = (invoice_number: string, total: string, invoices: object[] = []): Read => ({
+  ...blank,
+  kind: 'invoice',
+  vendor_name: 'Gila Freight Lines',
+  invoice_number,
+  invoice_date: '2026-11-05',
+  currency: 'USD',
+  total,
+  lines: [{ description: 'Freight', amount: total }],
+  invoices,
+});
+
+/**
+ * Gila Freight: the shape of a real 40-page file of 38 invoices. GF-1001
+ * runs pages 1–3; GF-1002 to GF-1038 are one page each, pages 4–40.
+ */
+function readGila(pages: number[] | null): Read {
+  const at = (page: number) => (page <= 3 ? 1 : page - 2);
+  const number = (i: number) => `GF-${1000 + i}`;
+  const total = (i: number) => `${(100 + i * 7).toFixed(2)}`;
+  if (!pages) {
+    const invoices = [{ pages: [1, 2, 3], invoice_number: number(1), total: total(1) }];
+    for (let p = 4; p <= 40; p++) invoices.push({ pages: [p], invoice_number: number(at(p)), total: total(at(p)) });
+    return gila(number(1), total(1), invoices);
+  }
+  const i = at(Math.min(...pages));
+  return gila(number(i), total(i));
+}
+
 /** The pages the server asked for ("Read only pages 1, 2 of this file"), or null for all. */
 function pagesAsked(body: { messages?: { content?: unknown }[] }): number[] | null {
   for (const m of body.messages ?? []) {
@@ -269,6 +298,8 @@ export function startFakeModel(port: number): Promise<http.Server> {
         ? readReclamation(pagesAsked(body))
         : file.includes('Saguaro Storage')
         ? readSaguaro(pagesAsked(body))
+        : file.includes('Gila Freight Lines')
+        ? readGila(pagesAsked(body))
         : (READS.find(([needle]) => file.includes(needle))?.[1] ?? blank);
       if (file.includes('V2-UI')) {
         read = {...blank, kind:'invoice',vendor_name:'Richer review vendor',invoice_number:'V2-UI',invoice_date:'2026-11-11',currency:'USD',total:'30.86',
