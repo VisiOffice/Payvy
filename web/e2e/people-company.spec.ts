@@ -18,7 +18,8 @@ async function actors(): Promise<string[]> {
 
 test('a person adds someone, who signs in with a link, then removes them', async ({ page }) => {
   await page.goto('/');
-  await page.getByRole('link', { name: 'People', exact: true }).click();
+  await page.getByRole('button', { name: 'Default, company menu', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Invite and manage people' }).click();
   await expect(page).toHaveURL(/\/settings\/people$/);
   await expect(page.getByRole('heading', { name: 'People', level: 1 })).toBeVisible();
   await expect(page.getByText('You', { exact: true })).toBeVisible();
@@ -75,7 +76,8 @@ test('renaming the company changes the shell at once', async ({ page }) => {
   try {
     await page.goto('/');
     await page.getByRole('button', { name: 'Default, company menu', exact: true }).click();
-    await page.getByRole('menuitem', { name: 'Company', exact: true }).click();
+    await page.getByRole('menuitem', { name: 'Settings' }).click();
+    await page.getByRole('link', { name: 'Company', exact: true }).click();
     await expect(page).toHaveURL(/\/settings\/company$/);
 
     const field = page.getByLabel('Company name');
@@ -95,12 +97,14 @@ test('renaming the company changes the shell at once', async ({ page }) => {
     await expect(field).toHaveValue('Juniper Holdings');
     await expect(save).toBeDisabled();
     // The shell shows it straight away, without a reload.
+    await page.getByRole('link', { name: 'Back to app' }).click();
     await expect(page.getByRole('button', { name: 'Juniper Holdings, company menu', exact: true })).toBeVisible();
     expect((await agent<{ organization: { name: string } }>('org.get', {})).organization.name).toBe('Juniper Holdings');
     await expect(agent('org.update', { name: 'Agent Co' })).rejects.toThrow(/403/);
 
     await page.reload();
     await expect(page.getByRole('button', { name: 'Juniper Holdings, company menu', exact: true })).toBeVisible();
+    await expect(page).toHaveURL('/');
   } finally {
     const { name } = (await agent<{ organization: { name: string } }>('org.get', {})).organization;
     if (name !== 'Default') await personCommand(page, 'org.update', { name: 'Default' });

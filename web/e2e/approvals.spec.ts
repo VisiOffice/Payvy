@@ -36,7 +36,7 @@ test('whoever enters a bill waits for someone else to approve it', async ({ page
 
   try {
     // Off by default; a person turns it on in Settings > Approvals.
-    await page.goto('/');
+    await page.goto('/settings');
     await page.getByRole('link', { name: 'Approvals' }).click();
     await expect(page).toHaveURL(/\/settings\/approvals$/);
     const rule = page.getByLabel(RULE);

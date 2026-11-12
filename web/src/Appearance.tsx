@@ -26,12 +26,9 @@ export function AppearanceProvider({ children }: { children: ReactNode }) {
 
 export function AppearanceControl() {
   const appearance = useContext(Context)!;
-  return <div className="payvy-appearance">
-    <span className="payvy-nav-caption">Appearance</span>
-    <SegmentedControl label="Appearance" value={appearance.mode} onChange={v => appearance.setMode(v as Appearance)} size="sm">
+  return <SegmentedControl label="Appearance" value={appearance.mode} onChange={v => appearance.setMode(v as Appearance)} size="sm">
       <SegmentedControlItem value="light" label="Light" />
       <SegmentedControlItem value="dark" label="Dark" />
       <SegmentedControlItem value="system" label="System" />
-    </SegmentedControl>
-  </div>;
+    </SegmentedControl>;
 }

@@ -24,8 +24,10 @@ test('an admin turns purchase orders on, a bill is matched to one, and turning t
   await toggle.click();
   await expect(toggle).toBeChecked();
   await expect(page.getByText(/Last changed by robert/)).toBeVisible();
-  await expect(poNav(page)).toHaveCount(1);
   await page.screenshot({ path: info.outputPath('po-settings.png'), fullPage: true });
+  // Settings has its own nav; back in the app, Purchase orders is there now.
+  await page.getByRole('link', { name: 'Back to app' }).click();
+  await expect(poNav(page)).toHaveCount(1);
 
   let id = '';
   try {
@@ -67,6 +69,7 @@ test('an admin turns purchase orders on, a bill is matched to one, and turning t
     await off.click();
     await expect(off).not.toBeChecked();
   }
+  await page.getByRole('link', { name: 'Back to app' }).click();
   await expect(poNav(page)).toHaveCount(0);
   await page.goto(`/bills/${id}`);
   await expect(page.getByText('PO-E2E-INV').first()).toBeVisible();
