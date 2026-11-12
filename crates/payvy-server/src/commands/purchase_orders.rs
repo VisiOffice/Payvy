@@ -1270,24 +1270,31 @@ pub async fn bill_exceptions(
     let settings = po_store::vendor_settings(&mut cx.tx, bill.vendor_id).await?;
     let allocs = po_store::allocations_for_bill(&mut cx.tx, bill.id).await?;
     let covered: Cents = allocs.iter().map(|a| a.amount_cents).sum();
+    // A suspended or ineligible PO is the first exception, but never the
+    // only one: permitting it must not skip the coverage, funding and
+    // quantity gates below (an override for one kind never clears another).
+    let mut suspended: Option<Exception> = None;
     let mut ineligible: Option<Exception> = None;
     for a in &allocs {
         if let Some(po) = po_store::get_po(&mut cx.tx, a.po_id).await? {
             if po.status == "suspended" {
-                return Ok(vec![Exception {
-                    kind: "suspended_po",
-                    excess_cents: a.amount_cents,
-                    scope: String::new(),
-                    detail: format!(
-                        "PO {} is suspended{}; its bills wait until it is reactivated",
-                        po.po_number,
-                        po.lifecycle_reason
-                            .as_deref()
-                            .map_or(String::new(), |r| format!(" ({r})"))
-                    ),
-                }]);
-            }
-            if (po.status != "active" || po.vendor_id != bill.vendor_id) && ineligible.is_none() {
+                if suspended.is_none() {
+                    suspended = Some(Exception {
+                        kind: "suspended_po",
+                        excess_cents: a.amount_cents,
+                        scope: String::new(),
+                        detail: format!(
+                            "PO {} is suspended{}; its bills wait until it is reactivated",
+                            po.po_number,
+                            po.lifecycle_reason
+                                .as_deref()
+                                .map_or(String::new(), |r| format!(" ({r})"))
+                        ),
+                    });
+                }
+            } else if (po.status != "active" || po.vendor_id != bill.vendor_id)
+                && ineligible.is_none()
+            {
                 ineligible = Some(Exception {
                     kind: "ineligible_po",
                     excess_cents: a.amount_cents,
@@ -1300,10 +1307,7 @@ pub async fn bill_exceptions(
             }
         }
     }
-    if let Some(e) = ineligible {
-        return Ok(vec![e]);
-    }
-    let mut out: Vec<Exception> = Vec::new();
+    let mut out: Vec<Exception> = suspended.into_iter().chain(ineligible).collect();
     // Over-period, under the policy version this bill pinned: with
     // require_full_cover the out-of-period allocations do not count as
     // covering the bill. flag_only only flags (see bill_po_view's notices).

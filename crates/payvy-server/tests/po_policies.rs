@@ -355,3 +355,49 @@ async fn over_available_is_a_standing_exception_when_no_po_has_room_for_the_rest
     .unwrap();
     db.drop().await;
 }
+
+#[tokio::test]
+async fn permitting_a_suspended_po_never_skips_the_other_exceptions() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    po_on(&db).await;
+    let robert = person("robert");
+    let v = gated_vendor(&db, "Partial Hauler").await;
+    let po = active_po(&db, &v, "PO-PART", 100_000, None).await;
+    let b = make_bill(&db, &v, "P-1", 50_000, "2027-01-15").await;
+    // $300 of the bill is not covered by a PO.
+    allocate(&db, &b, &po, 20_000).await;
+    commit(
+        &db.state,
+        &robert,
+        "po.suspend",
+        json!({ "po_id": po, "reason": "on hold" }),
+    )
+    .await
+    .unwrap();
+    let got = get_bill(&db, &b).await;
+    assert_eq!(got["purchase_orders"]["exception"]["kind"], "suspended_po");
+
+    // Permitting the suspension is one override; the shortfall still stands.
+    confirm(
+        &db.state,
+        &robert,
+        "po.override",
+        json!({ "bill_id": b, "authorized_excess_cents": 20_000, "reason": "pay despite hold" }),
+    )
+    .await
+    .unwrap();
+    let got = get_bill(&db, &b).await;
+    assert_eq!(got["purchase_orders"]["overridden"], false, "{got}");
+    let e = confirm(
+        &db.state,
+        &person("alice"),
+        "bill.release",
+        json!({ "bill_id": b }),
+    )
+    .await
+    .unwrap_err();
+    assert!(e.to_string().contains("not covered by a PO"), "{e}");
+    db.drop().await;
+}
