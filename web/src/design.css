@@ -436,6 +436,17 @@ body { -webkit-font-smoothing: antialiased; }
 .payvy-split-thumb { display: flex; align-items: center; justify-content: center; width: 64px; height: 83px; overflow: hidden; border: 1px solid var(--color-border); border-radius: 4px; background: #fff; color: var(--color-text-secondary); font-size: 11px; }
 .payvy-split-thumb img { width: 100%; height: 100%; object-fit: cover; object-position: top; }
 .payvy-split-lifted { cursor: grabbing; box-shadow: 0 6px 18px rgb(0 0 0 / .18); border-radius: 4px; }
+.payvy-split-card[data-clickable] { cursor: pointer; }
+.payvy-split-card[data-clickable]:hover { border-color: var(--color-accent); }
+.payvy-split-stack-row { display: flex; align-items: flex-end; gap: 10px; min-height: 40px; }
+.payvy-split-stack { all: unset; position: relative; display: block; margin: 0 6px 6px 0; border-radius: 4px; }
+.payvy-split-stack::before, .payvy-split-stack::after { content: ""; position: absolute; inset: 0; border: 1px solid var(--color-border); border-radius: 4px; background: #fff; }
+.payvy-split-stack::before { transform: translate(6px, 6px); }
+.payvy-split-stack::after { transform: translate(3px, 3px); }
+.payvy-split-stack > .payvy-split-thumb { position: relative; z-index: 1; }
+.payvy-split-stack-open { all: unset; cursor: pointer; font-size: 11px; color: var(--color-text-accent); }
+.payvy-split-stack-open:hover { text-decoration: underline; }
+.payvy-split-stack-open:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; border-radius: 2px; }
 .payvy-split-page-foot { display: flex; justify-content: space-between; align-items: center; font-size: 10px; color: var(--color-text-secondary); }
 .payvy-split-move { all: unset; cursor: pointer; color: var(--color-text-accent); font-size: 10px; }
 .payvy-split-move:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; border-radius: 2px; }
