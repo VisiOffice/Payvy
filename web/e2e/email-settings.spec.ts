@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 import { agent } from './api';
 
 test('a person creates the email-in address, then replaces it', async ({ page }) => {
-  await page.goto('/');
+  await page.goto('/settings');
   await page.getByRole('link', { name: 'Email-in address' }).click();
   await expect(page).toHaveURL(/\/settings\/email$/);
 

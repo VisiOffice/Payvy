@@ -351,7 +351,7 @@ function WorkflowCard({
           <Button
             label="Open in builder"
             variant="ghost"
-            href={p.vendor_id ? `/vendors/${p.vendor_id}#workflow` : '/workflows'}
+            href={p.vendor_id ? `/vendors/${p.vendor_id}#workflow` : '/settings/workflows'}
           />
           <Button label="Decline" variant="ghost" onClick={onDecline} />
           <Button label="Accept" variant="primary" clickAction={onAccept} />

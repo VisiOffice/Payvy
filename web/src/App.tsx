@@ -23,6 +23,7 @@ function MovedDocument() {
 
 const BillPage = lazy(() => import('./pages/Bill').then((m) => ({ default: m.BillPage })));
 const Workflows = lazy(() => import('./pages/Workflows').then((m) => ({ default: m.Workflows })));
+const Preferences = lazy(() => import('./pages/Preferences').then((m) => ({ default: m.Preferences })));
 const Bank = lazy(() => import('./pages/Bank').then((m) => ({ default: m.Bank })));
 const EmailSettings = lazy(() => import('./pages/EmailSettings').then((m) => ({ default: m.EmailSettings })));
 const PeopleSettings = lazy(() => import('./pages/PeopleSettings').then((m) => ({ default: m.PeopleSettings })));
@@ -125,8 +126,12 @@ export function App() {
           {/* The inbox was /documents: older links, bookmarks and history still open it. */}
           <Route path="/documents" element={<Navigate to="/inbox" replace />} />
           <Route path="/documents/:id" element={<MovedDocument />} />
+          {/* Workflows moved into settings; older links still open them. */}
+          <Route path="/workflows" element={<Navigate to="/settings/workflows" replace />} />
+          <Route path="/settings" element={<Navigate to="/settings/preferences" replace />} />
+          <Route path="/settings/preferences" element={<Suspense fallback={<Spinner label="Loading" />}><Preferences /></Suspense>} />
           <Route
-            path="/workflows"
+            path="/settings/workflows"
             element={
               <Suspense fallback={<Spinner label="Loading" />}>
                 <Workflows />
@@ -190,5 +195,5 @@ export function App() {
 /** A vendor's workflow used to have its own page; it lives on the vendor's page now. */
 function OldWorkflowLink() {
   const { key } = useParams();
-  return <Navigate to={key === 'default' ? '/workflows' : `/vendors/${key}#workflow`} replace />;
+  return <Navigate to={key === 'default' ? '/settings/workflows' : `/vendors/${key}#workflow`} replace />;
 }

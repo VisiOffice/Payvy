@@ -1,29 +1,74 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import { agent, bill, vendor } from './api';
 
-test('company menu opens with the keyboard and works on mobile', async ({ page }, testInfo) => {
-  await page.goto('/');
+/** Dark mode, as a person picks it in Settings > Preferences, then back to the page. */
+async function dark(page: Page) {
+  const here = new URL(page.url()).pathname;
+  await page.goto('/settings/preferences');
+  await page.getByRole('radiogroup', { name: 'Appearance' }).getByRole('radio', { name: 'Dark', exact: true }).click();
+  await page.goto(here);
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+}
+
+test('company menu opens settings, which has its own navigation', async ({ page }, testInfo) => {
+  await page.goto('/bills');
   const trigger = page.getByRole('button', { name: 'Default, company menu', exact: true });
   await trigger.focus();
   await page.keyboard.press('Enter');
-  await expect(page.getByRole('menuitem', { name: 'Bank settings' })).toBeVisible();
+  const settings = page.getByRole('menuitem', { name: 'Settings' });
+  await expect(settings).toBeVisible();
+  await expect(settings).toContainText('then');
   await page.screenshot({ path: testInfo.outputPath('company-menu-desktop.png'), animations: 'disabled' });
-  await page.getByRole('menuitem', { name: 'Bank settings' }).click();
+  await settings.click();
+  await expect(page).toHaveURL('/settings/preferences');
+  // The app's own pages leave the nav; settings are grouped in their place.
+  await expect(page.getByRole('link', { name: 'All bills' })).toHaveCount(0);
+  for (const group of ['Personal', 'Bills in', 'Paying']) await expect(page.getByText(group, { exact: true })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Company', exact: true })).toBeVisible();
+  await page.getByRole('link', { name: 'Bank', exact: true }).click();
   await expect(page).toHaveURL('/settings/bank');
-  await expect(page.getByRole('menuitem', { name: 'Bank settings' })).toHaveCount(0);
+  await page.getByRole('link', { name: 'Workflows', exact: true }).click();
+  await expect(page).toHaveURL('/settings/workflows');
+  await page.screenshot({ path: testInfo.outputPath('settings-desktop.png'), animations: 'disabled' });
+  // Back to app returns to where you were, not the start.
+  await page.getByRole('link', { name: 'Back to app' }).click();
+  await expect(page).toHaveURL('/bills');
+  await expect(page.getByRole('link', { name: 'Bank', exact: true })).toHaveCount(0);
+
   await page.setViewportSize({ width: 390, height: 844 });
   await trigger.click();
-  await expect(page.getByRole('menuitem', { name: 'Default workflow' })).toBeVisible();
+  await expect(page.getByRole('menuitem', { name: 'Invite and manage people' })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: testInfo.outputPath('company-menu-mobile.png'), animations: 'disabled' });
-  await page.getByRole('menuitem', { name: 'Default workflow' }).click();
-  await expect(page).toHaveURL('/workflows');
-  await expect(page.getByRole('menuitem', { name: 'Default workflow' })).toHaveCount(0);
+  await page.getByRole('menuitem', { name: 'Invite and manage people' }).click();
+  await expect(page).toHaveURL('/settings/people');
+  await page.getByRole('button', { name: 'Open navigation' }).click();
+  const drawer = page.getByRole('dialog', { name: 'Navigation' });
+  await expect(drawer.getByRole('link', { name: 'Back to app' })).toBeVisible();
+  await expect(drawer.getByRole('link', { name: 'Bank', exact: true })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath('settings-mobile.png'), animations: 'disabled' });
+});
+
+test('G then S opens settings, but not while typing', async ({ page }) => {
+  await page.goto('/bills');
+  const search = page.getByRole('searchbox', { name: 'Search bills' });
+  await search.click();
+  await page.keyboard.type('gs');
+  await expect(search).toHaveValue('gs');
+  await expect(page).toHaveURL('/bills');
+  await search.blur();
+  await page.keyboard.press('g');
+  await page.keyboard.press('s');
+  await expect(page).toHaveURL('/settings/preferences');
+  // The old address of the default workflow still works.
+  await page.goto('/workflows');
+  await expect(page).toHaveURL('/settings/workflows');
 });
 
 test('appearance persists, overrides the OS, and can follow it again', async ({ page }) => {
   await page.emulateMedia({ colorScheme: 'light' });
-  await page.goto('/');
+  await page.goto('/settings/preferences');
   const appearance = page.getByRole('radiogroup', { name: 'Appearance' });
   await expect(appearance.getByRole('radio', { name: 'System' })).toBeChecked();
   const textColor = () => page.locator('.payvy-page').evaluate(el => getComputedStyle(el).color);
@@ -65,7 +110,7 @@ test('bill search, status and sorting work together', async ({ page }, testInfo)
   await expect(page.locator('tbody tr')).toContainText('DESIGN-LOW');
   await page.getByRole('searchbox', { name: 'Search bills' }).fill('');
   await page.screenshot({ path: testInfo.outputPath('bills-light.png'), animations: 'disabled' });
-  await page.getByRole('radio', { name: 'Dark', exact: true }).click();
+  await dark(page);
   await page.screenshot({ path: testInfo.outputPath('bills-dark.png'), animations: 'disabled' });
   await page.goto(`/vendors/${vendorId}`);
   await expect(page.getByRole('button', { name: 'Edit workflow', exact: true })).toBeVisible();
@@ -80,14 +125,11 @@ test('mobile queue actions stay reachable and update the navigation count', asyn
   await expect(count).toBeVisible();
   const before = Number(await count.textContent());
   await page.screenshot({ path: testInfo.outputPath('inbox-light.png'), animations: 'disabled' });
-  await page.getByRole('radio', { name: 'Dark', exact: true }).click();
+  await dark(page);
   await page.screenshot({ path: testInfo.outputPath('inbox-dark.png'), animations: 'disabled' });
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(page.getByRole('heading', { name: 'Waiting on you' })).toBeVisible();
-  await page.getByRole('button', { name: 'Open navigation' }).click();
-  const appearance = page.getByRole('radiogroup', { name: 'Appearance' });
-  await expect(appearance.getByRole('radio', { name: 'Dark', exact: true })).toBeChecked();
-  await page.keyboard.press('Escape');
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
   await page.getByRole('radio', { name: 'Payments', exact: true }).click();
   await expect(page.getByRole('region', { name: 'Bills to pay' })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
