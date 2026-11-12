@@ -67,6 +67,8 @@ interface Detail {
     uncovered_cents: number;
     allocations: { allocation_id: string; po_id: string; po_number: string | null; amount_cents: number; state: string; kind: string }[];
     exception: { kind: string; excess_cents: number; detail: string } | null;
+    /** Every standing exception, each with its own permitted state. */
+    exceptions: { kind: string; excess_cents: number; detail: string; overridden: boolean; overridden_by: string | null }[];
     overridden: boolean;
     /** Policy findings that show beside the bill without blocking it. */
     notices: { kind: string; po_number: string | null; detail: string }[];
@@ -442,9 +444,11 @@ function PoPanel({ billId, po, onChange }: {
       .catch(() => setPreview(null));
   }, [billId]);
   useEffect(loadPreview, [loadPreview]);
+  // The override form permits the first exception still standing.
+  const firstUnpermitted = po.exceptions.find((e) => !e.overridden);
   useEffect(() => {
-    if (po.exception) setExcess(dollars(po.exception.excess_cents));
-  }, [po.exception?.excess_cents]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (firstUnpermitted) setExcess(dollars(firstUnpermitted.excess_cents));
+  }, [firstUnpermitted?.excess_cents]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function apply(poId: string) {
     const amount = toCents(amounts[poId] ?? '');
@@ -494,14 +498,24 @@ function PoPanel({ billId, po, onChange }: {
       <Text>
         Covered {money(po.covered_cents)} · Uncovered {money(po.uncovered_cents)}
       </Text>
-      {po.exception && !po.overridden && (
-        <Banner
-          status="warning"
-          title={`Can't be paid yet: ${po.exception.kind.replaceAll('_', ' ')}`}
-          description={po.exception.detail}
-        />
+      {po.exceptions.map((e, i) =>
+        e.overridden ? (
+          <Banner
+            key={i}
+            status="info"
+            title={`Permitted: ${e.kind.replaceAll('_', ' ')}`}
+            description={`${e.detail}${e.overridden_by ? ` Permitted by ${e.overridden_by}, who can't release this bill.` : ''}`}
+          />
+        ) : (
+          <Banner
+            key={i}
+            status="warning"
+            title={`Can't be paid yet: ${e.kind.replaceAll('_', ' ')}`}
+            description={e.detail}
+          />
+        ),
       )}
-      {po.overridden && <HStack gap={2} vAlign="center" wrap="wrap">
+      {po.overridden && po.exceptions.length <= 1 && <HStack gap={2} vAlign="center" wrap="wrap">
         <Badge label="Exception permitted by override" variant="warning" />
         {po.overridden_by && <Text type="supporting">Permitted by {po.overridden_by}, who can't release this bill.</Text>}
       </HStack>}

@@ -1448,14 +1448,48 @@ pub async fn overridden_by(
     Ok(valid_override(cx, bill, &ex).await?.map(|o| o.created_by))
 }
 
-/// Separation of duties for releasing: whoever permitted the exception
-/// can't release the bill it makes payable. Called by bill.release.
-pub async fn ensure_not_overrider(cx: &mut Cx<'_>, bill: &store::Bill) -> Result<(), CommandError> {
-    let by = overridden_by(cx, bill).await?;
-    match payvy_domain::duties::release_refusal(by.as_deref(), &cx.actor.name) {
-        Some(why) => Err(CommandError::Forbidden(why.into())),
-        None => Ok(()),
+/// Everyone whose override currently permits one of this bill's standing
+/// exceptions. A bill can be payable through several overrides by several
+/// people; every one of them is barred from releasing it.
+pub async fn overriders(cx: &mut Cx<'_>, bill: &store::Bill) -> Result<Vec<String>, CommandError> {
+    let mut out = Vec::new();
+    for ex in bill_exceptions(cx, bill).await? {
+        if let Some(o) = valid_override(cx, bill, &ex).await?
+            && !out.contains(&o.created_by)
+        {
+            out.push(o.created_by);
+        }
     }
+    Ok(out)
+}
+
+/// Whether this actor is barred from releasing the bill because one of
+/// its standing exceptions stands only by their override.
+pub async fn release_blocked_for(
+    cx: &mut Cx<'_>,
+    bill: &store::Bill,
+    actor: &str,
+) -> Result<bool, CommandError> {
+    Ok(overriders(cx, bill)
+        .await?
+        .iter()
+        .any(|by| payvy_domain::duties::release_refusal(Some(by), actor).is_some()))
+}
+
+/// Separation of duties for releasing: whoever permitted any standing
+/// exception can't release the bill it makes payable. Called by
+/// bill.release.
+pub async fn ensure_not_overrider(cx: &mut Cx<'_>, bill: &store::Bill) -> Result<(), CommandError> {
+    if release_blocked_for(cx, bill, &cx.actor.name).await? {
+        return Err(CommandError::Forbidden(
+            payvy_domain::duties::release_refusal(Some(&cx.actor.name), &cx.actor.name)
+                .unwrap_or(
+                    "You permitted this bill's PO exception, so someone else must release it.",
+                )
+                .into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Whether the caller prepared this bill: entered it, or uploaded a
@@ -1512,13 +1546,18 @@ pub async fn bill_po_view(cx: &mut Cx<'_>, bill: &store::Bill) -> Result<Value, 
         None => None,
     };
     // "Overridden" means every standing exception is permitted; while any
-    // remains, the bill still waits on a person for it.
+    // remains, the bill still waits on a person for it. Each exception
+    // reports its own permitted state and who permitted it.
     let mut all_permitted = !exceptions.is_empty();
+    let mut exception_details = Vec::new();
     for e in &exceptions {
-        if valid_override(cx, bill, e).await?.is_none() {
+        let o = valid_override(cx, bill, e).await?;
+        if o.is_none() {
             all_permitted = false;
-            break;
         }
+        exception_details.push(json!({ "kind": e.kind, "excess_cents": e.excess_cents,
+            "detail": e.detail, "overridden": o.is_some(),
+            "overridden_by": o.map(|o| o.created_by) }));
     }
     let can_override = on
         && !exceptions.is_empty()
@@ -1568,7 +1607,7 @@ pub async fn bill_po_view(cx: &mut Cx<'_>, bill: &store::Bill) -> Result<Value, 
         "uncovered_cents": bill.amount_cents - covered,
         "allocations": rows,
         "exception": ex.map(|e| json!({ "kind": e.kind, "excess_cents": e.excess_cents, "detail": e.detail })),
-        "exceptions": exceptions.iter().map(|e| json!({ "kind": e.kind, "excess_cents": e.excess_cents, "detail": e.detail })).collect::<Vec<_>>(),
+        "exceptions": exception_details,
         "overridden": all_permitted,
         "notices": notices,
         "quantity_lines": quantity_lines,

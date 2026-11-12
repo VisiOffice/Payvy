@@ -14,13 +14,19 @@ ALTER TABLE bill_lines ADD COLUMN unit_price_cents bigint;
 -- column added in one step would number them in heap order, and rows
 -- updated since insert (reserved -> consumed) can sit anywhere in it.
 ALTER TABLE po_allocations ADD COLUMN seq bigint;
+-- Forced RLS applies to migrations too: without lifting it, the UPDATE
+-- sees no rows in any organization and the NOT NULL below then fails on
+-- any database that already has allocations (0018/0020/0022 pattern).
+ALTER TABLE po_allocations NO FORCE ROW LEVEL SECURITY;
 UPDATE po_allocations SET seq = numbered.n
 FROM (SELECT id, row_number() OVER (ORDER BY created_at, id) AS n FROM po_allocations) numbered
 WHERE po_allocations.id = numbered.id;
 ALTER TABLE po_allocations ALTER COLUMN seq SET NOT NULL;
 ALTER TABLE po_allocations ALTER COLUMN seq ADD GENERATED ALWAYS AS IDENTITY;
-SELECT setval('po_allocations_seq_seq',
+-- Still under NO FORCE: with it restored, MAX(seq) would see no rows.
+SELECT setval(pg_get_serial_sequence('po_allocations', 'seq'),
               COALESCE((SELECT MAX(seq) FROM po_allocations), 0) + 1, false);
+ALTER TABLE po_allocations FORCE ROW LEVEL SECURITY;
 
 -- The registry's second policy: quantity_matching is flag_only (findings
 -- show beside the bill, never block) or enforce (quantity_over and

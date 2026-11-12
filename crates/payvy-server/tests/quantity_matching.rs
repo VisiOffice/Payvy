@@ -520,10 +520,11 @@ async fn an_override_for_one_exception_never_clears_another() {
     assert!(e.to_string().contains("quantity_over"), "{e}");
 
     // Permitting that too (the override targets the first unpermitted
-    // exception) makes the bill payable by someone else.
+    // exception) makes the bill payable — but neither overrider may
+    // release it; a third person does.
     confirm(
         &db.state,
-        &robert,
+        &person("alice"),
         "po.override",
         json!({ "bill_id": b, "authorized_excess_cents": 0, "reason": "extra loads agreed" }),
     )
@@ -531,9 +532,31 @@ async fn an_override_for_one_exception_never_clears_another() {
     .unwrap();
     let got = get_bill(&db, &b).await;
     assert_eq!(got["purchase_orders"]["overridden"], true, "{got}");
+    let kinds: Vec<(bool, Option<&str>)> = got["purchase_orders"]["exceptions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| {
+            (
+                e["overridden"].as_bool().unwrap(),
+                e["overridden_by"].as_str(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        [(true, Some("robert")), (true, Some("alice"))],
+        "{got}"
+    );
+    for who in [&robert, &person("alice")] {
+        let e = confirm(&db.state, who, "bill.release", json!({ "bill_id": b }))
+            .await
+            .unwrap_err();
+        assert!(matches!(e, CommandError::Forbidden(_)), "{e}");
+    }
     confirm(
         &db.state,
-        &person("alice"),
+        &person("charlie"),
         "bill.release",
         json!({ "bill_id": b }),
     )

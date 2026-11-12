@@ -173,11 +173,10 @@ async fn detail(cx: &mut Cx<'_>, bill_id: Uuid) -> Result<Value, CommandError> {
     };
     let lines = store::bill_lines(&mut cx.tx, bill.id).await?;
     let purchase_orders = super::purchase_orders::bill_po_view(cx, &bill).await?;
-    // Whoever permitted a PO exception can't release the bill it makes payable.
+    // Whoever permitted any standing PO exception can't release the bill.
     let release_blocked = match &progress {
         Some(p) if can_release(cx, &p.status) => {
-            let by = super::purchase_orders::overridden_by(cx, &bill).await?;
-            duties::release_refusal(by.as_deref(), &cx.actor.name).is_some()
+            super::purchase_orders::release_blocked_for(cx, &bill, &cx.actor.name).await?
         }
         _ => false,
     };
@@ -634,8 +633,12 @@ pub async fn list(cx: &mut Cx<'_>, input: List) -> Result<Value, CommandError> {
             }
             _ => None,
         };
-        let release_blocked =
-            duties::release_refusal(overridden_by.as_deref(), &cx.actor.name).is_some();
+        let release_blocked = match &progress {
+            Some(p) if matches!(p.status, Status::AwaitingRelease { .. }) => {
+                super::purchase_orders::release_blocked_for(cx, bill, &cx.actor.name).await?
+            }
+            _ => false,
+        };
         if let Some(want) = &input.status
             && progress.as_ref().map(status_name) != Some(want.as_str())
         {
@@ -1262,7 +1265,7 @@ pub(super) async fn notification_targets(
     let step = progress.active_step().unwrap_or_default().to_owned();
     let d = duties(cx, &[bill.id]).await?;
     let uploaded_by: Vec<_> = d.uploaders.iter().map(|(_, a)| a.clone()).collect();
-    let overrider = super::purchase_orders::overridden_by(cx, &bill).await?;
+    let overriders = super::purchase_orders::overriders(cx, &bill).await?;
     let mut recipients = vec![];
     for person in store::people(&mut cx.tx, cx.org).await? {
         let roles = store::actor_roles(&mut cx.tx, cx.org, &person.actor).await?;
@@ -1288,7 +1291,9 @@ pub(super) async fn notification_targets(
             Status::AwaitingRelease { by, .. } => {
                 Permission::Pay.allows(&roles)
                     && (by.is_empty() || by.contains(&person.actor))
-                    && duties::release_refusal(overrider.as_deref(), &person.actor).is_none()
+                    && !overriders
+                        .iter()
+                        .any(|by| duties::release_refusal(Some(by), &person.actor).is_some())
             }
             _ => false,
         };

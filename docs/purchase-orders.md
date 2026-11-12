@@ -109,6 +109,37 @@ quantity-over). The gate requires each to be permitted: an override for one
 kind never clears another, and `po.override` permits the first unpermitted one
 each time it is used.
 
+## Before deploying the all-exceptions gate (PR #21)
+
+Bills that pass today on one override but carry a second, unpermitted exception
+become blocked — the safe direction, but know first. Read-only; run per company
+(set `payvy.org_id` or run as a role that can see the company):
+
+```sql
+WITH covered AS (
+    SELECT bill_id, sum(amount_cents)::bigint AS c FROM po_allocations
+    WHERE state <> 'released' AND bill_id IS NOT NULL GROUP BY bill_id)
+SELECT b.id, v.name AS vendor, b.invoice_number, o.exception_kind AS override_for
+FROM bills b
+JOIN vendors v ON v.id = b.vendor_id
+JOIN po_overrides o ON o.bill_id = b.id AND o.bill_amount_cents = b.amount_cents
+LEFT JOIN covered c ON c.bill_id = b.id
+LEFT JOIN vendor_po_settings s ON s.vendor_id = b.vendor_id
+WHERE b.state = 'open'
+  AND (
+       (COALESCE(c.c, 0) < b.amount_cents
+        AND o.exception_kind NOT IN ('uncovered', 'over_available', 'no_po'))
+    OR (COALESCE(s.require_funding, false)
+        AND NOT EXISTS (SELECT 1 FROM signals g WHERE g.bill_id = b.id AND g.key = 'customer_funded'))
+    OR EXISTS (SELECT 1 FROM po_allocations a JOIN purchase_orders p ON p.id = a.po_id
+               WHERE a.bill_id = b.id AND a.state <> 'released' AND p.status <> 'active'))
+ORDER BY b.received_at;
+```
+
+Quantity findings under an enforcing policy are computed by the server, not
+stored; check bills on vendors whose policy enforces `quantity_matching`
+separately in the app after deploy.
+
 ## Overrides and separation of duties
 
 `po.override` permits one bill's PO exception (Confirmed tier, person only, Admin), bound to the
