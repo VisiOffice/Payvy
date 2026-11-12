@@ -263,8 +263,9 @@ export function SplitView({
   // Invoices of several pages show as one stack until opened to move a page.
   const [opened, setOpened] = useState<Set<string>>(() => new Set());
   const open = (key: string) => setOpened((o) => new Set(o).add(key));
-  // A drag ends with a click on what was dragged; that click isn't a choice.
-  const dragged = useRef(0);
+  // A drag ends with a click where it was dropped; that click isn't a choice.
+  // Set when a drag starts, cleared when the next press begins.
+  const dragged = useRef(false);
   const before = useRef<Layout | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -329,6 +330,7 @@ export function SplitView({
   }
 
   function onDragStart(e: DragStartEvent) {
+    dragged.current = true;
     setDragging(pageOf(String(e.active.id)));
     before.current = layout;
   }
@@ -346,7 +348,6 @@ export function SplitView({
   }
   function onDragEnd(e: DragEndEvent) {
     setDragging(null);
-    dragged.current = Date.now();
     const over = e.over && String(e.over.id);
     const page = pageOf(String(e.active.id));
     if (!over) return update(layout);
@@ -407,7 +408,7 @@ export function SplitView({
   }
 
   return (
-    <div className="payvy-split-view">
+    <div className="payvy-split-view" onPointerDownCapture={() => { dragged.current = false; }}>
       <header className="payvy-split-header">
         <div>
           <strong>{vendorName ? `${vendorName} · ` : ''}{n} {n === 1 ? 'invoice' : 'invoices'} in this file</strong>
@@ -426,7 +427,7 @@ export function SplitView({
               <Drop id={g.key} className="payvy-split-card" label={invoiceName(g, i)} onClick={locked ? undefined : (e) => {
                 // Anywhere on the card picks this invoice, except its own controls and the click a drag ends with.
                 const t = e.target as HTMLElement;
-                if (Date.now() - dragged.current < 300) return;
+                if (dragged.current) return;
                 if (t.closest('[role="menu"],[role="menuitem"],.payvy-split-move,.payvy-split-stack-open')) return;
                 if (t.closest('button') && !t.closest('.payvy-split-handle,.payvy-split-stack')) return;
                 if (t.closest('.payvy-split-handle') && e.detail === 0) return; // Enter or space on a page picks it up instead
