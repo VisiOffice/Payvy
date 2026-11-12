@@ -86,9 +86,9 @@ test('several invoices as cards: moved by keyboard and by drag, then created as 
   await page.keyboard.press('i');
   await expect(page.getByRole('radio', { name: 'Invoices' })).toBeChecked();
 
-  // T lists the same invoices, one row each. A row opens that invoice; I returns to the cards.
-  await page.keyboard.press('t');
-  await expect(page.getByRole('radio', { name: 'Table' })).toBeChecked();
+  // L lists the same invoices, one row each. A row opens that invoice; I returns to the cards.
+  await page.keyboard.press('l');
+  await expect(page.getByRole('radio', { name: 'List' })).toBeChecked();
   const row = (name: string) => page.locator('.payvy-split-table tbody tr').filter({ hasText: name });
   await expect(page.locator('.payvy-split-table tbody tr')).toHaveCount(4);
   await expect(row('Invoice SS-101')).toContainText('pages 1–3');
