@@ -1440,6 +1440,25 @@ async fn valid_override(
     Ok(None)
 }
 
+/// Whether this bill is payable only because of overrides: it stands
+/// under at least one exception and every one is currently permitted.
+/// Such a bill is never ready_to_pay (see Facts::payable_by_override).
+pub async fn payable_by_override(
+    cx: &mut Cx<'_>,
+    bill: &store::Bill,
+) -> Result<bool, CommandError> {
+    let exceptions = bill_exceptions(cx, bill).await?;
+    if exceptions.is_empty() {
+        return Ok(false);
+    }
+    for ex in &exceptions {
+        if valid_override(cx, bill, ex).await?.is_none() {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 /// Who permitted the exception this bill is payable only because of: the
 /// author of the currently valid override. None when the bill has no
 /// exception (or POs are off), or no override holds.

@@ -98,6 +98,11 @@ Conventions follow Visirent (`~/Code/visirent`).
   unchanged. A PO can be suspended (`po.suspend`/`po.reactivate`, person-only Admin):
   allocations stand, new ones refused, its bills carry `suspended_po` until reactivated
   or overridden. Agents may not set policy. See `docs/purchase-orders.md`.
+- **An overridden bill never auto-pays.** A bill payable only because of overrides
+  (`Facts::payable_by_override`, computed from `bill_exceptions` + valid overrides)
+  evaluates to `awaiting_release` with a reason, never `ready_to_pay`, at any
+  workflow's automatic pay step — so the payment worker never picks it up and no
+  retry loop exists. Someone other than the overrider releases it (`bill.release`).
 - **Quantity matching is cumulative, exact, and policy-gated** (`payvy-domain/src/quantity.rs`).
   Bill lines carry quantity/unit/unit-price as printed (extraction details, invoice review,
   or `bill.create`); a bill line maps to a PO line by normalized description (+unit when

@@ -401,3 +401,96 @@ async fn permitting_a_suspended_po_never_skips_the_other_exceptions() {
     assert!(e.to_string().contains("not covered by a PO"), "{e}");
     db.drop().await;
 }
+
+#[tokio::test]
+async fn a_bill_payable_only_by_override_waits_for_a_person_even_at_an_auto_pay_step() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    po_on(&db).await;
+    let robert = person("robert");
+    let v = vendor(&db.state, &robert, "Auto Override Hauler").await;
+    common::set_workflow(
+        &db.state,
+        &robert,
+        Some(&v),
+        json!([{ "id": "pay", "type": "pay", "release": "auto" }]),
+    )
+    .await;
+    commit(
+        &db.state,
+        &robert,
+        "po.set_vendor_settings",
+        json!({ "vendor_id": v, "require_po": true }),
+    )
+    .await
+    .unwrap();
+    let b = make_bill(&db, &v, "AO-1", 30_000, "2027-01-15").await;
+
+    // No PO: not payable (auto-pay would be refused at the gate).
+    let got = get_bill(&db, &b).await;
+    assert_eq!(got["purchase_orders"]["exception"]["kind"], "no_po");
+
+    // One person permits the exception. The bill must not become
+    // ready_to_pay: it waits for someone else to release it, so the
+    // payment worker never picks it up.
+    confirm(
+        &db.state,
+        &robert,
+        "po.override",
+        json!({ "bill_id": b, "authorized_excess_cents": 30_000, "reason": "verbal PO" }),
+    )
+    .await
+    .unwrap();
+    let got = get_bill(&db, &b).await;
+    assert_eq!(got["progress"]["status"], "awaiting_release", "{got}");
+    assert!(
+        got["progress"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("overridden"),
+        "{got}"
+    );
+    // The worker's ready_to_pay query doesn't see it.
+    let ready = commit(
+        &db.state,
+        &agent("workflow"),
+        "bill.list",
+        json!({ "status": "ready_to_pay" }),
+    )
+    .await
+    .unwrap();
+    assert!(
+        ready["result"]["bills"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|x| x["bill"]["id"] != b),
+        "the overridden bill must not be offered to auto-pay"
+    );
+    // And running auto-pay on it directly refuses, naming the person step.
+    let e = commit(
+        &db.state,
+        &agent("workflow"),
+        "bill.auto_pay",
+        json!({ "bill_id": b }),
+    )
+    .await
+    .unwrap_err();
+    assert!(e.to_string().contains("a person releases it"), "{e}");
+
+    // The overrider can't release it; a second person can.
+    let e = confirm(&db.state, &robert, "bill.release", json!({ "bill_id": b }))
+        .await
+        .unwrap_err();
+    assert!(matches!(e, CommandError::Forbidden(_)), "{e}");
+    confirm(
+        &db.state,
+        &person("alice"),
+        "bill.release",
+        json!({ "bill_id": b }),
+    )
+    .await
+    .unwrap();
+    db.drop().await;
+}

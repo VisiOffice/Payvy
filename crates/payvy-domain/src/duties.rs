@@ -413,6 +413,7 @@ mod tests {
                     signals: &[],
                     released_at: None,
                     release_by_person: false,
+                    payable_by_override: false,
                     now: at(),
                     auto_pay_limit: crate::workflow::AutoPayLimit::effective(None, None),
                 },

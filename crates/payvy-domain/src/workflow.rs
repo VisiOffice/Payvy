@@ -302,6 +302,11 @@ pub struct Facts<'a> {
     /// A payment for this bill didn't go or came back, so even an automatic
     /// pay step waits for a person to release it.
     pub release_by_person: bool,
+    /// The bill is payable only because a person permitted a PO exception
+    /// (an override). Even an automatic pay step then waits for a person —
+    /// someone other than the overrider must release it — so the bill is
+    /// never ready_to_pay and no payment worker ever picks it up.
+    pub payable_by_override: bool,
     /// The most an automatic pay step may pay without a person. A bill over
     /// it waits for a release, whatever its workflow says.
     pub auto_pay_limit: AutoPayLimit,
@@ -589,6 +594,13 @@ pub fn evaluate(workflow: &Workflow, facts: &Facts) -> Progress {
                             by: by.clone(),
                             reason: None,
                         },
+                        Release::Auto if facts.payable_by_override => Status::AwaitingRelease {
+                            by: by.clone(),
+                            reason: Some(
+                                "a PO exception was overridden; someone other than the overrider releases it"
+                                    .into(),
+                            ),
+                        },
                         Release::Auto if !facts.auto_pay_limit.allows(facts.amount_cents) => {
                             Status::AwaitingRelease {
                                 by: by.clone(),
@@ -648,6 +660,7 @@ mod tests {
             signals,
             released_at: None,
             release_by_person: false,
+            payable_by_override: false,
             auto_pay_limit: AutoPayLimit::effective(None, None),
             now: t(now),
         }
@@ -694,6 +707,22 @@ mod tests {
         );
         let ready = evaluate(&quarry(), &facts(10_000, &[], &signals, 8));
         assert_eq!(ready.status, Status::ReadyToPay);
+        // Payable only by an override: it waits for a person instead, and
+        // is never ready to pay (no payment worker picks it up).
+        let overridden = Facts {
+            payable_by_override: true,
+            ..facts(10_000, &[], &signals, 8)
+        };
+        assert_eq!(
+            evaluate(&quarry(), &overridden).status,
+            Status::AwaitingRelease {
+                by: vec![],
+                reason: Some(
+                    "a PO exception was overridden; someone other than the overrider releases it"
+                        .into()
+                )
+            }
+        );
         // After a payment that didn't go, a person releases it instead.
         let failed = Facts {
             release_by_person: true,
