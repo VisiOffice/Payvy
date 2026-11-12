@@ -284,6 +284,19 @@ pub async fn allocations_for(tx: &mut Tx, po_id: Uuid) -> anyhow::Result<Vec<All
     Ok(rows.iter().map(alloc).collect())
 }
 
+/// Lock a bill's live allocation rows for the rest of the transaction,
+/// in a stable order. Held across the payment gate's check, a concurrent
+/// allocation_reverse (whose UPDATE needs these rows) waits, and its
+/// change is then visible to the gate's re-read — never the other way.
+pub async fn lock_allocations_for_bill(
+    tx: &mut Tx,
+    bill_id: Uuid,
+) -> anyhow::Result<Vec<Allocation>> {
+    let rows = sqlx::query("SELECT id, po_id, revision_id, bill_id, amount_cents, state, kind, release_reason FROM po_allocations WHERE bill_id = $1 AND state <> 'released' ORDER BY seq FOR UPDATE")
+        .bind(bill_id).fetch_all(&mut **tx).await?;
+    Ok(rows.iter().map(alloc).collect())
+}
+
 pub async fn allocations_for_bill(tx: &mut Tx, bill_id: Uuid) -> anyhow::Result<Vec<Allocation>> {
     let rows = sqlx::query("SELECT id, po_id, revision_id, bill_id, amount_cents, state, kind, release_reason FROM po_allocations WHERE bill_id = $1 AND state <> 'released' ORDER BY created_at")
         .bind(bill_id).fetch_all(&mut **tx).await?;
