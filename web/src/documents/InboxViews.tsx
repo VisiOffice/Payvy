@@ -132,11 +132,17 @@ function Needs({ d }: { d: Row }) {
   return <span className="payvy-chips">{n.map(t => <span key={t} className="payvy-chip payvy-chip-warn">{t}</span>)}</span>;
 }
 
-/** The filename link and, for a split part, where it came from with Undo. */
-function FileCell({ d, undoSplit }: { d: Row; undoSplit: (d: Row) => void }) {
+/** A long filename can break after _ or -, and nowhere else. */
+function filenameBreaks(name: string) {
+  return name.split(/([_-])/).map((bit, i) => (bit === '_' || bit === '-' ? <span key={i}>{bit}<wbr /></span> : bit));
+}
+
+/** The filename, and for a split part, where it came from with Undo. The board card is itself the link, so it shows the name as text. */
+function FileCell({ d, undoSplit, linked = true }: { d: Row; undoSplit: (d: Row) => void; linked?: boolean }) {
+  const name = filenameBreaks(d.filename);
   return (
-    <span className="payvy-inbox-file">
-      <Link href={`/inbox/${d.id}`}>{d.filename}</Link>
+    <span className="payvy-inbox-file" title={d.filename}>
+      {linked ? <Link href={`/inbox/${d.id}`}>{name}</Link> : name}
       {d.split_from && (
         <span className="payvy-split-from">
           <span>Split from {d.split_from.filename ?? 'another document'}</span>
@@ -213,15 +219,16 @@ function Card({ d, undoSplit }: { d: Row; undoSplit: (d: Row) => void }) {
   const due = dueLabel(r?.due_date);
   return (
     <li className="payvy-inbox-card">
+      <Link href={`/inbox/${d.id}`} className="payvy-inbox-card-open"><span className="payvy-sr-only">{d.filename}</span></Link>
       <Cover doc={d} size="card" />
       <div>
         <VendorCell r={r} />
         {r?.total_cents != null && <span className="payvy-inbox-amount">{money(r.total_cents)}</span>}
         {r && r.invoice_count > 1 && <span className="payvy-muted">{r.invoice_count} invoices · {numbers(r)}</span>}
         {r && r.invoice_count === 1 && <span className="payvy-muted payvy-mono">{numbers(r)}</span>}
-        {r?.due_date && <span className="payvy-muted">Due {date(r.due_date)}{due && d.status === 'inbox' && <span className={`payvy-due payvy-due-${due.tone}`}>{due.text}</span>}</span>}
+        {r?.due_date && <span className="payvy-inbox-due-line payvy-muted"><span>Due {date(r.due_date)}</span>{due && d.status === 'inbox' && <span className={`payvy-due payvy-due-${due.tone}`}>{due.text}</span>}</span>}
         <Needs d={d} />
-        <FileCell d={d} undoSplit={undoSplit} />
+        <FileCell d={d} undoSplit={undoSplit} linked={false} />
       </div>
     </li>
   );

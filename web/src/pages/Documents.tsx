@@ -114,9 +114,9 @@ export function Documents() {
         </SegmentedControl>}
         <div className="payvy-view-switch">
           <SegmentedControl label="View" value={view} onChange={v => setView(v as 'table' | 'board')}>
-            <SegmentedControlItem value="table" label="Table" /><SegmentedControlItem value="board" label="Board" />
+            <SegmentedControlItem value="table" label="Table" aria-keyshortcuts="T" icon={<Kbd keys="t" aria-hidden />} />
+            <SegmentedControlItem value="board" label="Board" aria-keyshortcuts="B" icon={<Kbd keys="b" aria-hidden />} />
           </SegmentedControl>
-          <span className="payvy-view-keys" aria-hidden="true"><Kbd keys="t" /><Kbd keys="b" /></span>
         </div>
       </div>
       <div className="payvy-documents-search"><TextInput label="Search documents" isLabelHidden placeholder="Search vendors, invoices, files…" value={search} onChange={setSearch} /><Button label="Refresh" variant="ghost" onClick={refresh} /></div>
