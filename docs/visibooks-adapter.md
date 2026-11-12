@@ -23,6 +23,10 @@ connection or an authorization to pay Allied.
 - Current native VisiBooks bill lines carry one segment. At most one configured
   department/class/location dimension can be sent; it must contain a VisiBooks
   segment ID. Multiple dimensions are refused, never silently dropped.
+- Missing due dates export as the invoice date; Payvy's source bill stays unchanged.
+- Payment methods map `domestic_wire` to `wire`, and `real_time_payment`/`other`
+  to `other`; ACH, check, wire, and card retain their method. Unknown methods
+  are refused rather than guessed.
 - Current payments contain one bill application. A multi-application ledger API
   does not mean Payvy can send consolidated bank payments.
 - File attachment explicitly returns unsupported; it never reports success
@@ -65,7 +69,7 @@ refuses bill void while payment is active, then voids both twice.
   replacing Quarry's source identifiers; handling contact merges.
 - Per-org credential sealing/connection factory and Settings → Ledger UI. This
   constructor is not wired into production `AppState` yet.
-- Automatic posting on approval/payment, the `post_bills_at` policy, late bank
+- Automatic posting on approval/payment, the `post_when` policy, late bank
   reference updates and confirmation of bank-feed clearing. A payment already
   settled in VisiBooks currently requires reconciliation before its ledger void.
 - Signed evidence links/service periods in the core body model; attachment API.

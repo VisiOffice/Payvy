@@ -185,10 +185,9 @@ impl Ledger for VisiBooks {
         Box::pin(async move {
             self.check_entity(&body.subsidiary_id)?;
             key(&body.external_key)?;
-            let due = body
-                .due_date
-                .as_ref()
-                .ok_or_else(|| missing("VisiBooks requires a due date"))?;
+            // VisiBooks requires a date; an undated invoice is due on its
+            // invoice date for this ledger export, without editing Payvy's bill.
+            let due = body.due_date.as_ref().unwrap_or(&body.invoice_date);
             let mut lines = Vec::new();
             for line in &body.lines {
                 // Configured dimensions must name actual VisiBooks segment IDs.
@@ -227,12 +226,17 @@ impl Ledger for VisiBooks {
         Box::pin(async move {
             self.check_entity(&body.subsidiary_id)?;
             key(&body.external_key)?;
-            if !["ach", "check", "wire", "card"].contains(&body.memo.as_str()) {
-                return Err(missing("Select a supported payment method"));
-            }
+            let method = match body.memo.as_str() {
+                "ach" => "ach",
+                "wire" | "domestic_wire" => "wire",
+                "check" => "check",
+                "card" => "card",
+                "real_time_payment" | "other" => "other",
+                _ => return Err(missing("Select a supported payment method")),
+            };
             let amount = cents(&body.amount)?;
             let request = json!({ "payment": { "contact_id": id(&body.vendor_external_id)?, "bank_account_id": id(&body.account_id)?,
-                "method": body.memo, "paid_on": body.tran_date, "currency": body.currency, "amount_cents": amount,
+                "method": method, "paid_on": body.tran_date, "currency": body.currency, "amount_cents": amount,
                 "applications": [{ "bill_id": id(&body.bill_external_id)?, "amount_cents": amount }] }});
             self.posted(
                 &format!(
@@ -465,6 +469,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn due_date_uses_the_invoice_date_only_when_absent() {
+        let (client, calls, task) = mock(
+            StatusCode::CREATED,
+            json!({"data":{"id":81,"external_id":"payvy:bill:example","status":"posted"}}),
+        )
+        .await;
+        let explicit = bill();
+        client.post_bill(&explicit).await.unwrap();
+        let mut undated = explicit.clone();
+        undated.due_date = None;
+        client.post_bill(&undated).await.unwrap();
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls[0]["bill"]["due_date"], "2026-11-26");
+        assert_eq!(calls[1]["bill"]["due_date"], undated.invoice_date);
+        assert!(undated.due_date.is_none());
+        task.abort();
+    }
+
+    #[tokio::test]
     async fn provider_errors_are_typed_without_echoing_private_response_text() {
         for (status, code, expected) in [
             (401, "UNAUTHORIZED", Code::NeedsAuth),
@@ -524,7 +547,30 @@ mod tests {
             currency: "USD".into(),
             amount: "330.01".into(),
         };
-        client.post_payment(&payment).await.unwrap();
+        for (source, expected) in [
+            ("ach", "ach"),
+            ("check", "check"),
+            ("wire", "wire"),
+            ("card", "card"),
+            ("domestic_wire", "wire"),
+            ("real_time_payment", "other"),
+            ("other", "other"),
+        ] {
+            let mut input = payment.clone();
+            input.memo = source.into();
+            client.post_payment(&input).await.unwrap();
+            assert_eq!(
+                calls.lock().unwrap().last().unwrap()["payment"]["method"],
+                expected
+            );
+        }
+        let mut unsupported = payment.clone();
+        unsupported.memo = "crypto".into();
+        assert_eq!(
+            client.post_payment(&unsupported).await.unwrap_err().code,
+            Code::MissingField
+        );
+        assert_eq!(calls.lock().unwrap().len(), 7);
         assert_eq!(
             calls.lock().unwrap()[0]["payment"]["applications"],
             json!([{"bill_id":81,"amount_cents":33001}])
@@ -546,51 +592,62 @@ mod tests {
         let fixture: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
         let get = |key: &str| fixture[key].as_str().unwrap();
         let client = VisiBooks::build(get("origin"), get("entity"), get("token"), true).unwrap();
-        let mut body = bill();
-        body.external_key = format!("payvy:bill:{}", uuid::Uuid::new_v4());
-        body.invoice_number = body.external_key.clone();
-        body.vendor_external_id = get("vendor").into();
-        body.subsidiary_id = get("entity").into();
-        body.lines[0].account_id = get("expense").into();
-        body.lines[0].location_id = None;
-        let posted = client.post_bill(&body).await.unwrap();
-        assert_eq!(
-            client.post_bill(&body).await.unwrap().external_id,
-            posted.external_id
-        );
-        let mut changed = body.clone();
-        changed.memo = "Changed".into();
-        assert_eq!(
-            client.post_bill(&changed).await.unwrap_err().code,
-            Code::Conflict
-        );
-        let payment = PaymentBody {
-            external_key: format!("payvy:payment:{}", uuid::Uuid::new_v4()),
-            bill_external_id: posted.external_id.clone(),
-            vendor_external_id: body.vendor_external_id.clone(),
-            subsidiary_id: body.subsidiary_id.clone(),
-            account_id: get("bank").into(),
-            tran_date: body.invoice_date.clone(),
-            memo: "ach".into(),
-            currency: "USD".into(),
-            amount: "330.01".into(),
-        };
-        let paid = client.post_payment(&payment).await.unwrap();
-        assert_eq!(
-            client.post_payment(&payment).await.unwrap().external_id,
-            paid.external_id
-        );
-        assert_eq!(
-            client
-                .void_bill(&posted.external_id)
-                .await
-                .unwrap_err()
-                .code,
-            Code::Conflict
-        );
-        client.void_payment(&paid.external_id).await.unwrap();
-        client.void_payment(&paid.external_id).await.unwrap();
-        client.void_bill(&posted.external_id).await.unwrap();
-        client.void_bill(&posted.external_id).await.unwrap();
+        for method in [
+            "ach",
+            "check",
+            "wire",
+            "card",
+            "domestic_wire",
+            "real_time_payment",
+            "other",
+        ] {
+            let mut body = bill();
+            body.due_date = None;
+            body.external_key = format!("payvy:bill:{}", uuid::Uuid::new_v4());
+            body.invoice_number = body.external_key.clone();
+            body.vendor_external_id = get("vendor").into();
+            body.subsidiary_id = get("entity").into();
+            body.lines[0].account_id = get("expense").into();
+            body.lines[0].location_id = None;
+            let posted = client.post_bill(&body).await.unwrap();
+            assert_eq!(
+                client.post_bill(&body).await.unwrap().external_id,
+                posted.external_id
+            );
+            let mut changed = body.clone();
+            changed.memo = "Changed".into();
+            assert_eq!(
+                client.post_bill(&changed).await.unwrap_err().code,
+                Code::Conflict
+            );
+            let payment = PaymentBody {
+                external_key: format!("payvy:payment:{}", uuid::Uuid::new_v4()),
+                bill_external_id: posted.external_id.clone(),
+                vendor_external_id: body.vendor_external_id.clone(),
+                subsidiary_id: body.subsidiary_id.clone(),
+                account_id: get("bank").into(),
+                tran_date: body.invoice_date.clone(),
+                memo: method.into(),
+                currency: "USD".into(),
+                amount: "330.01".into(),
+            };
+            let paid = client.post_payment(&payment).await.unwrap();
+            assert_eq!(
+                client.post_payment(&payment).await.unwrap().external_id,
+                paid.external_id
+            );
+            assert_eq!(
+                client
+                    .void_bill(&posted.external_id)
+                    .await
+                    .unwrap_err()
+                    .code,
+                Code::Conflict
+            );
+            client.void_payment(&paid.external_id).await.unwrap();
+            client.void_payment(&paid.external_id).await.unwrap();
+            client.void_bill(&posted.external_id).await.unwrap();
+            client.void_bill(&posted.external_id).await.unwrap();
+        }
     }
 }
