@@ -1138,3 +1138,88 @@ async fn the_overrider_is_not_shown_the_bill_as_waiting_on_them() {
     assert_eq!(entry["action"], "look");
     db.drop().await;
 }
+
+#[tokio::test]
+async fn closing_lets_allocations_stand_and_their_bills_wait() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    po_on(&db).await;
+    let robert = person("robert");
+    let v = manual_po_vendor(&db).await;
+    let po = active_po(&db, &v, "PO-CLOSE", 100_000).await;
+    let b = bill(&db.state, &agent("claude-ap"), &v, "close-1", 50_000).await;
+    confirm(
+        &db.state,
+        &robert,
+        "po.match_apply",
+        json!({ "bill_id": b, "allocations": [{ "po_id": po, "amount_cents": 50_000 }] }),
+    )
+    .await
+    .unwrap();
+
+    // Q6 as proposed: closing succeeds with money still reserved, and the
+    // ledger is untouched — nothing was released implicitly.
+    let closed = commit(
+        &db.state,
+        &robert,
+        "po.close",
+        json!({ "po_id": po, "reason": "fulfilled" }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(closed["result"]["status"], "closed");
+    assert_eq!(closed["result"]["amounts"]["reserved_cents"], 50_000);
+    assert_eq!(amounts(&db, &po).await["available_cents"], 50_000);
+
+    // The bill waits on its now-ineligible PO, not on missing cover.
+    let got = commit(&db.state, &robert, "bill.get", json!({ "bill_id": b }))
+        .await
+        .unwrap();
+    assert_eq!(
+        got["result"]["purchase_orders"]["exception"]["kind"],
+        "ineligible_po"
+    );
+    let e = common::confirm(&db.state, &robert, "bill.release", json!({ "bill_id": b }))
+        .await
+        .unwrap_err();
+    assert!(e.to_string().contains("ineligible_po"), "{e}");
+
+    // Reversing the allocation is still the explicit release path.
+    let allocation = got["result"]["purchase_orders"]["allocations"][0]["allocation_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    commit(
+        &db.state,
+        &robert,
+        "po.allocation_reverse",
+        json!({ "allocation_id": allocation, "reason": "PO closed; not ours to pay against" }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(amounts(&db, &po).await["reserved_cents"], 0);
+
+    // Cancel behaves the same way with an allocation standing.
+    let po2 = active_po(&db, &v, "PO-CANCEL", 40_000).await;
+    let b2 = bill(&db.state, &agent("claude-ap"), &v, "close-2", 40_000).await;
+    confirm(
+        &db.state,
+        &robert,
+        "po.match_apply",
+        json!({ "bill_id": b2, "allocations": [{ "po_id": po2, "amount_cents": 40_000 }] }),
+    )
+    .await
+    .unwrap();
+    let canceled = commit(
+        &db.state,
+        &robert,
+        "po.cancel",
+        json!({ "po_id": po2, "reason": "ordered twice" }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(canceled["result"]["status"], "canceled");
+    assert_eq!(canceled["result"]["amounts"]["reserved_cents"], 40_000);
+    db.drop().await;
+}

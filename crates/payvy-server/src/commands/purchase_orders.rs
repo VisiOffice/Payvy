@@ -440,13 +440,11 @@ pub async fn close(
             po.po_number, po.status
         )));
     }
-    let amounts = po_store::amounts(&mut cx.tx, &po).await?;
-    if amounts.reserved_cents > 0 {
-        return Err(CommandError::Conflict(format!(
-            "PO {} still has {} reserved; reverse those allocations first",
-            po.po_number, amounts.reserved_cents
-        )));
-    }
+    // Q6, as proposed in review and taken in the decisions: closing stops
+    // new allocations (only active POs take them); reserved and consumed
+    // allocations already made stand, and nothing is released implicitly.
+    // Their bills carry ineligible_po until the allocation is reversed or
+    // a person permits the bill.
     po_store::set_status(&mut cx.tx, po.id, status, None, Some(&reason), cx.now).await?;
     let kind = if status == "closed" {
         "po.closed"
