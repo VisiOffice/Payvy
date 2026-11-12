@@ -3200,7 +3200,8 @@ pub async fn finish_bill_batch_part(
     Ok(())
 }
 
-/// Not decided this time: try again on a later pass. `failed` counts it as a failed try.
+/// Not decided this time: try again on a later pass, after a short wait so a
+/// part that keeps conflicting can't spin the worker. `failed` counts it as a failed try.
 pub async fn release_bill_batch_part(
     tx: &mut Tx,
     id: Uuid,
@@ -3208,7 +3209,7 @@ pub async fn release_bill_batch_part(
     at: DateTime<Utc>,
 ) -> anyhow::Result<i32> {
     let row = sqlx::query(
-        "UPDATE bill_batch_parts SET claimed_until = NULL, updated_at = $3,
+        "UPDATE bill_batch_parts SET claimed_until = $3 + interval '30 seconds', updated_at = $3,
                 attempts = attempts + CASE WHEN $2 THEN 1 ELSE 0 END
          WHERE id = $1 RETURNING attempts",
     )
