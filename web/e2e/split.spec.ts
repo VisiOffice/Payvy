@@ -52,6 +52,10 @@ test('the reader suggests the invoices, and a bill is made from the ticked pages
   await expect(invoices(page).getByText('Invoice 85273')).toBeVisible();
   await expect(invoices(page).getByText('pages 1–2 · $8,034.89')).toBeVisible();
   await expect(invoices(page).getByText('page 3 · $1,200.00')).toBeVisible();
+  await expect(page.getByText('4 pages → 2 invoices · 85273 runs 2 pages · 1 page isn’t part of any bill')).toBeVisible();
+
+  // Reviewing one shows its pages, ticked, with its number and total in the form.
+  await page.getByRole('button', { name: 'Select Invoice 85273' }).click();
 
   // The first invoice is ticked, with its number and total in the form.
   await expect(attach(page, 1)).toBeChecked();
@@ -68,6 +72,7 @@ test('the reader suggests the invoices, and a bill is made from the ticked pages
   await expect(page.getByText('Tick the pages for this bill.')).toBeVisible();
   await strip(page).getByRole('button', { name: 'Select all pages' }).click();
   await expect(page.getByRole('button', { name: 'Create bill', exact: true })).toBeEnabled();
+  await page.getByRole('radio', { name: 'Invoices', exact: true }).click();
   await page.getByRole('button', { name: 'Select Invoice 85273' }).click();
   await expect(strip(page).getByText('2 of 4 selected')).toBeVisible();
 
@@ -113,7 +118,10 @@ test("an agent's reading splits the file at once, and Undo puts the pages back",
   await expect(page).toHaveURL(new RegExp(`/inbox/${file.id}$`));
 
   // Whole again, with the agent's split and both undos on the record, and
-  // the reader's suggestion back for a person to act on.
+  // the reader's suggestion back for a person to act on: as invoice cards,
+  // and as pages.
+  await expect(page.getByText('4 pages → 2 invoices · 85273 runs 2 pages · 1 page isn’t part of any bill')).toBeVisible();
+  await page.getByRole('radio', { name: 'Pages', exact: true }).click();
   await expect(strip(page).getByText('4 pages')).toBeVisible();
   await expect.poll(() => shown(page)).toEqual([1, 2, 3, 4]);
   const history = page.getByRole('list', { name: 'Page history' });
@@ -132,7 +140,10 @@ test('a bill from some pages on a phone', async ({ page }, info) => {
   await page.goto(`/inbox/${file.id}`);
   await page.getByRole('button', { name: 'Read it' }).click();
   await expect(page.getByText('This file has 2 invoices')).toBeVisible();
-  // The second invoice this time.
+  // The second invoice this time, chosen from the invoice cards.
+  await page.getByRole('button', { name: 'See all 2 invoices' }).click();
+  expect(await noSideScroll(page)).toBe(true);
+  await page.screenshot({ path: info.outputPath('split-mobile-cards.png'), animations: 'disabled' });
   await page.getByRole('button', { name: 'Select Invoice 85274' }).click();
   await expect(page.getByRole('textbox', { name: 'Invoice number' })).toHaveValue('85274');
   expect(await noSideScroll(page)).toBe(true);

@@ -149,6 +149,36 @@ function readReclamation(pages: number[] | null): Read {
   return { ...blank, kind: 'statement', vendor_name: 'American Reclamation' };
 }
 
+const saguaro = (invoice_number: string, total: string, invoices: object[] = []): Read => ({
+  ...blank,
+  kind: 'invoice',
+  vendor_name: 'Saguaro Storage Co',
+  invoice_number,
+  invoice_date: '2026-11-04',
+  currency: 'USD',
+  total,
+  lines: [{ description: 'Storage container rental', amount: total }],
+  invoices,
+});
+
+/**
+ * Saguaro Storage: invoice SS-101 runs pages 1–3, SS-102 is page 4, SS-103
+ * page 5, and page 6 is a remittance slip that belongs to no bill.
+ */
+function readSaguaro(pages: number[] | null): Read {
+  if (!pages) {
+    return saguaro('SS-101', '300.00', [
+      { pages: [1, 2, 3], invoice_number: 'SS-101', total: '300.00' },
+      { pages: [4], invoice_number: 'SS-102', total: '120.00' },
+      { pages: [5], invoice_number: 'SS-103', total: '45.50' },
+    ]);
+  }
+  if (pages.some((p) => p <= 3)) return saguaro('SS-101', '300.00');
+  if (pages.includes(4)) return saguaro('SS-102', '120.00');
+  if (pages.includes(5)) return saguaro('SS-103', '45.50');
+  return { ...blank, kind: 'other', vendor_name: 'Saguaro Storage Co' };
+}
+
 /** The pages the server asked for ("Read only pages 1, 2 of this file"), or null for all. */
 function pagesAsked(body: { messages?: { content?: unknown }[] }): number[] | null {
   for (const m of body.messages ?? []) {
@@ -186,6 +216,8 @@ export function startFakeModel(port: number): Promise<http.Server> {
       const file = fileOf(body);
       let read = file.includes('American Reclamation')
         ? readReclamation(pagesAsked(body))
+        : file.includes('Saguaro Storage')
+        ? readSaguaro(pagesAsked(body))
         : (READS.find(([needle]) => file.includes(needle))?.[1] ?? blank);
       if (file.includes('V2-UI')) {
         read = {...blank, kind:'invoice',vendor_name:'Richer review vendor',invoice_number:'V2-UI',invoice_date:'2026-11-11',currency:'USD',total:'30.86',

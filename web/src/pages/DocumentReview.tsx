@@ -32,6 +32,7 @@ import {
   type SuggestedInvoice,
 } from '../documents/types';
 import { PageStrip } from '../documents/PageStrip';
+import { SplitView } from '../documents/SplitView';
 import { describePages, historyLine, PAGE_EVENTS } from '../documents/pages';
 import { useSession } from '../session';
 
@@ -137,7 +138,6 @@ function keepThumbnailsChoice(open: boolean) {
 const FEW_PAGES = 6;
 
 /** "Invoice 85273", or its place when no number was read. */
-const invoiceName = (g: SuggestedInvoice, i: number) => (g.invoice_number ? `Invoice ${g.invoice_number}` : `Invoice ${i + 1}`);
 
 interface ListedBill {
   bill: { id: string; invoice_number: string; amount_cents: number; state: string };
@@ -172,6 +172,8 @@ export function DocumentReview() {
   /** The page the viewer shows: the original's page number. */
   const [evidenceFocus, setEvidenceFocus] = useState<SourceEvidence | null>(null);
   const [current, setCurrent] = useState<number | null>(null);
+  /** A file of several invoices shows them as cards, or its pages one at a time. */
+  const [splitMode, setSplitMode] = useState<'invoices' | 'pages'>('invoices');
   const [thumbnails, setThumbnails] = useState<boolean | null>(thumbnailsChoice);
   const request = useRef(0);
   // Say before Create bill is pressed what it will do with a copy: look up
@@ -451,12 +453,6 @@ export function DocumentReview() {
     }
   }
 
-  /** Tick one of the invoices the reader found, with its number and total. */
-  function pickInvoice(g: SuggestedInvoice) {
-    setSelected(new Set(g.pages));
-    setForm((f) => withInvoice(f, g));
-  }
-
   async function undoSplit() {
     const from = detail?.split_from;
     if (!from) return;
@@ -563,34 +559,15 @@ export function DocumentReview() {
             />
           )}
           {groups.length > 1 && !reading && (
-            <Banner
-              status="info"
-              title={`This file has ${groups.length} invoices`}
-              description={
-                <VStack gap={2}>
-                  <span>Tick the pages of one invoice and create its bill. The other pages stay here.</span>
-                  <ul className="payvy-split-list" aria-label="Invoices in this file">
-                    {groups.map((g, i) => (
-                      <li key={g.pages.join('-')}>
-                        <span>
-                          <strong>{invoiceName(g, i)}</strong> · {describePages(g.pages)}
-                          {g.total_cents !== null && ` · ${money(g.total_cents)}`}
-                        </span>
-                        <Button
-                          label={`Select ${invoiceName(g, i)}`}
-                          size="sm"
-                          variant="ghost"
-                          isDisabled={picked.length === g.pages.length && g.pages.every((p) => selected.has(p))}
-                          onClick={() => pickInvoice(g)}
-                        >
-                          Select
-                        </Button>
-                      </li>
-                    ))}
-                  </ul>
-                </VStack>
-              }
-            />
+            <p className="payvy-split-summary" role="note">
+              <strong>This file has {groups.length} invoices.</strong>{' '}
+              {splitMode === 'invoices'
+                ? 'Arrange their pages in the invoice cards, then create them all at once, or review one at a time.'
+                : 'Tick the pages of one invoice and create its bill. The other pages stay here.'}
+              {(
+                <> <button type="button" className={`payvy-text-button${splitMode === 'invoices' ? ' payvy-phone-only' : ''}`} onClick={() => { setSplitMode('invoices'); setMobileView('original'); }}>See all {groups.length} invoices</button></>
+              )}
+            </p>
           )}
           {parts.length > 0 && (
             <VStack gap={2}>
@@ -838,6 +815,35 @@ export function DocumentReview() {
         </footer>}
       </section>
       <section className="payvy-review-original" aria-label="Original document">
+        {groups.length > 1 && (
+          <div className="payvy-split-mode">
+            <SegmentedControl label="Show the file as" value={splitMode} onChange={(v) => setSplitMode(v as 'invoices' | 'pages')}>
+              <SegmentedControlItem value="invoices" label="Invoices" />
+              <SegmentedControlItem value="pages" label="Pages" />
+            </SegmentedControl>
+          </div>
+        )}
+        {groups.length > 1 && splitMode === 'invoices' ? (
+          <SplitView
+            key={`${doc.id}-${detail.pages.version}-${latest?.extraction.id ?? ''}`}
+            detail={detail}
+            invoices={groups}
+            vendorName={x?.draft?.vendor_name ?? null}
+            canCreate={can('bill.create') && can('document.split')}
+            onReview={(pages, read) => {
+              setSelected(new Set(pages));
+              if (read) setForm((f) => withInvoice(f, read));
+              setSplitMode('pages');
+              setCurrent(pages[0] ?? null);
+              setMobileView('details');
+            }}
+            onOpenPage={(p) => {
+              setSplitMode('pages');
+              setCurrent(p);
+            }}
+            onDone={() => void load()}
+          />
+        ) : (<>
         <PageStrip
           documentId={doc.id}
           contentType={doc.content_type}
@@ -875,6 +881,7 @@ export function DocumentReview() {
             }}
           />
         </div>
+        </>)}
       </section>
       </div>
 

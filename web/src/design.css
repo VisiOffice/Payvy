@@ -415,3 +415,40 @@ body { -webkit-font-smoothing: antialiased; }
 .payvy-inbox-due-line { display: flex; flex-wrap: wrap; column-gap: 6px; align-items: baseline; }
 .payvy-inbox-due-line > span { white-space: nowrap; }
 .payvy-inbox-card .payvy-due { margin-left: 0; }
+
+/* Split view: a file of several invoices, one card per invoice. */
+.payvy-split-summary { font-size: 12px; line-height: 1.6; color: var(--color-text-secondary); }
+.payvy-split-summary strong { color: var(--color-text-primary); font-weight: 600; }
+.payvy-split-summary .payvy-text-button { font-size: 12px; }
+.payvy-phone-only { display: none !important; }
+.payvy-split-mode { flex: none; padding: 8px 20px; border-bottom: 1px solid var(--color-border); background: var(--color-background-surface); }
+.payvy-split-view { flex: 1; min-height: 0; overflow: auto; padding: 16px 20px 24px; display: grid; gap: 14px; align-content: start; }
+.payvy-split-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.payvy-split-header strong { font-size: 14px; font-weight: 600; }
+.payvy-split-explain { font-size: 12px; color: var(--color-text-secondary); margin-top: 2px; font-variant-numeric: tabular-nums; }
+.payvy-split-explain[data-leftover] { color: var(--color-text-warning, #a15c07); }
+.payvy-split-error { font-size: 12px; color: var(--color-text-error, #b42318); }
+.payvy-split-grid { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+.payvy-split-card-item { display: flex; min-width: 0; }
+.payvy-split-card { flex: 1; min-width: 0; display: grid; gap: 8px; align-content: start; padding: 10px; border: 1px solid var(--color-border); border-radius: 8px; background: var(--color-background-card); }
+.payvy-split-card > header, .payvy-split-leftover > header { display: grid; gap: 1px; min-width: 0; }
+.payvy-split-card > header strong, .payvy-split-leftover > header strong { font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.payvy-split-card[data-over], .payvy-split-leftover[data-over] { border-color: var(--color-accent); background: var(--color-accent-muted); }
+.payvy-split-new { place-items: center; text-align: center; min-height: 120px; border-style: dashed; color: var(--color-text-secondary); font-size: 12px; background: transparent; }
+.payvy-split-leftover { display: grid; gap: 8px; padding: 10px; border: 1px dashed var(--color-border); border-radius: 8px; }
+.payvy-split-pages { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; min-height: 40px; }
+.payvy-split-page { display: grid; gap: 2px; width: 64px; touch-action: none; }
+.payvy-split-page[data-dragging] { opacity: .35; }
+.payvy-split-handle { all: unset; cursor: grab; display: block; border-radius: 4px; }
+.payvy-split-handle:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.payvy-split-thumb { display: flex; align-items: center; justify-content: center; width: 64px; height: 83px; overflow: hidden; border: 1px solid var(--color-border); border-radius: 4px; background: #fff; color: var(--color-text-secondary); font-size: 11px; }
+.payvy-split-thumb img { width: 100%; height: 100%; object-fit: cover; object-position: top; }
+.payvy-split-lifted { cursor: grabbing; box-shadow: 0 6px 18px rgb(0 0 0 / .18); border-radius: 4px; }
+.payvy-split-page-foot { display: flex; justify-content: space-between; align-items: center; font-size: 10px; color: var(--color-text-secondary); }
+.payvy-split-move { all: unset; cursor: pointer; color: var(--color-text-accent); font-size: 10px; }
+.payvy-split-move:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; border-radius: 2px; }
+@media (max-width: 900px) {
+  .payvy-phone-only { display: inline !important; }
+  .payvy-split-view { padding: 12px 16px 20px; }
+  .payvy-split-grid { grid-template-columns: 1fr; }
+}
