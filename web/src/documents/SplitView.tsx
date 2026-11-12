@@ -428,7 +428,7 @@ export function SplitView({
       <p className="payvy-sr-only" aria-live="polite">{said}</p>
       {view === 'table' ? (
         <div className="payvy-split-table-wrap">
-          <table className="payvy-split-table">
+          <table className="payvy-split-table" data-unlocked={locked ? undefined : true}>
             <thead>
               <tr>
                 <th>Invoice</th>
@@ -445,7 +445,7 @@ export function SplitView({
                   <td>{g.read?.total_cents != null ? money(g.read.total_cents) : '—'}</td>
                   {!locked && (
                     <td>
-                      <Button label={`Select ${invoiceName(g, i)}`} size="sm" variant="ghost" onClick={(e) => { e.stopPropagation(); onReview(g.pages, g.read); }}>
+                      <Button label={`Review ${invoiceName(g, i)}`} size="sm" variant="ghost" onClick={(e) => { e.stopPropagation(); onReview(g.pages, g.read); }}>
                         <span className="payvy-split-review-full">Review this one</span>
                         <span className="payvy-split-review-short">Review</span>
                       </Button>

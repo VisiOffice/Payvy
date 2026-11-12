@@ -459,8 +459,8 @@ body { -webkit-font-smoothing: antialiased; }
 .payvy-split-table th { font-size: 11px; font-weight: 500; color: var(--color-text-secondary); }
 .payvy-split-table td:nth-child(3), .payvy-split-table th:nth-child(3) { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .payvy-split-table td strong { font-weight: 600; }
-.payvy-split-table tbody tr { cursor: pointer; }
-.payvy-split-table tbody tr:hover td { background: var(--color-background-muted); }
+.payvy-split-table[data-unlocked] tbody tr { cursor: pointer; }
+.payvy-split-table[data-unlocked] tbody tr:hover td { background: var(--color-background-muted); }
 .payvy-split-table td:last-child { text-align: right; width: 1%; white-space: nowrap; }
 .payvy-split-review-short { display: none; }
 .payvy-lines { min-width: 0; }
