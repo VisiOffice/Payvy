@@ -13,6 +13,7 @@ mod events;
 mod extract;
 mod inbox;
 mod invoice_reviews;
+mod ledger;
 mod notifications;
 mod org;
 mod payee_invites;
@@ -59,6 +60,10 @@ pub enum CommandError {
     /// The customer's bank refused or didn't answer.
     #[error("{0}")]
     Bank(String),
+    /// A ledger refusal with the stable code a person acts on. The link row
+    /// is kept: `run` commits this error instead of rolling it back.
+    #[error("{detail}")]
+    Ledger { code: &'static str, detail: String },
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
 }
@@ -76,8 +81,14 @@ impl CommandError {
             CommandError::Forbidden(_) => "forbidden",
             CommandError::NotConfigured(_) => "not_configured",
             CommandError::Bank(_) => "bank_error",
+            CommandError::Ledger { code, .. } => code,
             CommandError::Internal(_) => "internal",
         }
+    }
+
+    /// The sync log is the point of a ledger refusal, so its row is committed.
+    fn persists(&self) -> bool {
+        matches!(self, CommandError::Ledger { .. })
     }
 
     pub fn status(&self) -> StatusCode {
@@ -90,6 +101,11 @@ impl CommandError {
             CommandError::PersonOnly(_) | CommandError::Forbidden(_) => StatusCode::FORBIDDEN,
             CommandError::NotConfigured(_) => StatusCode::SERVICE_UNAVAILABLE,
             CommandError::Bank(_) => StatusCode::BAD_GATEWAY,
+            CommandError::Ledger { code, .. } => match *code {
+                "conflict" => StatusCode::CONFLICT,
+                "needs_auth" | "concurrency" | "timeout" => StatusCode::SERVICE_UNAVAILABLE,
+                _ => StatusCode::UNPROCESSABLE_ENTITY,
+            },
             CommandError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -179,6 +195,7 @@ pub async fn run(
         extractor: state.extractor.as_deref(),
         bank: state.bank.as_deref(),
         auth: state.auth.as_deref(),
+        ledger: state.ledger.as_deref(),
     };
     let result = execute(&mut cx, spec.name, &input).await;
     let Cx {
@@ -190,8 +207,18 @@ pub async fn run(
     let result = match result {
         Ok(value) => value,
         Err(error) => {
-            // Release row/advisory locks before opening the cleanup transaction.
-            let _ = tx.rollback().await;
+            // A ledger refusal is the sync log: the link row and its event
+            // stay. Preview still rolls back. Any other error never happened.
+            let keep = !preview && error.persists();
+            let finished = if keep {
+                tx.commit().await
+            } else {
+                tx.rollback().await
+            };
+            if let Err(db) = finished {
+                cleanup_extraction_claim(state, actor.org_id, extraction_claim).await;
+                return Err(anyhow::Error::from(db).into());
+            }
             cleanup_extraction_claim(state, actor.org_id, extraction_claim).await;
             return Err(error);
         }
@@ -348,6 +375,9 @@ async fn execute(cx: &mut Cx<'_>, name: &str, input: &Value) -> Result<Value, Co
         "po.allocation_accept" => purchase_orders::allocation_accept(cx, parse(input)?).await,
         "po.allocation_reverse" => purchase_orders::allocation_reverse(cx, parse(input)?).await,
         "event.list" => events::list(cx, parse(input)?).await,
+        "ledger.post_bill" => ledger::post_bill(cx, parse(input)?).await,
+        "ledger.post_payment" => ledger::post_payment(cx, parse(input)?).await,
+        "ledger.void" => ledger::void(cx, parse(input)?).await,
         other => Err(CommandError::Unknown(other.to_owned())),
     }
 }
@@ -374,6 +404,7 @@ pub(crate) struct Cx<'a> {
     extractor: Option<&'a payvy_extract::Extractor>,
     bank: Option<&'a crate::Bank>,
     auth: Option<&'a crate::auth::Auth>,
+    ledger: Option<&'a (dyn payvy_ledger::Ledger + Send + Sync)>,
 }
 
 impl<'a> Cx<'a> {
@@ -404,6 +435,11 @@ impl<'a> Cx<'a> {
         self.bank.ok_or(CommandError::NotConfigured(
             "paying through a bank isn't configured (set PAYVY_SECRETS_KEY)",
         ))
+    }
+
+    pub fn ledger(&self) -> Result<&'a (dyn payvy_ledger::Ledger + Send + Sync), CommandError> {
+        self.ledger
+            .ok_or(CommandError::NotConfigured("no ledger is configured"))
     }
 
     pub async fn emit(

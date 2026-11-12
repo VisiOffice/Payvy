@@ -110,6 +110,9 @@ pub struct AppState {
     /// The built web app (web/dist), served for every path the API doesn't
     /// claim. None serves only the API.
     pub web_dir: Option<std::path::PathBuf>,
+    /// None until a ledger adapter is configured. Posting then says so.
+    /// Tests pass a fake. Production does not talk to a ledger yet.
+    pub ledger: Option<Arc<dyn payvy_ledger::Ledger + Send + Sync>>,
 }
 
 /// Paying through the customer's bank: the key bank tokens are sealed with,
@@ -160,6 +163,7 @@ impl AppState {
             auth: None,
             bill_batches: Arc::new(tokio::sync::Notify::new()),
             web_dir: None,
+            ledger: None,
         }
     }
 
@@ -195,6 +199,11 @@ impl AppState {
 
     pub fn with_clock(mut self, clock: Clock) -> Self {
         self.clock = clock;
+        self
+    }
+
+    pub fn with_ledger(mut self, ledger: impl payvy_ledger::Ledger + 'static) -> Self {
+        self.ledger = Some(Arc::new(ledger));
         self
     }
 }

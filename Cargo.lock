@@ -1516,6 +1516,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "payvy-ledger"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "payvy-pay"
 version = "0.1.0"
 dependencies = [
@@ -1546,6 +1559,7 @@ dependencies = [
  "lopdf",
  "payvy-domain",
  "payvy-extract",
+ "payvy-ledger",
  "payvy-pay",
  "payvy-storage",
  "payvy-store",
