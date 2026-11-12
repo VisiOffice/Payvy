@@ -124,12 +124,35 @@ pub enum ArrivalKind {
     Revision,
 }
 
-pub fn arrival_kind(current_cents: Cents, arrived_cents: Cents) -> ArrivalKind {
-    if arrived_cents == current_cents {
-        ArrivalKind::Resend
-    } else {
-        ArrivalKind::Revision
+/// Whether two sets of lines say the same thing, for classifying a copy
+/// that carries the bill's current total: descriptions compare normalized
+/// (case, spacing and punctuation don't make a different line), amounts,
+/// quantities (exact, so "2" and "2.0" agree), units (case-insensitive)
+/// and unit prices must all match, in any order. Accounts are Payvy's
+/// coding, not the vendor's, and don't count. A copy whose lines differ
+/// — different quantities at the same total included — is a revision,
+/// so the new lines are quantity-checked once a person accepts them
+/// instead of the old lines being checked forever.
+pub fn lines_differ(current: &[Line], arrived: &[Line]) -> bool {
+    fn key(line: &Line) -> (String, Cents, Option<i64>, Option<String>, Option<Cents>) {
+        (
+            invoice_key(&line.description),
+            line.amount_cents,
+            line.quantity
+                .as_deref()
+                .and_then(crate::invoice_evidence::quantity_micro),
+            line.unit
+                .as_ref()
+                .map(|u| u.trim().to_lowercase())
+                .filter(|u| !u.is_empty()),
+            line.unit_price_cents,
+        )
     }
+    let mut a: Vec<_> = current.iter().map(key).collect();
+    let mut b: Vec<_> = arrived.iter().map(key).collect();
+    a.sort();
+    b.sort();
+    a != b
 }
 
 /// The form of an invoice number used to spot duplicates from one vendor:
@@ -171,10 +194,23 @@ mod tests {
     use chrono::NaiveDate;
 
     #[test]
-    fn a_copy_is_a_resend_only_at_the_bills_current_amount() {
-        assert_eq!(arrival_kind(8_740, 8_740), ArrivalKind::Resend);
-        assert_eq!(arrival_kind(8_740, 3_749), ArrivalKind::Revision);
-        assert_eq!(arrival_kind(3_749, 8_740), ArrivalKind::Revision);
+    fn same_total_lines_differ_only_when_what_is_printed_differs() {
+        let haul = |q: &str, rate: i64| Line {
+            description: "Haul, 30 yd".into(),
+            amount_cents: 20_000,
+            account: None,
+            quantity: Some(q.into()),
+            unit: Some("Load".into()),
+            unit_price_cents: Some(rate),
+        };
+        // Same lines, restated: formatting, order and quantity spelling.
+        assert!(!lines_differ(&[haul("2", 10_000)], &[haul("2.0", 10_000)]));
+        // Different quantity at the same total and rate: a revision.
+        assert!(lines_differ(&[haul("2", 10_000)], &[haul("3", 10_000)]));
+        // A different rate, or a line the bill doesn't have.
+        assert!(lines_differ(&[haul("2", 10_000)], &[haul("2", 9_000)]));
+        assert!(lines_differ(&[], &[haul("2", 10_000)]));
+        assert!(!lines_differ(&[], &[]));
     }
 
     #[test]

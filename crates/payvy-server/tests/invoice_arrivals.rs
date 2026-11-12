@@ -422,3 +422,60 @@ async fn allow_duplicate_still_makes_a_separate_recorded_bill() {
     assert_eq!(got["received_count"], 1);
     db.drop().await;
 }
+
+#[tokio::test]
+async fn a_same_total_copy_with_different_quantities_is_a_revision_not_a_resend() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let robert = person("robert");
+    let v = pay_vendor(&db, "Allied").await;
+    let lines = |q: &str| {
+        json!({ "lines": [{ "description": "Haul", "amount_cents": 20_000,
+                            "quantity": q, "unit": "load", "unit_price_cents": 10_000 }] })
+    };
+    let first = create(&db, &robert, &v, "RQ-1", 20_000, lines("2"))
+        .await
+        .unwrap();
+    let b = first["bill"]["id"].as_str().unwrap().to_owned();
+
+    // The same lines restated (2.0 for 2, unit case) are a resend.
+    let again = create(
+        &db,
+        &robert,
+        &v,
+        "RQ-1",
+        20_000,
+        json!({ "lines": [{ "description": "haul", "amount_cents": 20_000,
+                            "quantity": "2.0", "unit": "Load", "unit_price_cents": 10_000 }] }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(again["arrival"]["kind"], "resend");
+    assert!(again["pending_revision"].is_null());
+
+    // Same total, different quantity: a revision a person must decide.
+    let changed = create(&db, &robert, &v, "RQ-1", 20_000, lines("3"))
+        .await
+        .unwrap();
+    assert_eq!(changed["arrival"]["kind"], "revision");
+    assert_eq!(changed["arrival"]["pending"], true);
+    assert_eq!(
+        changed["lines"][0]["quantity"], "2",
+        "old lines until decided"
+    );
+
+    // Accepting makes the new lines the bill's lines at the same total.
+    let accepted = commit(
+        &db.state,
+        &robert,
+        "bill.revision_accept",
+        json!({ "bill_id": b }),
+    )
+    .await
+    .unwrap()["result"]
+        .clone();
+    assert_eq!(accepted["bill"]["amount_cents"], 20_000);
+    assert_eq!(accepted["lines"][0]["quantity"], "3");
+    db.drop().await;
+}

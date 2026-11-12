@@ -467,11 +467,14 @@ pub async fn create(cx: &mut Cx<'_>, mut input: Create) -> Result<Value, Command
 }
 
 /// A copy of an invoice that is already a bill: it stacks on that bill
-/// instead of becoming a second payable one. Same amount is a resend
-/// (recorded, nothing changes); a different amount on an open bill is a
-/// revision a person must accept or reject before the bill can be paid.
-/// `allow_duplicate` never reaches here: it makes a separate bill, as
-/// before, and that choice stays on its `bill.created` event.
+/// instead of becoming a second payable one. Same amount with the same
+/// lines is a resend (recorded, nothing changes); a different amount, or
+/// the same amount with different lines (quantities at the same total
+/// included), on an open bill is a revision a person must accept or
+/// reject before the bill can be paid — accepting quantity-checks the
+/// new lines, not the old ones. `allow_duplicate` never reaches here: it
+/// makes a separate bill, as before, and that choice stays on its
+/// `bill.created` event.
 #[allow(clippy::too_many_arguments)]
 async fn stack_arrival(
     cx: &mut Cx<'_>,
@@ -487,7 +490,12 @@ async fn stack_arrival(
     let bill = store::get_bill(&mut cx.tx, existing)
         .await?
         .ok_or(CommandError::NotFound("bill"))?;
-    let kind = rules::arrival_kind(bill.amount_cents, amount_cents);
+    let current_lines = store::bill_lines(&mut cx.tx, bill.id).await?;
+    let kind = if amount_cents == bill.amount_cents && !rules::lines_differ(&current_lines, lines) {
+        rules::ArrivalKind::Resend
+    } else {
+        rules::ArrivalKind::Revision
+    };
     let revised = kind == rules::ArrivalKind::Revision;
     let pending = revised && bill.state == State::Open;
     if pending {
