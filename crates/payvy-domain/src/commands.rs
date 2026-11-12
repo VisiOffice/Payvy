@@ -875,8 +875,8 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "ledger.void",
-        summary: "Void the ledger's copy of a bill. A posted payment is voided first, and if that void is refused the bill stays posted. Only a person with admin may do this. Preview sends nothing.",
-        tier: RiskTier::Routine,
+        summary: "Void the ledger's copy of a bill. Every posted payment is voided first, oldest first, including one the bank later returned. If a payment void is refused the bill stays posted. This cannot be undone, so it asks for confirmation. Only a person with admin may do this. Preview sends nothing.",
+        tier: RiskTier::Confirmed,
         person_only: true,
         permission: Permission::Admin,
         input_schema: r#"{"type":"object","additionalProperties":false,"required":["bill_id"],"properties":{"bill_id":{"type":"string","format":"uuid"}}}"#,

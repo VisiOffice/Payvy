@@ -821,8 +821,8 @@
       "name": "ledger.void",
       "permission": "admin",
       "person_only": true,
-      "summary": "Void the ledger's copy of a bill. A posted payment is voided first, and if that void is refused the bill stays posted. Only a person with admin may do this. Preview sends nothing.",
-      "tier": "routine"
+      "summary": "Void the ledger's copy of a bill. Every posted payment is voided first, oldest first, including one the bank later returned. If a payment void is refused the bill stays posted. This cannot be undone, so it asks for confirmation. Only a person with admin may do this. Preview sends nothing.",
+      "tier": "confirmed"
     },
     {
       "input_schema": "{\"type\":\"object\",\"properties\":{\"entity_id\":{\"type\":\"string\",\"format\":\"uuid\"},\"limit\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":500}}}",

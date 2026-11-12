@@ -59,6 +59,9 @@ CREATE TABLE ledger_links (
     error_detail text,
     request_hash text,
     posted_at timestamptz,
+    -- Keyed by connection. Reconnecting updates this same row (status back
+    -- to active) and keeps these links. A new connection row is a new ledger
+    -- and does not inherit earlier voids.
     UNIQUE (org_id, connection_id, entity, payvy_id)
 );
 

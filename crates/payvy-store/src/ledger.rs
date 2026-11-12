@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use crate::Tx;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct LedgerConnection {
     pub id: Uuid,
     pub provider: String,
@@ -26,6 +26,29 @@ pub struct LedgerConnection {
     pub bank_account_map: Value,
     pub created_at: DateTime<Utc>,
     pub created_by: String,
+}
+
+impl std::fmt::Debug for LedgerConnection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LedgerConnection")
+            .field("id", &self.id)
+            .field("provider", &self.provider)
+            .field("environment", &self.environment)
+            .field("account_id", &self.account_id)
+            .field("subsidiary_id", &self.subsidiary_id)
+            .field("subsidiary_name", &self.subsidiary_name)
+            .field("currency", &self.currency)
+            .field("status", &self.status)
+            .field("auth_kind", &self.auth_kind)
+            .field("token_sealed", &"[sealed]")
+            .field("post_when", &self.post_when)
+            .field("ap_account_id", &self.ap_account_id)
+            .field("defaults", &self.defaults)
+            .field("bank_account_map", &self.bank_account_map)
+            .field("created_at", &self.created_at)
+            .field("created_by", &self.created_by)
+            .finish()
+    }
 }
 
 pub struct NewLedgerConnection<'a> {
@@ -110,6 +133,10 @@ pub async fn insert_ledger_connection(
 }
 
 /// The company's one active connection, locked for the rest of the transaction.
+///
+/// The lock is held across the ledger call. That serializes every ledger
+/// action in the company, and it is what stops two first posts of the same
+/// bill from both reaching the books. Acceptable until a real adapter exists.
 pub async fn active_ledger_connection(tx: &mut Tx) -> anyhow::Result<Option<LedgerConnection>> {
     let row = sqlx::query(concat!(
         "SELECT ",

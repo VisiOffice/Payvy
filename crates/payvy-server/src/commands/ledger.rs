@@ -138,10 +138,9 @@ pub async fn post_payment(cx: &mut Cx<'_>, input: PaymentId) -> Result<Value, Co
         payment_id: payment.id,
         amount_cents: payment.amount_cents,
         tran_date: payment.updated_at.date_naive(),
-        memo: match &payment.transaction_id {
-            Some(reference) => format!("{} {reference}", payment.method),
-            None => payment.method.clone(),
-        },
+        // The poller can fill transaction_id after this post. It stays out of
+        // the memo so a later post is still the same payment.
+        memo: payment.method.clone(),
         bank_account_id: mapped_account(&connection.bank_account_map, payment.connection_id),
         bill_external_id,
         vendor_external_id: vendor,
@@ -205,17 +204,27 @@ pub async fn void(cx: &mut Cx<'_>, input: BillId) -> Result<Value, CommandError>
     let bill_link = store::ledger_link(&mut cx.tx, connection.id, "bill", bill.id).await?;
     let bill_view = bill_link.as_ref().map(view_of).transpose()?;
     let payments = store::bill_payments(&mut cx.tx, bill.id).await?;
-    let mut posted_payment: Option<(Uuid, store::LedgerLink)> = None;
-    for payment in &payments {
+    // A bank return does not call the ledger. The poller only changes the
+    // payment row. Every link that is still posted is voided here, including
+    // a payment the bank later returned. bill_payments is newest first.
+    let mut posted_payments: Vec<(Uuid, String)> = Vec::new();
+    for payment in payments.iter().rev() {
         let Some(link) =
             store::ledger_link(&mut cx.tx, connection.id, "payment", payment.id).await?
         else {
             continue;
         };
-        if link.status == "posted" {
-            posted_payment = Some((payment.id, link));
-            break;
+        if link.status != "posted" {
+            continue;
         }
+        let external = link
+            .external_id
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| CommandError::Ledger {
+                code: "conflict",
+                detail: "the posted payment has no ledger id".into(),
+            })?;
+        posted_payments.push((payment.id, external));
     }
     match bill_view.as_ref().map(|link| link.status) {
         Some(LinkStatus::Voided) => Err(CommandError::Ledger {
@@ -231,32 +240,22 @@ pub async fn void(cx: &mut Cx<'_>, input: BillId) -> Result<Value, CommandError>
                     code: "conflict",
                     detail: "the posted bill has no ledger id".into(),
                 })?;
-            let payment_external = match &posted_payment {
-                Some((_, link)) => Some(
-                    link.external_id
-                        .clone()
-                        .filter(|id| !id.is_empty())
-                        .ok_or_else(|| CommandError::Ledger {
-                            code: "conflict",
-                            detail: "the posted payment has no ledger id".into(),
-                        })?,
-                ),
-                None => None,
-            };
             if cx.preview {
                 return Ok(json!({
                     "status": "ready",
                     "external_key": payvy_ledger::bill_key(bill.id),
-                    "voids_payment": payment_external.is_some(),
+                    "payments_to_void": posted_payments.len(),
                 }));
             }
+            let payment_ids: Vec<&str> =
+                posted_payments.iter().map(|(_, id)| id.as_str()).collect();
             let voided = {
                 let ledger = cx.ledger()?;
-                payvy_ledger::void_posted(ledger, &bill_external, payment_external.as_deref()).await
+                payvy_ledger::void_posted(ledger, &bill_external, &payment_ids).await
             };
             match voided {
-                Ok(payment_voided) => {
-                    if payment_voided && let Some((payment_id, _)) = &posted_payment {
+                Ok(payments_voided) => {
+                    for (payment_id, _) in &posted_payments {
                         store::mark_ledger_link_voided(
                             &mut cx.tx,
                             connection.id,
@@ -272,38 +271,40 @@ pub async fn void(cx: &mut Cx<'_>, input: BillId) -> Result<Value, CommandError>
                         bill.id,
                         json!({
                             "bill_id": bill.id,
-                            "payment_voided": payment_voided,
+                            "payments_voided": payments_voided,
                         }),
                     )
                     .await?;
-                    Ok(json!({ "status": "voided", "payment_voided": payment_voided }))
+                    Ok(json!({ "status": "voided", "payments_voided": payments_voided }))
                 }
                 Err(failure) => {
-                    if failure.payment_voided {
-                        if let Some((payment_id, _)) = &posted_payment {
-                            store::mark_ledger_link_voided(
-                                &mut cx.tx,
-                                connection.id,
-                                "payment",
-                                *payment_id,
-                            )
-                            .await?;
-                        }
+                    let n = failure.payments_voided;
+                    for (payment_id, _) in posted_payments.iter().take(n) {
+                        store::mark_ledger_link_voided(
+                            &mut cx.tx,
+                            connection.id,
+                            "payment",
+                            *payment_id,
+                        )
+                        .await?;
+                    }
+                    if n < posted_payments.len() {
+                        let (payment_id, _) = posted_payments[n];
+                        store::note_ledger_link_error(
+                            &mut cx.tx,
+                            connection.id,
+                            "payment",
+                            payment_id,
+                            failure.error.code.as_str(),
+                            &failure.error.detail,
+                        )
+                        .await?;
+                    } else {
                         store::note_ledger_link_error(
                             &mut cx.tx,
                             connection.id,
                             "bill",
                             bill.id,
-                            failure.error.code.as_str(),
-                            &failure.error.detail,
-                        )
-                        .await?;
-                    } else if let Some((payment_id, _)) = &posted_payment {
-                        store::note_ledger_link_error(
-                            &mut cx.tx,
-                            connection.id,
-                            "payment",
-                            *payment_id,
                             failure.error.code.as_str(),
                             &failure.error.detail,
                         )
@@ -316,7 +317,7 @@ pub async fn void(cx: &mut Cx<'_>, input: BillId) -> Result<Value, CommandError>
                             "bill_id": bill.id,
                             "error_code": failure.error.code.as_str(),
                             "error_detail": failure.error.detail,
-                            "payment_voided": failure.payment_voided,
+                            "payments_voided": n,
                         }),
                     )
                     .await?;
@@ -435,6 +436,7 @@ fn require_ledger(cx: &Cx<'_>) -> Result<(), CommandError> {
     cx.ledger().map(|_| ())
 }
 
+/// Locks the connection for the whole command, including the ledger call.
 async fn connection(cx: &mut Cx<'_>) -> Result<store::LedgerConnection, CommandError> {
     store::active_ledger_connection(&mut cx.tx)
         .await?

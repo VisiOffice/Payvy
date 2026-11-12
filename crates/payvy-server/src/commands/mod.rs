@@ -103,7 +103,7 @@ impl CommandError {
             CommandError::Bank(_) => StatusCode::BAD_GATEWAY,
             CommandError::Ledger { code, .. } => match *code {
                 "conflict" => StatusCode::CONFLICT,
-                "needs_auth" | "concurrency" => StatusCode::SERVICE_UNAVAILABLE,
+                "needs_auth" | "concurrency" | "timeout" => StatusCode::SERVICE_UNAVAILABLE,
                 _ => StatusCode::UNPROCESSABLE_ENTITY,
             },
             CommandError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,

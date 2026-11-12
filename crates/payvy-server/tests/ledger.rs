@@ -157,7 +157,7 @@ impl Fx {
     }
 
     async fn void(&self, bill: Uuid) -> Result<Value, CommandError> {
-        commit(
+        confirm(
             &self.db.state,
             &person("ada"),
             "ledger.void",
@@ -241,6 +241,47 @@ impl Fx {
         (payment, bank)
     }
 
+    /// A second sent payment on the same bank. The first must no longer be live.
+    async fn sent_again(&self, earlier: Uuid, cents: i64) -> Uuid {
+        let now = *self.db.clock.lock().unwrap();
+        let payment = Uuid::new_v4();
+        let mut tx = self.db.state.store.begin(DEFAULT_ORG).await.unwrap();
+        let earlier = store::get_payment(&mut tx, earlier).await.unwrap().unwrap();
+        store::insert_payment(
+            &mut tx,
+            DEFAULT_ORG,
+            &NewPayment {
+                id: payment,
+                bill_id: earlier.bill_id,
+                connection_id: earlier.connection_id,
+                payee_id: earlier.payee_id,
+                amount_cents: cents,
+                method: "ach",
+                idempotency_key: &payment.to_string(),
+                created_at: now,
+                created_by: "ada",
+            },
+        )
+        .await
+        .unwrap();
+        store::update_payment(
+            &mut tx,
+            payment,
+            &PaymentUpdate {
+                status: "sent",
+                request_id: None,
+                transaction_id: Some("txn-2"),
+                failure: None,
+                link: None,
+            },
+            now,
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        payment
+    }
+
     async fn map_bank(&self, bank: Uuid, account: &str) {
         let mut tx = self.db.state.store.begin(DEFAULT_ORG).await.unwrap();
         store::set_ledger_bank_map(
@@ -311,7 +352,13 @@ async fn replay_returns_the_first_id_and_a_change_conflicts() {
         .await
         .unwrap();
     tx.commit().await.unwrap();
-    assert_eq!(code(fx.post(bill).await.unwrap_err()), "conflict");
+    match fx.post(bill).await.unwrap_err() {
+        CommandError::Ledger { code, detail } => {
+            assert_eq!(code, "conflict");
+            assert_eq!(detail, "This changed after it was posted");
+        }
+        other => panic!("expected a conflict, got {other}"),
+    }
     assert_eq!(fx.fake.calls().len(), 1);
     let link = fx.link("bill", bill).await;
     assert_eq!(link.status, "posted");
@@ -482,8 +529,17 @@ async fn void_unpaid_and_void_paid_payment_first() {
     let Some(fx) = Fx::usd().await else { return };
     let bill = fx.invoice("1001").await;
     fx.post(bill).await.unwrap();
+    let bare = commit(
+        &fx.db.state,
+        &person("ada"),
+        "ledger.void",
+        json!({ "bill_id": bill }),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(bare, CommandError::NeedsConfirmation(_)), "{bare}");
     let voided = fx.void(bill).await.unwrap();
-    assert_eq!(voided["result"]["payment_voided"], json!(false));
+    assert_eq!(voided["result"]["payments_voided"], json!(0));
     assert_eq!(
         fx.fake.calls(),
         vec![
@@ -492,6 +548,17 @@ async fn void_unpaid_and_void_paid_payment_first() {
         ]
     );
     assert_eq!(fx.link("bill", bill).await.status, "voided");
+
+    let other = fx.invoice("1001b").await;
+    fx.post(other).await.unwrap();
+    fx.fake.script_err(LedgerError::new(
+        Code::Conflict,
+        "the ledger refused the void",
+    ));
+    assert_eq!(code(fx.void(other).await.unwrap_err()), "conflict");
+    let refused = fx.link("bill", other).await;
+    assert_eq!(refused.status, "posted");
+    assert_eq!(refused.error_code.as_deref(), Some("conflict"));
     fx.db.drop().await;
 
     let Some(fx) = Fx::usd().await else { return };
@@ -502,7 +569,7 @@ async fn void_unpaid_and_void_paid_payment_first() {
     let posted = fx.post_payment(payment).await.unwrap();
     assert_eq!(posted["result"]["external_id"], "fake-payment-1");
     let voided = fx.void(bill).await.unwrap();
-    assert_eq!(voided["result"]["payment_voided"], json!(true));
+    assert_eq!(voided["result"]["payments_voided"], json!(1));
     assert_eq!(
         fx.fake.calls(),
         vec![
@@ -541,6 +608,159 @@ async fn void_unpaid_and_void_paid_payment_first() {
 }
 
 #[tokio::test]
+async fn void_reverses_a_returned_payment_and_the_later_one() {
+    let Some(fx) = Fx::usd().await else { return };
+    let bill = fx.invoice("1001").await;
+    fx.post(bill).await.unwrap();
+    let (first, bank_a) = fx.sent_payment(bill, 10_000).await;
+    fx.map_bank(bank_a, "77").await;
+    fx.post_payment(first).await.unwrap();
+    let now = *fx.db.clock.lock().unwrap();
+    let mut tx = fx.db.state.store.begin(DEFAULT_ORG).await.unwrap();
+    store::update_payment(
+        &mut tx,
+        first,
+        &PaymentUpdate {
+            status: "returned",
+            request_id: None,
+            transaction_id: None,
+            failure: Some("returned by the bank"),
+            link: None,
+        },
+        now,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let second = fx.sent_again(first, 10_000).await;
+    fx.post_payment(second).await.unwrap();
+    let preview = commands::run(
+        &fx.db.state,
+        &person("ada"),
+        "ledger.void",
+        json!({ "bill_id": bill }),
+        Mode::Preview,
+    )
+    .await
+    .unwrap();
+    assert_eq!(preview["result"]["payments_to_void"], json!(2));
+    let voided = fx.void(bill).await.unwrap();
+    assert_eq!(voided["result"]["payments_voided"], json!(2));
+    assert_eq!(
+        fx.fake.calls(),
+        vec![
+            format!("post_bill {}", payvy_ledger::bill_key(bill)),
+            format!("post_payment {}", payvy_ledger::payment_key(first)),
+            format!("post_payment {}", payvy_ledger::payment_key(second)),
+            "void_payment fake-payment-1".to_string(),
+            "void_payment fake-payment-2".to_string(),
+            "void_bill fake-bill-1".to_string(),
+        ]
+    );
+    assert_eq!(fx.link("payment", first).await.status, "voided");
+    assert_eq!(fx.link("payment", second).await.status, "voided");
+    fx.db.drop().await;
+}
+
+#[tokio::test]
+async fn a_later_transaction_id_still_replays() {
+    let Some(fx) = Fx::usd().await else { return };
+    let bill = fx.invoice("1001").await;
+    fx.post(bill).await.unwrap();
+    let (payment, bank) = fx.sent_payment(bill, 10_000).await;
+    fx.map_bank(bank, "77").await;
+    let posted = fx.post_payment(payment).await.unwrap();
+    assert_eq!(posted["result"]["replay"], json!(false));
+    let now = *fx.db.clock.lock().unwrap();
+    let mut tx = fx.db.state.store.begin(DEFAULT_ORG).await.unwrap();
+    store::update_payment(
+        &mut tx,
+        payment,
+        &PaymentUpdate {
+            status: "sent",
+            request_id: None,
+            transaction_id: Some("txn-later"),
+            failure: None,
+            link: None,
+        },
+        now,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let again = fx.post_payment(payment).await.unwrap();
+    assert_eq!(again["result"]["replay"], json!(true));
+    assert_eq!(
+        again["result"]["external_id"],
+        posted["result"]["external_id"]
+    );
+    assert_eq!(fx.fake.calls().len(), 2);
+    fx.db.drop().await;
+}
+
+#[tokio::test]
+async fn a_closed_period_after_posting_still_replays() {
+    let Some(fx) = Fx::usd().await else { return };
+    let bill = fx.invoice("1001").await;
+    let first = fx.post(bill).await.unwrap();
+    close_january(&fx).await;
+    let again = fx.post(bill).await.unwrap();
+    assert_eq!(again["result"]["replay"], json!(true));
+    assert_eq!(
+        again["result"]["external_id"],
+        first["result"]["external_id"]
+    );
+    assert_eq!(fx.fake.calls().len(), 1);
+    fx.db.drop().await;
+}
+
+#[tokio::test]
+async fn a_payment_in_a_closed_period_is_not_ready() {
+    let Some(fx) = Fx::usd().await else { return };
+    let bill = fx.invoice("1001").await;
+    fx.post(bill).await.unwrap();
+    let (payment, bank) = fx.sent_payment(bill, 10_000).await;
+    fx.map_bank(bank, "77").await;
+    close_january(&fx).await;
+    let preview = commands::run(
+        &fx.db.state,
+        &person("ada"),
+        "ledger.post_payment",
+        json!({ "payment_id": payment }),
+        Mode::Preview,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(code(preview), "period_closed");
+    assert_eq!(
+        code(fx.post_payment(payment).await.unwrap_err()),
+        "period_closed"
+    );
+    assert_eq!(fx.fake.calls().len(), 1);
+    fx.db.drop().await;
+}
+
+async fn close_january(fx: &Fx) {
+    let mut tx = fx.db.state.store.begin(DEFAULT_ORG).await.unwrap();
+    store::insert_ledger_record(
+        &mut tx,
+        DEFAULT_ORG,
+        &NewLedgerRecord {
+            connection_id: fx.connection,
+            kind: "period",
+            external_id: "2027-01",
+            name: "Jan 2027",
+            parent_external_id: None,
+            inactive: false,
+            detail: &json!({ "start": "2027-01-01", "end": "2027-01-31", "closed": true }),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+}
+
+#[tokio::test]
 async fn a_sealed_token_is_what_the_database_holds() {
     let Some(fx) = Fx::usd().await else { return };
     let logs = Arc::new(Mutex::new(Vec::<u8>::new()));
@@ -560,6 +780,12 @@ async fn a_sealed_token_is_what_the_database_holds() {
         .unwrap()
         .unwrap();
     assert!(!String::from_utf8_lossy(&connection.token_sealed).contains(SECRET));
+    let rendered = format!("{connection:?}");
+    assert!(
+        rendered.contains("token_sealed: \"[sealed]\""),
+        "{rendered}"
+    );
+    assert!(!rendered.contains(SECRET), "{rendered}");
     let events = store::list_events(&mut tx, None, 50).await.unwrap();
     let event_text = serde_json::to_string(&events).unwrap();
     assert!(!event_text.contains(SECRET), "{event_text}");
