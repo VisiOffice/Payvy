@@ -252,6 +252,8 @@ button.payvy-wf-node:hover { background: rgb(127 127 127 / 0.06); }
   padding: 36px 40px 64px;
 }
 .payvy-page-narrow { max-width: 880px; }
+/* Long lists use the whole width; the text columns take the extra, numbers stay put. */
+.payvy-page-wide { max-width: none; }
 @media (max-width: 640px) {
   .payvy-page { padding: 20px 16px 48px; }
 }

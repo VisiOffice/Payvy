@@ -37,7 +37,7 @@ export function Bills({ mine = false }: { mine?: boolean }) {
     return list;
   }, [rows, search, status, sort]);
 
-  return <Page title={mine ? 'Waiting on you' : 'All bills'} eyebrow="Accounts payable"
+  return <Page wide title={mine ? 'Waiting on you' : 'All bills'} eyebrow="Accounts payable"
     description="Every invoice, from arrival to payment."
     actions={<Button label="Add invoices" href="/inbox" variant="primary" size="sm" />}>
     <div className="payvy-toolbar">

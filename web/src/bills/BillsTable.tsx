@@ -1,7 +1,7 @@
 // A table of bills, for All bills and a vendor's page.
 import { Badge } from '@astryxdesign/core/Badge';
 import { Link } from '@astryxdesign/core/Link';
-import { Table, type TableColumn } from '@astryxdesign/core/Table';
+import { Table, pixel, proportional, type TableColumn } from '@astryxdesign/core/Table';
 import { Text } from '@astryxdesign/core/Text';
 import { DueText } from '../Due';
 import { date, money } from '../money';
@@ -45,9 +45,10 @@ export function statusOf(l: Listed): string {
 
 
 const COLUMNS: TableColumn<BillRow>[] = [
-  { key: 'vendor', header: 'Vendor', renderCell: (row) => <Link href={`/bills/${row.id}`}>{row.vendor}</Link> },
+  { key: 'vendor', header: 'Vendor', width: proportional(3), renderCell: (row) => <Link href={`/bills/${row.id}`}>{row.vendor}</Link> },
   {
     key: 'invoice',
+    width: proportional(2),
     header: 'Invoice',
     renderCell: (row) => (
       <>
@@ -60,6 +61,7 @@ const COLUMNS: TableColumn<BillRow>[] = [
   {
     key: 'due',
     header: 'Due',
+    width: pixel(200),
     renderCell: (row) =>
       row.due ? (
         <>
@@ -72,6 +74,7 @@ const COLUMNS: TableColumn<BillRow>[] = [
   {
     key: 'amount',
     header: 'Amount',
+    width: pixel(140),
     align: 'end',
     renderCell: (row) => (
       <Text weight="semibold" hasTabularNumbers>
@@ -82,6 +85,7 @@ const COLUMNS: TableColumn<BillRow>[] = [
   {
     key: 'status',
     header: 'Status',
+    width: pixel(170),
     renderCell: (row) => {
       const s = billStatus(row.status);
       return <Badge label={s.label} variant={s.variant} />;

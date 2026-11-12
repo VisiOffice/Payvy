@@ -208,7 +208,7 @@ export function Documents() {
   const q = search.trim().toLocaleLowerCase();
   const visible = docs?.filter(d => !q || [d.filename, d.reading?.vendor.name, d.reading?.vendor.printed, ...(d.reading?.invoice_numbers ?? [])]
     .some(v => v?.toLocaleLowerCase().includes(q)));
-  return <Page title="Inbox" eyebrow="Invoice intake" description="Every invoice that arrives, with what was read from it. Review the details, then create a bill.">
+  return <Page wide title="Inbox" eyebrow="Invoice intake" description="Every invoice that arrives, with what was read from it. Review the details, then create a bill.">
     <div className="payvy-documents-toolbar">
       <div className="payvy-documents-switches">
         {!board && <div className="payvy-view-switch">

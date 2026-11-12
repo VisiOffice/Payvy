@@ -8,7 +8,7 @@ import { HStack } from '@astryxdesign/core/HStack';
 import { Link } from '@astryxdesign/core/Link';
 import { Selector } from '@astryxdesign/core/Selector';
 import { Spinner } from '@astryxdesign/core/Spinner';
-import { Table, type TableColumn } from '@astryxdesign/core/Table';
+import { Table, pixel, proportional, type TableColumn } from '@astryxdesign/core/Table';
 import { Text } from '@astryxdesign/core/Text';
 import { TextInput } from '@astryxdesign/core/TextInput';
 import { useToast } from '@astryxdesign/core/Toast';
@@ -52,10 +52,10 @@ const STATUS_BADGE: Record<PurchaseOrder['status'], { label: string; variant: 's
 };
 
 const columns: TableColumn<PurchaseOrder>[] = [
-  { key: 'po_number', header: 'PO', renderCell: (r) => <Text weight="semibold">{r.po_number}</Text> },
-  { key: 'vendor_name', header: 'Vendor', renderCell: (r) => <Link href={`/vendors/${r.vendor_id}`}>{r.vendor_name}</Link> },
+  { key: 'po_number', header: 'PO', width: proportional(1), renderCell: (r) => <Text weight="semibold">{r.po_number}</Text> },
+  { key: 'vendor_name', header: 'Vendor', width: proportional(2), renderCell: (r) => <Link href={`/vendors/${r.vendor_id}`}>{r.vendor_name}</Link> },
   {
-    key: 'status', header: 'Status',
+    key: 'status', header: 'Status', width: proportional(2),
     renderCell: (r) => (
       <HStack gap={2} vAlign="center">
         <Badge label={STATUS_BADGE[r.status].label} variant={STATUS_BADGE[r.status].variant} />
@@ -63,11 +63,11 @@ const columns: TableColumn<PurchaseOrder>[] = [
       </HStack>
     ),
   },
-  { key: 'authorized', header: 'Authorized', align: 'end', renderCell: (r) => money(r.amounts.authorized_cents) },
-  { key: 'reserved', header: 'Reserved', align: 'end', renderCell: (r) => money(r.amounts.reserved_cents) },
-  { key: 'consumed', header: 'Consumed', align: 'end', renderCell: (r) => money(r.amounts.consumed_cents) },
+  { key: 'authorized', header: 'Authorized', align: 'end', width: pixel(130), renderCell: (r) => money(r.amounts.authorized_cents) },
+  { key: 'reserved', header: 'Reserved', align: 'end', width: pixel(130), renderCell: (r) => money(r.amounts.reserved_cents) },
+  { key: 'consumed', header: 'Consumed', align: 'end', width: pixel(130), renderCell: (r) => money(r.amounts.consumed_cents) },
   {
-    key: 'available', header: 'Available', align: 'end',
+    key: 'available', header: 'Available', align: 'end', width: pixel(130),
     // A closed or canceled PO takes no more bills; the server reports 0.
     renderCell: (r) => (r.status === 'closed' || r.status === 'canceled' ? <Text type="supporting">None</Text> : money(r.amounts.available_cents)),
   },
@@ -150,6 +150,7 @@ function PurchaseOrderList() {
 
   return (
     <Page
+      wide
       title="Purchase orders"
       description="What each vendor is authorized to bill, what's reserved and consumed against it, and what's left."
       actions={pos && <Button label="New purchase order" variant="primary" onClick={() => setCreating(true)} />}

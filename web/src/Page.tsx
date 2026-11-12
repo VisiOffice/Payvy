@@ -1,5 +1,5 @@
-// The frame every list and detail page sits in: a readable width, the title,
-// and a line saying what the page is for.
+// The frame every list and detail page sits in: a readable width (or the whole
+// width, for long lists), the title, and a line saying what the page is for.
 import type { ReactNode } from 'react';
 import { Heading } from '@astryxdesign/core/Heading';
 import { HStack } from '@astryxdesign/core/HStack';
@@ -13,6 +13,7 @@ export function Page({
   above,
   actions,
   narrow,
+  wide,
   children,
 }: {
   title: ReactNode;
@@ -24,10 +25,12 @@ export function Page({
   actions?: ReactNode;
   /** For pages of cards rather than tables. */
   narrow?: boolean;
+  /** For long lists: the page uses the whole width, and the text columns take what's added. */
+  wide?: boolean;
   children?: ReactNode;
 }) {
   return (
-    <div className={narrow ? 'payvy-page payvy-page-narrow' : 'payvy-page'}>
+    <div className={narrow ? 'payvy-page payvy-page-narrow' : wide ? 'payvy-page payvy-page-wide' : 'payvy-page'}>
       <VStack gap={6}>
         <VStack gap={2} className="payvy-page-heading">
           {above}
