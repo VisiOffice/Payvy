@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode, type SVGProps } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode, type SVGProps } from 'react';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
 import { Icon } from '@astryxdesign/core/Icon';
@@ -284,7 +284,9 @@ export function DocumentViewer({
   lastIndex.current = index;
   const onCurrentChange = paging?.onCurrentChange;
   const currentPage = paging ? shown[index]?.ref.page : undefined;
-  useEffect(() => {
+  // In a layout effect, like the keys below: a key pressed right after the
+  // first paint must not be undone by this telling the parent page 1.
+  useLayoutEffect(() => {
     if (paging && currentPage !== undefined && currentPage !== paging.current) onCurrentChange?.(currentPage);
   }, [paging, currentPage, onCurrentChange]);
   const visible = useMemo(() => (paging ? shown.slice(index, index + 1) : shown), [paging, shown, index]);
@@ -350,8 +352,17 @@ export function DocumentViewer({
   }, [isPaging, currentPage]);
 
   // ← → and J K move through the pages, unless the key is for something else.
+  // The listener is attached in a layout effect, so it is there as soon as
+  // Previous, Next and the counter are on screen (a passive effect can run
+  // after the paint, dropping a key pressed in between). It reads the page
+  // through a ref, which each turn advances at once, so a second key before
+  // the next render turns from the new page, not the old one again.
   const paged = !!paging && shown.length > 1;
-  useEffect(() => {
+  const turn = useRef({ index, go, count: shown.length });
+  useLayoutEffect(() => {
+    turn.current = { index, go, count: shown.length };
+  }, [index, go, shown.length]);
+  useLayoutEffect(() => {
     if (!paged) return;
     const onKey = (e: KeyboardEvent) => {
       const dir = e.key === 'ArrowRight' || e.key === 'j' ? 1 : e.key === 'ArrowLeft' || e.key === 'k' ? -1 : 0;
@@ -359,11 +370,15 @@ export function DocumentViewer({
       // Not while the viewer is out of sight (the details tab on a phone).
       if (!scroller.current || scroller.current.getClientRects().length === 0) return;
       e.preventDefault();
-      go(index + dir);
+      const { index: from, go: to, count } = turn.current;
+      const next = Math.max(0, Math.min(count - 1, from + dir));
+      if (next === from) return;
+      turn.current = { ...turn.current, index: next };
+      to(next);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [paged, go, index]);
+  }, [paged]);
 
   // A swipe across a page that fits turns it, on a touch screen.
   const swipe = useRef<{ x: number; y: number } | null>(null);

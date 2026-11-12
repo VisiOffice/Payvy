@@ -137,6 +137,27 @@ test('one page at a time, turned with the buttons, arrows and J K', async ({ pag
   expect(await currentPage(page)).toBe(4);
 });
 
+test('a key pressed the moment the pages show is not lost', async ({ page }) => {
+  const doc = await manyPages(`first-key-${Date.now()}`, 8);
+  // Press J as soon as the counter is in the DOM: a MutationObserver runs
+  // before React's passive effects, as a fast input event can. The keys must
+  // already be listened for, and nothing may turn the viewer back to page 1.
+  await page.addInitScript(() => {
+    let pressed = false;
+    new MutationObserver(() => {
+      if (pressed) return;
+      const shown = [...document.querySelectorAll('.payvy-viewer-counter')].some((e) => e.textContent === 'Page 1 of 8');
+      if (!shown) return;
+      pressed = true;
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'j', bubbles: true, cancelable: true }));
+    }).observe(document, { subtree: true, childList: true, characterData: true });
+  });
+  await page.setViewportSize({ width: 1497, height: 1029 });
+  await page.goto(`/inbox/${doc}`);
+  await expect(counter(page)).toHaveText('Page 2 of 8');
+  expect(await currentPage(page)).toBe(2);
+});
+
 test('on a phone the original turns with Previous and Next, without side scroll', async ({ page }, info) => {
   const doc = await manyPages(`phone-${Date.now()}`, 5);
   await page.setViewportSize({ width: 390, height: 844 });
