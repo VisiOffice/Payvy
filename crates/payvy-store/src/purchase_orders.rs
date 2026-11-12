@@ -649,24 +649,38 @@ pub async fn set_policy(
         .ok_or_else(|| anyhow::anyhow!("the policy version just written is missing"))
 }
 
-/// Lines of every bill with a live (not released) allocation to this PO,
-/// grouped by bill in allocation order: the cumulative billed quantities
-/// quantity matching counts.
-pub async fn allocated_bill_lines(
-    tx: &mut Tx,
-    po_id: Uuid,
-) -> anyhow::Result<Vec<(Uuid, Vec<payvy_domain::bills::Line>)>> {
+/// One bill's stake in a PO: when it first allocated, how much of the
+/// bill this PO carries (the split share), and its lines.
+#[derive(Debug, Clone)]
+pub struct AllocatedBill {
+    pub bill_id: Uuid,
+    pub first_seq: i64,
+    pub allocated_cents: Cents,
+    pub bill_amount_cents: Cents,
+    pub lines: Vec<payvy_domain::bills::Line>,
+}
+
+/// Every bill with a live (not released) allocation to this PO, once each
+/// (a bill may hold several allocations), in first-allocation order.
+pub async fn allocated_bill_lines(tx: &mut Tx, po_id: Uuid) -> anyhow::Result<Vec<AllocatedBill>> {
     let rows = sqlx::query(
-        "SELECT a.bill_id AS bill_id, bl.description, bl.amount_cents, bl.account, \
-         bl.quantity_micro, bl.unit, bl.unit_price_cents \
-         FROM po_allocations a JOIN bill_lines bl ON bl.bill_id = a.bill_id \
-         WHERE a.po_id = $1 AND a.state <> 'released' AND a.bill_id IS NOT NULL \
-         ORDER BY a.created_at, a.id, bl.position",
+        "WITH per_bill AS (\
+             SELECT bill_id, min(seq) AS first_seq, sum(amount_cents)::bigint AS allocated \
+             FROM po_allocations \
+             WHERE po_id = $1 AND state <> 'released' AND bill_id IS NOT NULL \
+             GROUP BY bill_id) \
+         SELECT pb.bill_id AS bill_id, pb.first_seq AS first_seq, pb.allocated AS allocated, \
+                b.amount_cents AS bill_amount, bl.description, bl.amount_cents, bl.account, \
+                bl.quantity_micro, bl.unit, bl.unit_price_cents \
+         FROM per_bill pb \
+         JOIN bills b ON b.id = pb.bill_id \
+         JOIN bill_lines bl ON bl.bill_id = pb.bill_id \
+         ORDER BY pb.first_seq, pb.bill_id, bl.position",
     )
     .bind(po_id)
     .fetch_all(&mut **tx)
     .await?;
-    let mut out: Vec<(Uuid, Vec<payvy_domain::bills::Line>)> = Vec::new();
+    let mut out: Vec<AllocatedBill> = Vec::new();
     for r in &rows {
         let bill_id: Uuid = r.get("bill_id");
         let micro: Option<i64> = r.get("quantity_micro");
@@ -678,9 +692,15 @@ pub async fn allocated_bill_lines(
             unit: r.get("unit"),
             unit_price_cents: r.get("unit_price_cents"),
         };
-        match out.iter_mut().find(|(id, _)| *id == bill_id) {
-            Some((_, lines)) => lines.push(line),
-            None => out.push((bill_id, vec![line])),
+        match out.iter_mut().find(|b| b.bill_id == bill_id) {
+            Some(b) => b.lines.push(line),
+            None => out.push(AllocatedBill {
+                bill_id,
+                first_seq: r.get("first_seq"),
+                allocated_cents: r.get("allocated"),
+                bill_amount_cents: r.get("bill_amount"),
+                lines: vec![line],
+            }),
         }
     }
     Ok(out)

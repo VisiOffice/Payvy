@@ -8,6 +8,10 @@ ALTER TABLE bill_lines ADD COLUMN quantity_micro bigint;
 ALTER TABLE bill_lines ADD COLUMN unit text;
 ALTER TABLE bill_lines ADD COLUMN unit_price_cents bigint;
 
+-- "Bills allocated before this one" needs an allocation order that
+-- timestamps can't give (two allocations can share one); a sequence can.
+ALTER TABLE po_allocations ADD COLUMN seq bigint GENERATED ALWAYS AS IDENTITY;
+
 -- The registry's second policy: quantity_matching is flag_only (findings
 -- show beside the bill, never block) or enforce (quantity_over and
 -- rate_mismatch block payment like other exceptions). Existing versions

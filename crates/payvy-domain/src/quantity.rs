@@ -73,20 +73,18 @@ fn unit_key(unit: &Option<String>) -> Option<String> {
 /// `ambiguous` when more than one line fits equally.
 fn matches<'a>(ordered: &'a [OrderedLine], line: &Line) -> Option<Option<&'a OrderedLine>> {
     let key = invoice_key(&line.description);
-    let mut candidates: Vec<&OrderedLine> = ordered
+    // The unit must agree when both sides state one: a bill line in
+    // "each" never silently matches a PO line in "load". A PO line that
+    // states no unit matches any unit.
+    let candidates: Vec<&OrderedLine> = ordered
         .iter()
         .filter(|o| invoice_key(&o.description) == key)
+        .filter(|o| {
+            unit_key(&line.unit).is_none()
+                || unit_key(&o.unit).is_none()
+                || unit_key(&o.unit) == unit_key(&line.unit)
+        })
         .collect();
-    if line.unit.is_some() {
-        let with_unit: Vec<&OrderedLine> = candidates
-            .iter()
-            .copied()
-            .filter(|o| unit_key(&o.unit) == unit_key(&line.unit))
-            .collect();
-        if !with_unit.is_empty() {
-            candidates = with_unit;
-        }
-    }
     match candidates.len() {
         0 => None,
         1 => Some(Some(candidates[0])),
@@ -96,6 +94,21 @@ fn matches<'a>(ordered: &'a [OrderedLine], line: &Line) -> Option<Option<&'a Ord
 
 fn quantity_of(line: &Line) -> Option<i64> {
     line.quantity.as_deref().and_then(quantity_micro)
+}
+
+/// A bill line's quantity scaled by a share (allocated ÷ bill amount),
+/// for a bill split across several POs: only the share of its quantity
+/// that this PO is paying for counts against this PO. Exact micro-unit
+/// arithmetic; a line without a quantity passes through unchanged.
+pub fn scaled(line: &Line, share_numerator: i64, share_denominator: i64) -> Line {
+    let mut out = line.clone();
+    if share_denominator > 0
+        && let Some(q) = quantity_of(line)
+    {
+        let scaled = (q as i128 * share_numerator as i128 / share_denominator as i128) as i64;
+        out.quantity = Some(crate::invoice_evidence::format_micro(scaled));
+    }
+    out
 }
 
 /// What one bill's lines raise against one PO: cumulative quantity over

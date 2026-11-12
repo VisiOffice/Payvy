@@ -167,8 +167,37 @@ async fn quantities_flag_by_default_and_block_under_an_enforcing_policy() {
     .unwrap();
 
     // A rate one cent over the PO rate blocks, and an override permits it.
-    let b3 = bill_with_lines(&db, &v, "Q-3", haul("1", 10_001, 10_001), 10_001).await;
-    allocate(&db, &b3, &po, 10_001).await;
+    // Its own PO line, so quantity (already over on Haul) can't interfere.
+    let created = commit(
+        &db.state,
+        &agent("claude-ap"),
+        "po.create",
+        json!({ "vendor_id": v, "po_number": "PO-RATE", "owner": "robert",
+                "authorized_cents": 100_000,
+                "lines": [{ "description": "Disposal", "quantity": 10, "unit": "load",
+                            "unit_price_cents": 5_000, "amount_cents": 50_000 }] }),
+    )
+    .await
+    .unwrap();
+    let po_rate = created["result"]["id"].as_str().unwrap().to_owned();
+    commit(
+        &db.state,
+        &robert,
+        "po.activate",
+        json!({ "po_id": po_rate }),
+    )
+    .await
+    .unwrap();
+    let b3 = bill_with_lines(
+        &db,
+        &v,
+        "Q-3",
+        json!([{ "description": "Disposal", "amount_cents": 5_001,
+                  "quantity": "1", "unit": "load", "unit_price_cents": 5_001 }]),
+        5_001,
+    )
+    .await;
+    allocate(&db, &b3, &po_rate, 5_001).await;
     let got = get_bill(&db, &b3).await;
     assert_eq!(got["purchase_orders"]["exception"]["kind"], "rate_mismatch");
     let e = confirm(&db.state, &robert, "bill.release", json!({ "bill_id": b3 }))
@@ -236,5 +265,189 @@ async fn a_bad_quantity_is_refused_at_entry_and_amount_only_lines_are_untouched(
     .await
     .unwrap_err();
     assert!(matches!(e, CommandError::Invalid(_)), "{e}");
+    db.drop().await;
+}
+
+#[tokio::test]
+async fn prior_means_allocated_before_and_a_bill_counts_once_however_many_allocations() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    po_on(&db).await;
+    let v = gated_vendor(&db).await;
+    let po = haul_po(&db, &v).await;
+
+    // Bill A allocates twice (10k + 10k) for its 2 loads; bill B follows.
+    let a = bill_with_lines(&db, &v, "D-1", haul("2", 10_000, 20_000), 20_000).await;
+    allocate(&db, &a, &po, 10_000).await;
+    allocate(&db, &a, &po, 10_000).await;
+    let b = bill_with_lines(&db, &v, "D-2", haul("2", 10_000, 20_000), 20_000).await;
+    allocate(&db, &b, &po, 20_000).await;
+
+    // A counts once (2, not 4), and B, allocated later, is not A's prior.
+    let got = get_bill(&db, &a).await;
+    assert_eq!(got["purchase_orders"]["quantity_lines"][0]["billed"], "2");
+    assert!(
+        got["purchase_orders"]["quantity_findings"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "{got}"
+    );
+    // B sees A before it: 2 + 2 over the ordered 3.
+    let got = get_bill(&db, &b).await;
+    assert_eq!(
+        got["purchase_orders"]["quantity_findings"][0]["kind"],
+        "quantity_over"
+    );
+    db.drop().await;
+}
+
+#[tokio::test]
+async fn a_unit_that_disagrees_never_matches_and_a_split_bill_counts_its_share_per_po() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    po_on(&db).await;
+    let robert = person("robert");
+    let v = gated_vendor(&db).await;
+    let po = haul_po(&db, &v).await;
+
+    // Same description, wrong unit: an identification finding, no match.
+    let wrong = bill_with_lines(
+        &db,
+        &v,
+        "U-1",
+        json!([{ "description": "Haul", "amount_cents": 10_000,
+                  "quantity": "1", "unit": "each", "unit_price_cents": 10_000 }]),
+        10_000,
+    )
+    .await;
+    allocate(&db, &wrong, &po, 10_000).await;
+    let got = get_bill(&db, &wrong).await;
+    assert_eq!(
+        got["purchase_orders"]["quantity_findings"][0]["kind"],
+        "unmatched_line"
+    );
+
+    // A second PO for the same work; one bill of 4 loads split across both
+    // counts 2 against each, not 4.
+    let created = commit(
+        &db.state,
+        &agent("claude-ap"),
+        "po.create",
+        json!({ "vendor_id": v, "po_number": "PO-QTY-2", "owner": "robert",
+                "authorized_cents": 100_000,
+                "lines": [{ "description": "Haul", "quantity": 3, "unit": "load",
+                            "unit_price_cents": 10_000, "amount_cents": 30_000 }] }),
+    )
+    .await
+    .unwrap();
+    let po2 = created["result"]["id"].as_str().unwrap().to_owned();
+    commit(&db.state, &robert, "po.activate", json!({ "po_id": po2 }))
+        .await
+        .unwrap();
+    let split = bill_with_lines(&db, &v, "U-2", haul("4", 10_000, 40_000), 40_000).await;
+    confirm(
+        &db.state,
+        &robert,
+        "po.match_apply",
+        json!({ "bill_id": split, "allocations": [
+            { "po_id": po, "amount_cents": 20_000 },
+            { "po_id": po2, "amount_cents": 20_000 }] }),
+    )
+    .await
+    .unwrap();
+    let got = get_bill(&db, &split).await;
+    assert!(
+        got["purchase_orders"]["quantity_findings"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "{got}"
+    );
+    let rows = got["purchase_orders"]["quantity_lines"].as_array().unwrap();
+    assert!(rows.iter().all(|r| r["billed"] == "2"), "{rows:?}");
+    db.drop().await;
+}
+
+#[tokio::test]
+async fn an_override_binds_to_the_finding_it_permitted_and_quantity_never_hides_funding() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    po_on(&db).await;
+    let robert = person("robert");
+    let v = gated_vendor(&db).await;
+    commit(
+        &db.state,
+        &robert,
+        "po.policy_set",
+        json!({ "vendor_id": v, "quantity_matching": "enforce" }),
+    )
+    .await
+    .unwrap();
+    let po = haul_po(&db, &v).await;
+
+    // A rate-mismatch override permits that finding…
+    let b = bill_with_lines(&db, &v, "S-1", haul("1", 10_001, 10_001), 10_001).await;
+    allocate(&db, &b, &po, 10_001).await;
+    confirm(
+        &db.state,
+        &robert,
+        "po.override",
+        json!({ "bill_id": b, "authorized_excess_cents": 0, "reason": "rate agreed" }),
+    )
+    .await
+    .unwrap();
+    let got = get_bill(&db, &b).await;
+    assert_eq!(got["purchase_orders"]["overridden"], true, "{got}");
+
+    // …but when the vendor sends a revised copy at yet another rate and a
+    // person accepts it, the finding is a different one and the override
+    // no longer counts.
+    let rev = commit(
+        &db.state,
+        &agent("claude-ap"),
+        "bill.create",
+        json!({ "vendor_id": v, "invoice_number": "S-1", "invoice_date": "2027-01-15",
+                "amount_cents": 10_002, "lines": haul("1", 10_002, 10_002) }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(rev["result"]["arrival"]["kind"], "revision");
+    commit(
+        &db.state,
+        &robert,
+        "bill.revision_accept",
+        json!({ "bill_id": b }),
+    )
+    .await
+    .unwrap();
+    allocate(&db, &b, &po, 1).await;
+    let got = get_bill(&db, &b).await;
+    assert_eq!(got["purchase_orders"]["exception"]["kind"], "rate_mismatch");
+    assert_eq!(got["purchase_orders"]["overridden"], false, "{got}");
+    let e = confirm(&db.state, &robert, "bill.release", json!({ "bill_id": b }))
+        .await
+        .unwrap_err();
+    assert!(e.to_string().contains("rate_mismatch"), "{e}");
+
+    // And a bill failing both funding and quantity reports funding first.
+    commit(
+        &db.state,
+        &robert,
+        "po.set_vendor_settings",
+        json!({ "vendor_id": v, "require_po": true, "require_funding": true }),
+    )
+    .await
+    .unwrap();
+    let b2 = bill_with_lines(&db, &v, "S-2", haul("8", 10_000, 80_000), 80_000).await;
+    allocate(&db, &b2, &po, 80_000).await;
+    let got = get_bill(&db, &b2).await;
+    assert_eq!(
+        got["purchase_orders"]["exception"]["kind"], "funding_not_verified",
+        "{got}"
+    );
     db.drop().await;
 }

@@ -508,6 +508,15 @@ function PoPanel({ billId, po, onChange }: {
       {po.notices.map((n, i) => (
         <Banner key={i} status="info" title={`Flagged: ${n.kind.replaceAll('_', ' ')}`} description={n.detail} />
       ))}
+      {po.policy.quantity_matching === 'enforce' &&
+        po.quantity_findings.map((f, i) => (
+          <Banner
+            key={i}
+            status={f.kind === 'quantity_over' || f.kind === 'rate_mismatch' ? 'warning' : 'info'}
+            title={`${f.kind.replaceAll('_', ' ')} · ${f.po_number}`}
+            description={f.detail}
+          />
+        ))}
       {po.quantity_lines.length > 0 && (
         <VStack gap={1}>
           <Text weight="semibold">Quantities</Text>

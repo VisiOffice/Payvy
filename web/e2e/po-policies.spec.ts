@@ -84,6 +84,25 @@ test('quantities show ordered, billed and remaining on the bill', async ({ page 
     await page.goto(`/bills/${b.bill.id}`);
     await expect(page.getByText('Quantities')).toBeVisible();
     await expect(page.getByText(/2 of 3 load billed · 1 left/)).toBeVisible();
+
+    // Under an enforcing policy the finding itself renders on the bill.
+    await command(page, 'po.policy_set', { vendor_id: v, quantity_matching: 'enforce' });
+    const over = await agent<{ bill: { id: string } }>('bill.create', {
+      vendor_id: v, invoice_number: 'QTY-2', invoice_date: '2027-01-15', amount_cents: 20_000,
+      lines: [{ description: 'Haul', amount_cents: 20_000, quantity: '2', unit: 'load', unit_price_cents: 10_000 }],
+    });
+    const preview2 = await page.request.post('/api/commands/po.match_apply', {
+      headers: { 'x-payvy-client': 'web' },
+      data: { mode: 'preview', input: { bill_id: over.bill.id, allocations: [{ po_id: created.id, amount_cents: 20_000 }] } },
+    });
+    const token2 = (await preview2.json()).confirm_token as string;
+    await page.request.post('/api/commands/po.match_apply', {
+      headers: { 'x-payvy-client': 'web' },
+      data: { mode: 'commit', confirm_token: token2, input: { bill_id: over.bill.id, allocations: [{ po_id: created.id, amount_cents: 20_000 }] } },
+    });
+    await page.goto(`/bills/${over.bill.id}`);
+    await expect(page.getByText(/quantity over · PO-QTY-1/)).toBeVisible();
+    await expect(page.getByText(/Can't be paid yet: quantity over/)).toBeVisible();
   } finally {
     await page.goto('/settings/purchase-orders');
     if (await toggle.isChecked()) await toggle.click();
