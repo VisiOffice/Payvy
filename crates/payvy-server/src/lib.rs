@@ -5,6 +5,7 @@ pub mod confirm;
 pub mod eval;
 pub mod extract_worker;
 pub mod inbound;
+pub mod ledger_worker;
 pub mod mailer;
 pub mod mcp;
 pub mod mercury_webhook;

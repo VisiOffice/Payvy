@@ -858,6 +858,30 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     // ── Ledger ──────────────────────────────────────────────────────────────
     CommandSpec {
+        name: "ledger.connect",
+        summary: "Connect VisiBooks for this company (person only): its HTTPS origin, entity id and API key. The key is sealed at once and never read back; reconnecting updates the same connection, so its links stand. Confirmed, because it carries a credential.",
+        tier: RiskTier::Confirmed,
+        person_only: true,
+        permission: Permission::Admin,
+        input_schema: r#"{"type":"object","additionalProperties":false,"required":["origin","entity","api_key"],"properties":{"origin":{"type":"string"},"entity":{"type":"string"},"api_key":{"type":"string"},"post_when":{"type":"string","enum":["approval","payment"]}}}"#,
+    },
+    CommandSpec {
+        name: "ledger.settings",
+        summary: "The company's ledger connection: provider, origin, entity, when it posts (post_when), the AP account and the bank account map. Never the credential. Disconnected companies read connected: false.",
+        tier: RiskTier::Read,
+        person_only: false,
+        permission: Permission::Read,
+        input_schema: r#"{"type":"object","additionalProperties":false,"properties":{}}"#,
+    },
+    CommandSpec {
+        name: "ledger.configure",
+        summary: "Change how the connected ledger posts (person only, confirmed): post_when (approval or payment), the AP account, coding defaults, and the map from Payvy bank connections (or payment methods) to ledger bank accounts. Map keys are validated against the company's bank connections and methods. Asking for what is already set is refused.",
+        tier: RiskTier::Confirmed,
+        person_only: true,
+        permission: Permission::Admin,
+        input_schema: r#"{"type":"object","additionalProperties":false,"properties":{"post_when":{"type":"string","enum":["approval","payment"]},"ap_account_id":{"type":["string","null"]},"defaults":{"type":"object"},"bank_account_map":{"type":"object"}}}"#,
+    },
+    CommandSpec {
         name: "ledger.post_bill",
         summary: "Post one bill to the connected ledger. The same bill posted again returns the first ledger id and sends nothing. A changed bill after posting is a conflict. A rejected or void bill is refused. Preview sends nothing.",
         tier: RiskTier::Routine,

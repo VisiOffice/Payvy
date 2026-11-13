@@ -62,17 +62,49 @@ refuses bill void while payment is active, then voids both twice.
 5. Stop the test server and delete the disposable fixture/database when finished.
    Never use production API keys or bank credentials for this test.
 
+## Phase 1 wiring (this change)
+
+The adapter is now hooked into the app, per company:
+
+- **Settings → Ledger** (`ledger.connect`, person-only Admin, confirmed):
+  origin, entity ID and API key. The key is sealed with
+  `PAYVY_SECRETS_KEY` under purpose `visibooks` and never read back;
+  reconnecting updates the same connection row, so its links stand. The
+  origin is stored on the row (migration `0029_ledger_origin`).
+  `ledger.settings` reads the connection without the credential;
+  `ledger.configure` (Admin) changes `post_when`, the AP account, coding
+  defaults and the bank account map, refusing a no-change request.
+- **Adapter per connection**: a VisiBooks connection builds
+  `VisiBooks::new(origin, entity, unsealed key)` at post time; other
+  providers keep the server-configured adapter (tests use the fake).
+- **post_when**: at `approval`, `bill.approve` posts the bill when its
+  last approval lands; at `payment`, `payments::apply` (bank sent) posts
+  the bill first, then the payment. Failures are recorded on the bill's
+  ledger link by the post itself (`record_failure`) and never roll back
+  the approval or the bank facts. `bill.mark_paid` in payment mode posts
+  the bill and emits `ledger.payment_skipped` for the payment leg: an
+  outside payment has no Payvy payment row and no bank account to map.
+- **After posting**: the bill's document link is set
+  (`PUT …/bills/by_external/payvy/{key}/document_link`) to the bill's page
+  in the app; when the bank reference is learned — including arriving
+  with no status change — `PUT …/vendor_payments/by_external/payvy/{key}/bank_reference`
+  follows. Neither is part of a post body or its hash.
+- **Service period**: a bill's first allocated PO period rides on
+  `BillBody.service_period` (and therefore its request hash) and is sent
+  as `service_period: {starts_on, ends_on}`.
+- VisiAPI-side contract notes for Phase 0: the two follow-up endpoints
+  above accept `{document_link}` / `{bank_reference}` JSON bodies and any
+  2xx JSON answer; the entity header and bearer auth are as in #45.
+
 ## Still required before cutover
 
 - Merge/review PR #41 and the VisiAPI recording API.
 - Reference catalog reads and cache refresh; linking existing contacts without
   replacing Quarry's source identifiers; handling contact merges.
-- Per-org credential sealing/connection factory and Settings → Ledger UI. This
-  constructor is not wired into production `AppState` yet.
-- Automatic posting on approval/payment, the `post_when` policy, late bank
-  reference updates and confirmation of bank-feed clearing. A payment already
+- Confirmation of bank-feed clearing. A payment already
   settled in VisiBooks currently requires reconciliation before its ledger void.
-- Signed evidence links/service periods in the core body model; attachment API.
+- Signed evidence links in the core body model; attachment API (the
+  document link above is a URL in Payvy, not an uploaded file).
 - Existing-bill import links, AP ownership/intake/workflow/funding gates.
 - Reviewed statement reconciliation, real account coding confirmation, and
   normal human payment release. Consolidated ACH and card funding remain separate.

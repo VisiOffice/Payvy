@@ -207,6 +207,30 @@ impl Ledger for FakeLedger {
         Box::pin(self.do_post_payment(body))
     }
 
+    fn set_document_link<'a>(
+        &'a self,
+        bill_external_key: &'a str,
+        url: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), LedgerError>> + Send + 'a>> {
+        Box::pin(async move {
+            self.take(format!("set_document_link {bill_external_key} {url}"))?;
+            Ok(())
+        })
+    }
+
+    fn set_bank_reference<'a>(
+        &'a self,
+        payment_external_key: &'a str,
+        reference: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), LedgerError>> + Send + 'a>> {
+        Box::pin(async move {
+            self.take(format!(
+                "set_bank_reference {payment_external_key} {reference}"
+            ))?;
+            Ok(())
+        })
+    }
+
     fn void_bill<'a>(
         &'a self,
         external_id: &'a str,

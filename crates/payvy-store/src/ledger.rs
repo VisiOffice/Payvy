@@ -11,6 +11,9 @@ use crate::Tx;
 #[derive(Clone)]
 pub struct LedgerConnection {
     pub id: Uuid,
+    /// Where the ledger lives (a VisiBooks base URL). Null for providers
+    /// that don't take one; a VisiBooks connection can't post without it.
+    pub origin: Option<String>,
     pub provider: String,
     pub environment: String,
     pub account_id: String,
@@ -32,6 +35,7 @@ impl std::fmt::Debug for LedgerConnection {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LedgerConnection")
             .field("id", &self.id)
+            .field("origin", &self.origin)
             .field("provider", &self.provider)
             .field("environment", &self.environment)
             .field("account_id", &self.account_id)
@@ -53,6 +57,7 @@ impl std::fmt::Debug for LedgerConnection {
 
 pub struct NewLedgerConnection<'a> {
     pub id: Uuid,
+    pub origin: Option<&'a str>,
     pub provider: &'a str,
     pub environment: &'a str,
     pub account_id: &'a str,
@@ -73,6 +78,7 @@ pub struct NewLedgerConnection<'a> {
 fn connection(row: &sqlx::postgres::PgRow) -> LedgerConnection {
     LedgerConnection {
         id: row.get("id"),
+        origin: row.get("origin"),
         provider: row.get("provider"),
         environment: row.get("environment"),
         account_id: row.get("account_id"),
@@ -93,7 +99,7 @@ fn connection(row: &sqlx::postgres::PgRow) -> LedgerConnection {
 
 macro_rules! connection_cols {
     () => {
-        "id, provider, environment, account_id, subsidiary_id, subsidiary_name, currency, status, auth_kind, token_sealed, post_when, ap_account_id, defaults, bank_account_map, created_at, created_by"
+"id, origin, provider, environment, account_id, subsidiary_id, subsidiary_name, currency, status, auth_kind, token_sealed, post_when, ap_account_id, defaults, bank_account_map, created_at, created_by"
     };
 }
 
@@ -103,15 +109,16 @@ pub async fn insert_ledger_connection(
     new: &NewLedgerConnection<'_>,
 ) -> anyhow::Result<LedgerConnection> {
     let row = sqlx::query(concat!(
-        "INSERT INTO ledger_connections (id, org_id, provider, environment, account_id, subsidiary_id,
+        "INSERT INTO ledger_connections (id, org_id, origin, provider, environment, account_id, subsidiary_id,
             subsidiary_name, currency, status, auth_kind, token_sealed, post_when, ap_account_id,
             defaults, bank_account_map, created_at, created_by)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
          RETURNING ",
         connection_cols!()
     ))
         .bind(new.id)
         .bind(org_id)
+        .bind(new.origin)
         .bind(new.provider)
         .bind(new.environment)
         .bind(new.account_id)
@@ -137,6 +144,19 @@ pub async fn insert_ledger_connection(
 /// The lock is held across the ledger call. That serializes every ledger
 /// action in the company, and it is what stops two first posts of the same
 /// bill from both reaching the books. Acceptable until a real adapter exists.
+/// The active connection without locking its row: reads that precede a
+/// network call (the worker's posts) must hold no locks across it.
+pub async fn ledger_connection_read(tx: &mut Tx) -> anyhow::Result<Option<LedgerConnection>> {
+    let row = sqlx::query(concat!(
+        "SELECT ",
+        connection_cols!(),
+        " FROM ledger_connections WHERE status = 'active'"
+    ))
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(row.as_ref().map(connection))
+}
+
 pub async fn active_ledger_connection(tx: &mut Tx) -> anyhow::Result<Option<LedgerConnection>> {
     let row = sqlx::query(concat!(
         "SELECT ",
@@ -146,6 +166,49 @@ pub async fn active_ledger_connection(tx: &mut Tx) -> anyhow::Result<Option<Ledg
     .fetch_optional(&mut **tx)
     .await?;
     Ok(row.as_ref().map(connection))
+}
+
+/// An Admin's settings change on the active connection: where it lives,
+/// what it posts as, when it posts, and how banks and defaults map. A new
+/// sealed token replaces the old when one is given; the row (and so its
+/// links) is the same connection.
+#[allow(clippy::too_many_arguments)]
+pub async fn update_ledger_connection(
+    tx: &mut Tx,
+    id: Uuid,
+    origin: Option<&str>,
+    account_id: &str,
+    post_when: &str,
+    ap_account_id: Option<&str>,
+    defaults: &Value,
+    bank_account_map: &Value,
+    token_sealed: Option<&[u8]>,
+) -> anyhow::Result<()> {
+    // The entity is also the books' subsidiary: posting refuses without one.
+    sqlx::query(
+        "UPDATE ledger_connections SET origin = $2, account_id = $3, subsidiary_id = $3, post_when = $4, ap_account_id = $5, defaults = $6, bank_account_map = $7, token_sealed = COALESCE($8, token_sealed) WHERE id = $1",
+    )
+    .bind(id)
+    .bind(origin)
+    .bind(account_id)
+    .bind(post_when)
+    .bind(ap_account_id)
+    .bind(defaults)
+    .bind(bank_account_map)
+    .bind(token_sealed)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// Retire a connection so a different one can be the active one. Its
+/// links stay with it; a new connection starts with none.
+pub async fn disable_ledger_connection(tx: &mut Tx, id: Uuid) -> anyhow::Result<()> {
+    sqlx::query("UPDATE ledger_connections SET status = 'disabled' WHERE id = $1")
+        .bind(id)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
 }
 
 pub async fn set_ledger_bank_map(tx: &mut Tx, id: Uuid, map: &Value) -> anyhow::Result<()> {
@@ -241,6 +304,8 @@ pub struct LedgerLink {
     pub error_detail: Option<String>,
     pub request_hash: Option<String>,
     pub posted_at: Option<DateTime<Utc>>,
+    /// The bank reference last sent to the ledger for this payment.
+    pub bank_reference: Option<String>,
 }
 
 pub struct PutLedgerLink<'a> {
@@ -258,7 +323,7 @@ pub struct PutLedgerLink<'a> {
 
 macro_rules! link_cols {
     () => {
-        "id, connection_id, entity, payvy_id, external_id, external_key, status, error_code, error_detail, request_hash, posted_at"
+        "id, connection_id, entity, payvy_id, external_id, external_key, status, error_code, error_detail, request_hash, posted_at, bank_reference"
     };
 }
 
@@ -275,7 +340,29 @@ fn link(row: &sqlx::postgres::PgRow) -> LedgerLink {
         error_detail: row.get("error_detail"),
         request_hash: row.get("request_hash"),
         posted_at: row.get("posted_at"),
+        bank_reference: row.get("bank_reference"),
     }
+}
+
+/// The link as it stands, without locking it (worker reads that must
+/// not hold locks across a network call).
+pub async fn ledger_link_read(
+    tx: &mut Tx,
+    connection_id: Uuid,
+    entity: &str,
+    payvy_id: Uuid,
+) -> anyhow::Result<Option<LedgerLink>> {
+    let row = sqlx::query(concat!(
+        "SELECT ",
+        link_cols!(),
+        " FROM ledger_links WHERE connection_id = $1 AND entity = $2 AND payvy_id = $3"
+    ))
+    .bind(connection_id)
+    .bind(entity)
+    .bind(payvy_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(row.as_ref().map(link))
 }
 
 /// Locks the link when it exists.
@@ -383,5 +470,155 @@ pub async fn mark_ledger_link_voided(
         done.rows_affected() == 1,
         "ledger link to void was not there"
     );
+    Ok(())
+}
+
+// ── Queued posting jobs ──────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct LedgerJob {
+    pub id: Uuid,
+    pub kind: String,
+    pub bill_id: Option<Uuid>,
+    pub payment_id: Option<Uuid>,
+    pub payload: Value,
+    pub attempts: i32,
+}
+
+/// Queue a job unless an identical live one already stands. Inserted in
+/// the caller's transaction: the job exists exactly when the fact that
+/// caused it committed.
+pub async fn enqueue_ledger_job(
+    tx: &mut Tx,
+    org: Uuid,
+    kind: &str,
+    bill_id: Option<Uuid>,
+    payment_id: Option<Uuid>,
+    payload: &Value,
+    now: DateTime<Utc>,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "INSERT INTO ledger_jobs (id, org_id, kind, bill_id, payment_id, payload, next_attempt_at, created_at, updated_at) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $7) ON CONFLICT DO NOTHING",
+    )
+    .bind(Uuid::new_v4()).bind(org).bind(kind).bind(bill_id).bind(payment_id).bind(payload).bind(now)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// Claim due jobs for processing: they leave as `sending` in this
+/// transaction, so two workers never take the same job.
+pub async fn claim_ledger_jobs(
+    tx: &mut Tx,
+    now: DateTime<Utc>,
+    limit: i64,
+) -> anyhow::Result<Vec<LedgerJob>> {
+    let rows = sqlx::query(
+        "SELECT id, kind, bill_id, payment_id, payload, attempts FROM ledger_jobs \
+         WHERE (status IN ('pending', 'failed') AND next_attempt_at <= $1) \
+            OR (status = 'sending' AND lease_until < $1) \
+         ORDER BY created_at LIMIT $2 FOR UPDATE SKIP LOCKED",
+    )
+    .bind(now)
+    .bind(limit)
+    .fetch_all(&mut **tx)
+    .await?;
+    let mut out = Vec::new();
+    for r in &rows {
+        let id: Uuid = r.get("id");
+        sqlx::query("UPDATE ledger_jobs SET status = 'sending', attempts = attempts + 1, lease_until = $2 + interval '2 minutes', updated_at = $2 WHERE id = $1")
+            .bind(id)
+            .bind(now)
+            .execute(&mut **tx)
+            .await?;
+        out.push(LedgerJob {
+            id,
+            kind: r.get("kind"),
+            bill_id: r.get("bill_id"),
+            payment_id: r.get("payment_id"),
+            payload: r.get("payload"),
+            attempts: r.get::<i32, _>("attempts") + 1,
+        });
+    }
+    Ok(out)
+}
+
+pub async fn finish_ledger_job(tx: &mut Tx, id: Uuid, now: DateTime<Utc>) -> anyhow::Result<()> {
+    sqlx::query(
+        "UPDATE ledger_jobs SET status = 'done', last_error = NULL, updated_at = $2 WHERE id = $1",
+    )
+    .bind(id)
+    .bind(now)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// A failed attempt waits with backoff (attempts squared minutes, capped
+/// at an hour) and keeps its error where a person can see it.
+pub async fn fail_ledger_job(
+    tx: &mut Tx,
+    id: Uuid,
+    error: &str,
+    now: DateTime<Utc>,
+) -> anyhow::Result<()> {
+    let attempts: i32 = sqlx::query("SELECT attempts FROM ledger_jobs WHERE id = $1")
+        .bind(id)
+        .fetch_one(&mut **tx)
+        .await?
+        .get("attempts");
+    let backoff = chrono::Duration::minutes(i64::from(attempts * attempts).min(60));
+    // A permanent refusal stops after 8 attempts: the job is dead, its
+    // error stays where a person can see it, and the by-hand commands
+    // remain the retry path.
+    let status = if attempts >= 8 { "dead" } else { "failed" };
+    sqlx::query(
+        "UPDATE ledger_jobs SET status = $5, last_error = $2, next_attempt_at = $3, updated_at = $4 WHERE id = $1",
+    )
+    .bind(id)
+    .bind(error)
+    .bind(now + backoff)
+    .bind(now)
+    .bind(status)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// Put a claimed job back to pending without recording a failure —
+/// for work whose moment hasn't come yet (a held bill's post).
+pub async fn defer_ledger_job(
+    tx: &mut Tx,
+    id: Uuid,
+    when: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> anyhow::Result<()> {
+    // A deferral is not an attempt: give back the claim's increment.
+    sqlx::query(
+        "UPDATE ledger_jobs SET status = 'pending', attempts = GREATEST(attempts - 1, 0), lease_until = NULL, next_attempt_at = $2, updated_at = $3 WHERE id = $1",
+    )
+    .bind(id)
+    .bind(when)
+    .bind(now)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+pub async fn set_ledger_link_bank_reference(
+    tx: &mut Tx,
+    connection_id: Uuid,
+    payment_id: Uuid,
+    reference: &str,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "UPDATE ledger_links SET bank_reference = $3 WHERE connection_id = $1 AND entity = 'payment' AND payvy_id = $2",
+    )
+    .bind(connection_id)
+    .bind(payment_id)
+    .bind(reference)
+    .execute(&mut **tx)
+    .await?;
     Ok(())
 }

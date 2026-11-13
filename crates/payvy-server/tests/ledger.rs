@@ -44,6 +44,7 @@ impl Fx {
             DEFAULT_ORG,
             &NewLedgerConnection {
                 id: connection,
+                origin: None,
                 provider: "netsuite",
                 environment: "production",
                 account_id: "1234567",

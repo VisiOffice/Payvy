@@ -190,6 +190,9 @@ async fn apply(
     )
     .await?;
     if before == after {
+        // A reference can arrive without a status change; the ledger
+        // still wants it.
+        super::ledger::on_bank_reference(cx, &updated).await?;
         return Ok(updated);
     }
     cx.emit(
@@ -218,6 +221,10 @@ async fn apply(
                         "payment_id": row.id, "via": "bank" }),
             )
             .await?;
+            // The ledger follows the money: post (at payment, the bill
+            // first) and then the bank reference. Recorded failures
+            // never touch the bank facts above.
+            super::ledger::on_payment_sent(cx, &updated, bill, paid_on).await?;
         }
         Status::Returned if bill.state == State::Paid => {
             store::reopen_returned_bill(&mut cx.tx, bill.id).await?;

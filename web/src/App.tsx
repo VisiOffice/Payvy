@@ -33,6 +33,7 @@ const NotificationSettings = lazy(() => import('./pages/NotificationSettings').t
 const ApprovalSettings = lazy(() => import('./pages/ApprovalSettings').then((m) => ({ default: m.ApprovalSettings })));
 const VendorPage = lazy(() => import('./pages/Vendor').then((m) => ({ default: m.VendorPage })));
 const PurchaseOrderSettings = lazy(() => import('./pages/PurchaseOrderSettings').then((m) => ({ default: m.PurchaseOrderSettings })));
+const LedgerSettings = lazy(() => import('./pages/LedgerSettings').then((m) => ({ default: m.LedgerSettings })));
 const PurchaseOrders = lazy(() => import('./pages/PurchaseOrders').then((m) => ({ default: m.PurchaseOrders })));
 const DocumentReview = lazy(() =>
   import('./pages/DocumentReview').then((m) => ({ default: m.DocumentReview })),
@@ -177,6 +178,7 @@ export function App() {
           <Route path="/settings/auto-pay" element={<Suspense fallback={<Spinner label="Loading" />}><Access command="auto_pay.raise_limit"><AutoPaySettings /></Access></Suspense>} />
           <Route path="/settings/notifications" element={<Suspense fallback={<Spinner label="Loading" />}><Access command="notification.configure"><NotificationSettings /></Access></Suspense>} />
           <Route path="/settings/purchase-orders" element={<Suspense fallback={<Spinner label="Loading" />}><Access command="po.configure"><PurchaseOrderSettings /></Access></Suspense>} />
+          <Route path="/settings/ledger" element={<Suspense fallback={<Spinner label="Loading" />}><Access command="ledger.configure"><LedgerSettings /></Access></Suspense>} />
           <Route
             path="/settings/approvals"
             element={

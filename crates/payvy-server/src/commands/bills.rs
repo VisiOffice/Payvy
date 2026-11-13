@@ -897,7 +897,12 @@ pub async fn approve(cx: &mut Cx<'_>, input: Approve) -> Result<Value, CommandEr
         json!({ "bill_id": bill.id, "step_id": step_id, "note": note }),
     )
     .await?;
-    detail(cx, bill.id).await
+    let out = detail(cx, bill.id).await?;
+    // Queue the ledger post (approval mode): the job itself waits
+    // until the bill reaches its pay step, so a held bill posts when
+    // its hold is released. The approval stands either way.
+    super::ledger::on_bill_approved(cx, bill.id).await?;
+    Ok(out)
 }
 
 #[derive(Deserialize)]
@@ -1185,6 +1190,16 @@ pub async fn mark_paid(cx: &mut Cx<'_>, input: MarkPaid) -> Result<Value, Comman
         bill.id,
         json!({ "bill_id": bill.id, "amount_cents": bill.amount_cents, "paid_on": input.paid_on,
                 "method": input.method, "reference": reference }),
+    )
+    .await?;
+    // In payment mode the ledger's bill posts now; its payment leg has
+    // no Payvy payment row (see ledger::on_outside_payment).
+    super::ledger::on_outside_payment(
+        cx,
+        &bill,
+        &input.method,
+        input.paid_on,
+        reference.as_deref(),
     )
     .await?;
     let mut out = detail(cx, bill.id).await?;

@@ -1,7 +1,8 @@
-//! Posting to the company's ledger. The connection is inserted with a sealed
-//! token; these commands never read that token and never put it in a result
-//! or an event. Phase one calls whatever [`payvy_ledger::Ledger`] the server
-//! was given. Production leaves it unset.
+//! Posting to the company's ledger, and connecting one. The token is
+//! sealed with PAYVY_SECRETS_KEY and never appears in a result, an event
+//! or a log. A VisiBooks connection is built from its row (origin, entity,
+//! unsealed key) at post time, per company; other providers use whatever
+//! [`payvy_ledger::Ledger`] the server was given (tests pass a fake).
 
 use payvy_domain::bills::State;
 use payvy_ledger::{
@@ -27,9 +28,29 @@ pub struct PaymentId {
 }
 
 pub async fn post_bill(cx: &mut Cx<'_>, input: BillId) -> Result<Value, CommandError> {
-    require_ledger(cx)?;
-    let connection = connection(cx).await?;
-    let bill = store::get_bill(&mut cx.tx, input.bill_id)
+    // A re-post after a void, in payment mode, belongs on the payment
+    // date like the original post — not back on the invoice date.
+    let connection = connection_read(cx).await;
+    let post_date = match &connection {
+        Ok(c) if c.post_when == "payment" => store::get_bill_read(&mut cx.tx, input.bill_id)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|b| b.paid_on),
+        _ => None,
+    };
+    post_bill_at(cx, input.bill_id, post_date).await
+}
+
+async fn post_bill_at(
+    cx: &mut Cx<'_>,
+    bill_id: Uuid,
+    post_date: Option<chrono::NaiveDate>,
+) -> Result<Value, CommandError> {
+    let input = BillId { bill_id };
+    let connection = connection_read(cx).await?;
+    let adapter = adapter_for(cx, &connection).await?;
+    let bill = store::get_bill_read(&mut cx.tx, input.bill_id)
         .await?
         .ok_or(CommandError::NotFound("bill"))?;
     if matches!(bill.state, State::Rejected | State::Void) {
@@ -38,13 +59,26 @@ pub async fn post_bill(cx: &mut Cx<'_>, input: BillId) -> Result<Value, CommandE
         ));
     }
     let vendor = vendor_external(
-        store::ledger_link(&mut cx.tx, connection.id, "vendor", bill.vendor_id).await?,
+        store::ledger_link_read(&mut cx.tx, connection.id, "vendor", bill.vendor_id).await?,
     );
     let records = store::ledger_records(&mut cx.tx, connection.id).await?;
     let books = books_for(&connection, &records, &vendor);
     let lines = store::bill_lines(&mut cx.tx, bill.id).await?;
+    // The service period the bill covers, from the first allocated PO
+    // that names one.
+    let mut service_period = None;
+    for a in payvy_store::purchase_orders::allocations_for_bill(&mut cx.tx, bill.id).await? {
+        if let Some(po) = payvy_store::purchase_orders::get_po(&mut cx.tx, a.po_id).await?
+            && let (Some(start), Some(end)) = (po.period_start, po.period_end)
+        {
+            service_period = Some((start, end));
+            break;
+        }
+    }
     let draft = payvy_ledger::BillDraft {
         bill_id: bill.id,
+        service_period,
+        post_date,
         vendor_external_id: vendor,
         invoice_number: bill.invoice_number.clone(),
         invoice_date: bill.invoice_date,
@@ -63,14 +97,14 @@ pub async fn post_bill(cx: &mut Cx<'_>, input: BillId) -> Result<Value, CommandE
             })
             .collect(),
     };
-    let existing = store::ledger_link(&mut cx.tx, connection.id, "bill", bill.id).await?;
+    let existing = store::ledger_link_read(&mut cx.tx, connection.id, "bill", bill.id).await?;
     let view = existing.as_ref().map(view_of).transpose()?;
     let key = payvy_ledger::bill_key(bill.id);
     if cx.preview {
         return plan_value(payvy_ledger::plan_bill(&books, &draft, view.as_ref()));
     }
     let submitted = {
-        let ledger = cx.ledger()?;
+        let ledger = adapter.get();
         payvy_ledger::submit_bill(ledger, &books, &draft, view.as_ref()).await
     };
     let outcome = match submitted {
@@ -96,6 +130,33 @@ pub async fn post_bill(cx: &mut Cx<'_>, input: BillId) -> Result<Value, CommandE
         )
         .await?;
     }
+    // Point the ledger's bill at its document in Payvy. Idempotent and
+    // not part of the post's hash; a failure is said, never hidden.
+    let document_link = if outcome.replay {
+        "replay"
+    } else {
+        match cx.auth() {
+            Some(auth) => {
+                let url = format!(
+                    "{}/bills/{}",
+                    auth.public_url.trim_end_matches('/'),
+                    bill.id
+                );
+                match adapter
+                    .get()
+                    .set_document_link(&outcome.posted.external_key, &url)
+                    .await
+                {
+                    Ok(()) => "set",
+                    Err(e) => {
+                        tracing::warn!(bill = %bill.id, "ledger document link failed: {e}");
+                        "failed"
+                    }
+                }
+            }
+            None => "skipped",
+        }
+    };
     cx.emit(
         "ledger.bill_posted",
         bill.id,
@@ -104,15 +165,18 @@ pub async fn post_bill(cx: &mut Cx<'_>, input: BillId) -> Result<Value, CommandE
             "external_id": outcome.posted.external_id,
             "external_key": outcome.posted.external_key,
             "replay": outcome.replay,
+            "document_link": document_link,
         }),
     )
     .await?;
-    Ok(posted_json(&outcome))
+    let mut out = posted_json(&outcome);
+    out["document_link"] = json!(document_link);
+    Ok(out)
 }
 
 pub async fn post_payment(cx: &mut Cx<'_>, input: PaymentId) -> Result<Value, CommandError> {
-    require_ledger(cx)?;
-    let connection = connection(cx).await?;
+    let connection = connection_read(cx).await?;
+    let adapter = adapter_for(cx, &connection).await?;
     let payment = store::get_payment(&mut cx.tx, input.payment_id)
         .await?
         .ok_or(CommandError::NotFound("payment"))?;
@@ -121,15 +185,15 @@ pub async fn post_payment(cx: &mut Cx<'_>, input: PaymentId) -> Result<Value, Co
             "only a sent payment is posted to the ledger".into(),
         ));
     }
-    let bill = store::get_bill(&mut cx.tx, payment.bill_id)
+    let bill = store::get_bill_read(&mut cx.tx, payment.bill_id)
         .await?
         .ok_or(CommandError::NotFound("bill"))?;
     let vendor = vendor_external(
-        store::ledger_link(&mut cx.tx, connection.id, "vendor", bill.vendor_id).await?,
+        store::ledger_link_read(&mut cx.tx, connection.id, "vendor", bill.vendor_id).await?,
     );
     let records = store::ledger_records(&mut cx.tx, connection.id).await?;
     let books = books_for(&connection, &records, &vendor);
-    let bill_link = store::ledger_link(&mut cx.tx, connection.id, "bill", bill.id).await?;
+    let bill_link = store::ledger_link_read(&mut cx.tx, connection.id, "bill", bill.id).await?;
     let bill_external_id = bill_link
         .filter(|link| link.status == "posted")
         .and_then(|link| link.external_id)
@@ -145,14 +209,15 @@ pub async fn post_payment(cx: &mut Cx<'_>, input: PaymentId) -> Result<Value, Co
         bill_external_id,
         vendor_external_id: vendor,
     };
-    let existing = store::ledger_link(&mut cx.tx, connection.id, "payment", payment.id).await?;
+    let existing =
+        store::ledger_link_read(&mut cx.tx, connection.id, "payment", payment.id).await?;
     let view = existing.as_ref().map(view_of).transpose()?;
     let key = payvy_ledger::payment_key(payment.id);
     if cx.preview {
         return plan_value(payvy_ledger::plan_payment(&books, &draft, view.as_ref()));
     }
     let submitted = {
-        let ledger = cx.ledger()?;
+        let ledger = adapter.get();
         payvy_ledger::submit_payment(ledger, &books, &draft, view.as_ref()).await
     };
     let outcome = match submitted {
@@ -196,12 +261,12 @@ pub async fn post_payment(cx: &mut Cx<'_>, input: PaymentId) -> Result<Value, Co
 }
 
 pub async fn void(cx: &mut Cx<'_>, input: BillId) -> Result<Value, CommandError> {
-    require_ledger(cx)?;
-    let connection = connection(cx).await?;
-    let bill = store::get_bill(&mut cx.tx, input.bill_id)
+    let connection = connection_read(cx).await?;
+    let adapter = adapter_for(cx, &connection).await?;
+    let bill = store::get_bill_read(&mut cx.tx, input.bill_id)
         .await?
         .ok_or(CommandError::NotFound("bill"))?;
-    let bill_link = store::ledger_link(&mut cx.tx, connection.id, "bill", bill.id).await?;
+    let bill_link = store::ledger_link_read(&mut cx.tx, connection.id, "bill", bill.id).await?;
     let bill_view = bill_link.as_ref().map(view_of).transpose()?;
     let payments = store::bill_payments(&mut cx.tx, bill.id).await?;
     // A bank return does not call the ledger. The poller only changes the
@@ -210,7 +275,7 @@ pub async fn void(cx: &mut Cx<'_>, input: BillId) -> Result<Value, CommandError>
     let mut posted_payments: Vec<(Uuid, String)> = Vec::new();
     for payment in payments.iter().rev() {
         let Some(link) =
-            store::ledger_link(&mut cx.tx, connection.id, "payment", payment.id).await?
+            store::ledger_link_read(&mut cx.tx, connection.id, "payment", payment.id).await?
         else {
             continue;
         };
@@ -250,7 +315,7 @@ pub async fn void(cx: &mut Cx<'_>, input: BillId) -> Result<Value, CommandError>
             let payment_ids: Vec<&str> =
                 posted_payments.iter().map(|(_, id)| id.as_str()).collect();
             let voided = {
-                let ledger = cx.ledger()?;
+                let ledger = adapter.get();
                 payvy_ledger::void_posted(ledger, &bill_external, &payment_ids).await
             };
             match voided {
@@ -432,18 +497,64 @@ fn ledger_error(error: LedgerError) -> CommandError {
     }
 }
 
-fn require_ledger(cx: &Cx<'_>) -> Result<(), CommandError> {
-    cx.ledger().map(|_| ())
+/// The adapter for this connection: VisiBooks is built from the row
+/// (origin, entity, unsealed key); anything else uses the server's
+/// configured adapter, which production leaves unset for now.
+enum Adapter<'a> {
+    Static(&'a (dyn payvy_ledger::Ledger + Send + Sync)),
+    Built(Box<dyn payvy_ledger::Ledger + Send + Sync>),
 }
 
-/// Locks the connection for the whole command, including the ledger call.
-async fn connection(cx: &mut Cx<'_>) -> Result<store::LedgerConnection, CommandError> {
-    store::active_ledger_connection(&mut cx.tx)
-        .await?
-        .ok_or_else(|| CommandError::Ledger {
+impl Adapter<'_> {
+    fn get(&self) -> &(dyn payvy_ledger::Ledger + Send + Sync) {
+        match self {
+            Adapter::Static(l) => *l,
+            Adapter::Built(l) => l.as_ref(),
+        }
+    }
+}
+
+async fn adapter_for<'s>(
+    cx: &Cx<'s>,
+    connection: &store::LedgerConnection,
+) -> Result<Adapter<'s>, CommandError> {
+    if connection.provider != "visibooks" {
+        return Ok(Adapter::Static(cx.ledger()?));
+    }
+    let origin = connection
+        .origin
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| {
+            CommandError::NotConfigured(
+                "the VisiBooks connection has no origin; an admin sets it in Settings → Ledger",
+            )
+        })?;
+    let bank = cx.bank()?;
+    let token = bank.sealer.open(
+        cx.org,
+        &payvy_ledger::seal_purpose("visibooks"),
+        &connection.token_sealed,
+    )?;
+    let adapter = visibooks_at(origin, &connection.account_id, &token)?;
+    Ok(Adapter::Built(Box::new(adapter)))
+}
+
+/// The connection for posting: read without locking its row, so no
+/// lock is held across the ledger call that follows. Two posts of the
+/// same bill racing is safe: the ledger call carries the bill's
+/// idempotency key, and the second is a replay of the first.
+/// A configured adapter without a connection (tests) still says
+/// "connect one"; no adapter at all says it isn't configured.
+async fn connection_read(cx: &mut Cx<'_>) -> Result<store::LedgerConnection, CommandError> {
+    match store::ledger_connection_read(&mut cx.tx).await? {
+        Some(c) => Ok(c),
+        None if cx.ledger().is_ok() => Err(CommandError::Ledger {
             code: "needs_auth",
             detail: "Connect a ledger before posting.".into(),
-        })
+        }),
+        None => Err(CommandError::NotConfigured("no ledger is configured")),
+    }
 }
 
 fn vendor_external(link: Option<store::LedgerLink>) -> String {
@@ -495,7 +606,13 @@ fn books_for(
     }
     Books {
         currency: connection.currency.clone(),
-        subsidiary_id: connection.subsidiary_id.clone().unwrap_or_default(),
+        // The entity is the subsidiary for VisiBooks; older rows may
+        // not have it denormalized yet.
+        subsidiary_id: connection
+            .subsidiary_id
+            .clone()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| connection.account_id.clone()),
         defaults: payvy_ledger::Defaults::from_json(&connection.defaults),
         accounts,
         periods,
@@ -510,4 +627,783 @@ fn mapped_account(map: &Value, bank_id: Uuid) -> String {
         .filter(|account| !account.is_empty())
         .unwrap_or("")
         .to_owned()
+}
+
+// ── Connection settings (Settings → Ledger) ──────────────────────────────
+
+fn connection_view(connection: Option<&store::LedgerConnection>) -> Value {
+    match connection {
+        Some(c) => json!({
+            "connected": true,
+            "provider": c.provider,
+            "origin": c.origin,
+            "entity": c.account_id,
+            "environment": c.environment,
+            "post_when": c.post_when,
+            "ap_account_id": c.ap_account_id,
+            "defaults": c.defaults,
+            "bank_account_map": c.bank_account_map,
+            "status": c.status,
+        }),
+        None => json!({ "connected": false }),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Settings {}
+
+pub async fn settings(cx: &mut Cx<'_>, _input: Settings) -> Result<Value, CommandError> {
+    let connection = store::active_ledger_connection(&mut cx.tx).await?;
+    Ok(connection_view(connection.as_ref()))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Connect {
+    origin: String,
+    entity: String,
+    api_key: String,
+    post_when: Option<String>,
+}
+
+/// Build the adapter for an origin: loopback over HTTP is the
+/// development allowance, everything else must be HTTPS.
+fn visibooks_at(
+    origin: &str,
+    entity: &str,
+    token: &str,
+) -> Result<payvy_ledger::VisiBooks, CommandError> {
+    // Plain-HTTP loopback is a development allowance only; a release
+    // server must never be pointed at its own internal ports.
+    let loopback = cfg!(debug_assertions)
+        && reqwest::Url::parse(origin)
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_owned))
+            .is_some_and(|h| h == "127.0.0.1" || h == "::1" || h.eq_ignore_ascii_case("localhost"));
+    let built = if loopback {
+        payvy_ledger::VisiBooks::new_local(origin, entity, token)
+    } else {
+        payvy_ledger::VisiBooks::new(origin, entity, token)
+    };
+    built.map_err(|e| CommandError::Invalid(e.to_string()))
+}
+
+fn refused_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => v4.is_private() || v4.is_link_local() || v4.is_unspecified(),
+        std::net::IpAddr::V6(v6) => {
+            v6.is_unspecified()
+                || v6.segments()[0] & 0xffc0 == 0xfe80
+                || v6.segments()[0] & 0xfe00 == 0xfc00
+        }
+    }
+}
+
+/// The server calls this origin on every post, so it must not point at
+/// the private network: private, link-local and unspecified addresses
+/// are refused — for literal addresses and for whatever the hostname
+/// resolves to. Loopback stays available in development builds only,
+/// matching the adapter's own local allowance.
+async fn check_origin(origin: &str) -> Result<(), CommandError> {
+    let url = reqwest::Url::parse(origin)
+        .map_err(|_| CommandError::Invalid("the origin is not a valid URL".into()))?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| CommandError::Invalid("the origin has no host".into()))?;
+    if host.eq_ignore_ascii_case("localhost") {
+        return if cfg!(debug_assertions) {
+            Ok(())
+        } else {
+            Err(CommandError::Invalid(
+                "a loopback origin is only allowed in development builds".into(),
+            ))
+        };
+    }
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        if ip.is_loopback() {
+            return if cfg!(debug_assertions) {
+                Ok(())
+            } else {
+                Err(CommandError::Invalid(
+                    "a loopback origin is only allowed in development builds".into(),
+                ))
+            };
+        }
+        if refused_ip(ip) {
+            return Err(CommandError::Invalid(format!(
+                "the origin host {host} is a private or link-local address; refusing to call it"
+            )));
+        }
+        return Ok(());
+    }
+    // A hostname is only as public as what it resolves to right now.
+    let port = url.port_or_known_default().unwrap_or(443);
+    if let Ok(addresses) = tokio::net::lookup_host((host, port)).await {
+        for address in addresses {
+            let ip = address.ip();
+            if refused_ip(ip) || (ip.is_loopback() && !cfg!(debug_assertions)) {
+                return Err(CommandError::Invalid(format!(
+                    "the origin host {host} resolves to a private or loopback address; refusing to call it"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn valid_post_when(value: Option<&str>) -> Result<String, CommandError> {
+    match value.unwrap_or("approval") {
+        "approval" | "payment" => Ok(value.unwrap_or("approval").to_owned()),
+        other => Err(CommandError::Invalid(format!(
+            "post_when is approval or payment, not {other}"
+        ))),
+    }
+}
+
+/// Connect VisiBooks for this company (Admin, person only). The API key
+/// is sealed at once and never read back; reconnecting updates the same
+/// connection row, so its links stand.
+pub async fn connect(cx: &mut Cx<'_>, input: Connect) -> Result<Value, CommandError> {
+    let origin = input.origin.trim().trim_end_matches('/').to_owned();
+    // Plain HTTP only to a literal loopback host, and only in
+    // development builds; a prefix match would let
+    // `http://127.0.0.1.evil.example` through.
+    let parsed = reqwest::Url::parse(&origin)
+        .map_err(|_| CommandError::Invalid("the origin is not a valid URL".into()))?;
+    let http_loopback = cfg!(debug_assertions)
+        && parsed.scheme() == "http"
+        && parsed
+            .host_str()
+            .is_some_and(|h| h == "127.0.0.1" || h == "::1" || h.eq_ignore_ascii_case("localhost"));
+    if !(parsed.scheme() == "https" || http_loopback) {
+        return Err(CommandError::Invalid(
+            "the origin must be an https URL (http is allowed only for loopback in development)"
+                .into(),
+        ));
+    }
+    let entity = input.entity.trim().to_owned();
+    if entity.is_empty() || input.api_key.trim().is_empty() {
+        return Err(CommandError::Invalid(
+            "an entity id and an API key are required".into(),
+        ));
+    }
+    let post_when = valid_post_when(input.post_when.as_deref())?;
+    check_origin(&origin).await?;
+    // The adapter's own constructor refuses bad origins, entities and
+    // keys before anything is stored.
+    visibooks_at(&origin, &entity, input.api_key.trim())?;
+    let bank = cx.bank()?;
+    let sealed = bank.sealer.seal(
+        cx.org,
+        &payvy_ledger::seal_purpose("visibooks"),
+        input.api_key.trim(),
+    )?;
+    let existing = store::active_ledger_connection(&mut cx.tx).await?;
+    // A different entity or origin is a different set of books: the old
+    // connection is retired and a new one starts, with no links carried
+    // over. Only a key rotation (same entity and origin) keeps them.
+    if let Some(c) = &existing
+        && c.provider == "visibooks"
+        && (c.account_id != entity || c.origin.as_deref() != Some(origin.as_str()))
+    {
+        store::disable_ledger_connection(&mut cx.tx, c.id).await?;
+    }
+    let existing = store::active_ledger_connection(&mut cx.tx).await?;
+    let id = match &existing {
+        Some(c) if c.provider == "visibooks" => {
+            store::update_ledger_connection(
+                &mut cx.tx,
+                c.id,
+                Some(&origin),
+                &entity,
+                input
+                    .post_when
+                    .as_deref()
+                    .map(|_| post_when.as_str())
+                    .unwrap_or(&c.post_when),
+                c.ap_account_id.as_deref(),
+                &c.defaults,
+                &c.bank_account_map,
+                Some(&sealed),
+            )
+            .await?;
+            c.id
+        }
+        Some(c) => {
+            return Err(CommandError::Conflict(format!(
+                "a {} ledger is already connected for this company; this build connects VisiBooks",
+                c.provider
+            )));
+        }
+        None => {
+            store::insert_ledger_connection(
+                &mut cx.tx,
+                cx.org,
+                &store::NewLedgerConnection {
+                    id: Uuid::new_v4(),
+                    origin: Some(&origin),
+                    provider: "visibooks",
+                    environment: "production",
+                    account_id: &entity,
+                    subsidiary_id: Some(&entity),
+                    subsidiary_name: None,
+                    currency: "USD",
+                    status: "active",
+                    auth_kind: "client_credentials",
+                    token_sealed: &sealed,
+                    post_when: &post_when,
+                    ap_account_id: None,
+                    defaults: &json!({}),
+                    bank_account_map: &json!({}),
+                    created_at: cx.now,
+                    created_by: &cx.actor.name,
+                },
+            )
+            .await?
+            .id
+        }
+    };
+    cx.emit(
+        "ledger.connected",
+        id,
+        json!({ "provider": "visibooks", "origin": origin, "entity": entity, "post_when": post_when }),
+    )
+    .await?;
+    let connection = store::active_ledger_connection(&mut cx.tx).await?;
+    Ok(connection_view(connection.as_ref()))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Configure {
+    post_when: Option<String>,
+    ap_account_id: Option<Option<String>>,
+    defaults: Option<Value>,
+    bank_account_map: Option<Value>,
+}
+
+/// Change how the connected ledger posts (Admin, person only). Asking
+/// for what is already set is refused, never a bare success.
+pub async fn configure(cx: &mut Cx<'_>, input: Configure) -> Result<Value, CommandError> {
+    let connection = store::active_ledger_connection(&mut cx.tx)
+        .await?
+        .ok_or(CommandError::NotFound("ledger connection"))?;
+    let post_when = match &input.post_when {
+        Some(v) => valid_post_when(Some(v))?,
+        None => connection.post_when.clone(),
+    };
+    let ap = match &input.ap_account_id {
+        Some(v) => v.clone(),
+        None => connection.ap_account_id.clone(),
+    };
+    let defaults = input
+        .defaults
+        .unwrap_or_else(|| connection.defaults.clone());
+    let map = input
+        .bank_account_map
+        .unwrap_or_else(|| connection.bank_account_map.clone());
+    // The map's keys name where money comes from: a live Payvy bank
+    // connection, or a payment method for bills paid outside Payvy.
+    if let Some(obj) = map.as_object() {
+        let banks: Vec<String> = store::live_connections(&mut cx.tx)
+            .await?
+            .iter()
+            .map(|c| c.id.to_string())
+            .collect();
+        const METHODS: [&str; 7] = [
+            "ach",
+            "wire",
+            "domestic_wire",
+            "check",
+            "card",
+            "real_time_payment",
+            "other",
+        ];
+        for (k, v) in obj {
+            if !banks.contains(k) && !METHODS.contains(&k.as_str()) {
+                return Err(CommandError::Invalid(format!(
+                    "bank account map key {k} is not a bank connection of this company or a payment method"
+                )));
+            }
+            if !v.as_str().is_some_and(|s| !s.trim().is_empty()) {
+                return Err(CommandError::Invalid(format!(
+                    "bank account map value for {k} must be a ledger account id"
+                )));
+            }
+        }
+    } else {
+        return Err(CommandError::Invalid(
+            "bank_account_map must be a JSON object".into(),
+        ));
+    }
+    // An AP account named in this request must be one of the mirrored
+    // accounts, when any are.
+    if let Some(Some(ap)) = &input.ap_account_id {
+        let records = store::ledger_records(&mut cx.tx, connection.id).await?;
+        if records.iter().any(|r| r.kind == "account")
+            && !records
+                .iter()
+                .any(|r| r.kind == "account" && &r.external_id == ap)
+        {
+            return Err(CommandError::Invalid(format!(
+                "AP account {ap} is not one of the ledger's mirrored accounts"
+            )));
+        }
+    }
+    if post_when == connection.post_when
+        && ap == connection.ap_account_id
+        && defaults == connection.defaults
+        && map == connection.bank_account_map
+    {
+        return Err(CommandError::Conflict(
+            "these ledger settings are already in force".into(),
+        ));
+    }
+    store::update_ledger_connection(
+        &mut cx.tx,
+        connection.id,
+        connection.origin.as_deref(),
+        &connection.account_id,
+        &post_when,
+        ap.as_deref(),
+        &defaults,
+        &map,
+        None,
+    )
+    .await?;
+    cx.emit(
+        "ledger.configured",
+        connection.id,
+        json!({ "post_when": post_when, "bank_account_map": map }),
+    )
+    .await?;
+    let connection = store::active_ledger_connection(&mut cx.tx).await?;
+    Ok(connection_view(connection.as_ref()))
+}
+
+// ── Automatic posting: queued jobs, never in the caller's transaction ────
+//
+// Hooks only queue a job in the same transaction as the fact that caused
+// it (so the job exists exactly when the fact commits, and no ledger call
+// can stall or roll back an approval or a bank fact). The ledger worker
+// then posts in its own transaction; a failure is recorded on the job
+// and on the bill's ledger link, and retried with backoff.
+
+/// Queue a job. An error here fails the calling command: queueing is
+/// part of its transaction, and silently dropping the job (or hiding
+/// that the transaction is already aborted) would lose the post.
+async fn enqueue(
+    cx: &mut Cx<'_>,
+    kind: &str,
+    bill_id: Option<Uuid>,
+    payment_id: Option<Uuid>,
+    payload: Value,
+) -> Result<(), CommandError> {
+    if cx.preview {
+        return Ok(());
+    }
+    store::enqueue_ledger_job(
+        &mut cx.tx, cx.org, kind, bill_id, payment_id, &payload, cx.now,
+    )
+    .await?;
+    Ok(())
+}
+
+/// The connection for a hook: read without locking, and errors surface.
+async fn hook_connection(cx: &mut Cx<'_>) -> Result<Option<store::LedgerConnection>, CommandError> {
+    if cx.preview {
+        return Ok(None);
+    }
+    Ok(store::ledger_connection_read(&mut cx.tx).await?)
+}
+
+/// A bill's approval completed: queue its post when the company posts
+/// at approval.
+pub async fn on_bill_approved(cx: &mut Cx<'_>, bill_id: Uuid) -> Result<(), CommandError> {
+    let Some(connection) = hook_connection(cx).await? else {
+        return Ok(());
+    };
+    if connection.post_when == "approval" {
+        enqueue(cx, "post_bill", Some(bill_id), None, json!({})).await?;
+    }
+    Ok(())
+}
+
+/// A bank payment was sent: queue the bill's post first (in both modes;
+/// at payment it carries the payment date), then the payment's.
+pub async fn on_payment_sent(
+    cx: &mut Cx<'_>,
+    payment: &store::PaymentRow,
+    bill: &store::Bill,
+    paid_on: chrono::NaiveDate,
+) -> Result<(), CommandError> {
+    let Some(connection) = hook_connection(cx).await? else {
+        return Ok(());
+    };
+    let post_date = (connection.post_when == "payment").then_some(paid_on);
+    enqueue(
+        cx,
+        "post_bill",
+        Some(bill.id),
+        None,
+        json!({ "post_date": post_date }),
+    )
+    .await?;
+    enqueue(
+        cx,
+        "post_payment",
+        Some(bill.id),
+        Some(payment.id),
+        json!({}),
+    )
+    .await?;
+    Ok(())
+}
+
+/// A bill was paid outside Payvy: queue its bill post, and a payment leg
+/// keyed by the bill (it has no Payvy payment row), paid on the given
+/// date by the given method.
+pub async fn on_outside_payment(
+    cx: &mut Cx<'_>,
+    bill: &store::Bill,
+    method: &str,
+    paid_on: chrono::NaiveDate,
+    reference: Option<&str>,
+) -> Result<(), CommandError> {
+    let Some(connection) = hook_connection(cx).await? else {
+        return Ok(());
+    };
+    let post_date = (connection.post_when == "payment").then_some(paid_on);
+    enqueue(
+        cx,
+        "post_bill",
+        Some(bill.id),
+        None,
+        json!({ "post_date": post_date }),
+    )
+    .await?;
+    enqueue(
+        cx,
+        "post_payment",
+        Some(bill.id),
+        Some(bill.id),
+        json!({ "outside": true, "method": method, "tran_date": paid_on, "reference": reference }),
+    )
+    .await?;
+    Ok(())
+}
+
+/// The bank reference changed (or first arrived) for a payment: queue
+/// telling the ledger, but only when the posted link doesn't already
+/// carry exactly this reference.
+pub async fn on_bank_reference(
+    cx: &mut Cx<'_>,
+    payment: &store::PaymentRow,
+) -> Result<(), CommandError> {
+    let Some(reference) = payment.transaction_id.as_deref() else {
+        return Ok(());
+    };
+    let Some(connection) = hook_connection(cx).await? else {
+        return Ok(());
+    };
+    let link = store::ledger_link_read(&mut cx.tx, connection.id, "payment", payment.id).await?;
+    let Some(link) = link else { return Ok(()) };
+    if link.status != "posted" || link.bank_reference.as_deref() == Some(reference) {
+        return Ok(());
+    }
+    enqueue(
+        cx,
+        "bank_reference",
+        Some(payment.bill_id),
+        Some(payment.id),
+        json!({ "reference": reference }),
+    )
+    .await?;
+    Ok(())
+}
+
+/// Send a payment's bank reference now and record it on the link.
+async fn set_bank_reference_now(
+    cx: &mut Cx<'_>,
+    connection: &store::LedgerConnection,
+    payment_id: Uuid,
+    reference: &str,
+) -> Result<(), CommandError> {
+    let adapter = adapter_for(cx, connection).await?;
+    adapter
+        .get()
+        .set_bank_reference(&payvy_ledger::payment_key(payment_id), reference)
+        .await
+        .map_err(|e| CommandError::Ledger {
+            code: e.code.as_str(),
+            detail: e.detail,
+        })?;
+    store::set_ledger_link_bank_reference(&mut cx.tx, connection.id, payment_id, reference).await?;
+    Ok(())
+}
+
+/// The payment leg of a bill paid outside Payvy: drawn on the ledger
+/// account the bank map names for its method ("ach", "check", …), keyed
+/// by the bill. An unmapped method is recorded on its link, not hidden.
+async fn post_outside_leg(
+    cx: &mut Cx<'_>,
+    connection: &store::LedgerConnection,
+    bill: &store::Bill,
+    method: &str,
+    tran_date: chrono::NaiveDate,
+    reference: Option<&str>,
+) -> Result<Value, CommandError> {
+    let adapter = adapter_for(cx, connection).await?;
+    let vendor = vendor_external(
+        store::ledger_link_read(&mut cx.tx, connection.id, "vendor", bill.vendor_id).await?,
+    );
+    let records = store::ledger_records(&mut cx.tx, connection.id).await?;
+    let books = books_for(connection, &records, &vendor);
+    let bill_link = store::ledger_link_read(&mut cx.tx, connection.id, "bill", bill.id).await?;
+    let bill_external_id = bill_link
+        .filter(|link| link.status == "posted")
+        .and_then(|link| link.external_id)
+        .unwrap_or_default();
+    let account = connection
+        .bank_account_map
+        .get(method)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let draft = payvy_ledger::PaymentDraft {
+        payment_id: bill.id,
+        amount_cents: bill.amount_cents,
+        tran_date,
+        memo: method.to_owned(),
+        bank_account_id: account,
+        bill_external_id,
+        vendor_external_id: vendor,
+    };
+    let existing = store::ledger_link_read(&mut cx.tx, connection.id, "payment", bill.id).await?;
+    let view = existing.as_ref().map(view_of).transpose()?;
+    let key = payvy_ledger::payment_key(bill.id);
+    let submitted =
+        payvy_ledger::submit_payment(adapter.get(), &books, &draft, view.as_ref()).await;
+    let outcome = match submitted {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            return record_failure(cx, connection.id, "payment", bill.id, &key, error).await;
+        }
+    };
+    if !outcome.replay {
+        store::put_ledger_link(
+            &mut cx.tx,
+            cx.org,
+            &store::PutLedgerLink {
+                connection_id: connection.id,
+                entity: "payment",
+                payvy_id: bill.id,
+                external_id: Some(&outcome.posted.external_id),
+                external_key: &outcome.posted.external_key,
+                status: "posted",
+                error_code: None,
+                error_detail: None,
+                request_hash: Some(&outcome.hash),
+                posted_at: Some(cx.now),
+            },
+        )
+        .await?;
+    }
+    cx.emit(
+        "ledger.payment_posted",
+        bill.id,
+        json!({ "payment_id": bill.id, "bill_id": bill.id, "outside": true,
+                "external_id": outcome.posted.external_id,
+                "external_key": outcome.posted.external_key, "replay": outcome.replay }),
+    )
+    .await?;
+    if let Some(reference) = reference {
+        set_bank_reference_now(cx, connection, bill.id, reference).await?;
+    }
+    Ok(posted_json(&outcome))
+}
+
+/// Where a bill stands for an approval-mode post job, evaluated the
+/// same way bill commands evaluate it (a worker-side read).
+async fn bill_at_pay_step(cx: &mut Cx<'_>, bill: &store::Bill) -> Result<bool, CommandError> {
+    use payvy_domain::workflow::{self, Facts, Status, Workflow};
+    let wf = match bill.workflow_id {
+        Some(id) => store::get_workflow(&mut cx.tx, id)
+            .await?
+            .map(|row| row.workflow)
+            .unwrap_or_else(Workflow::builtin_default),
+        None => Workflow::builtin_default(),
+    };
+    let (approvals, signals) = store::facts(&mut cx.tx, &[bill.id]).await?;
+    let approvals: Vec<_> = approvals.into_iter().map(|(_, a)| a).collect();
+    let signals: Vec<_> = signals.into_iter().map(|(_, s)| s).collect();
+    let limits = store::auto_pay_limits(&mut cx.tx).await?;
+    let progress = workflow::evaluate(
+        &wf,
+        &Facts {
+            amount_cents: bill.amount_cents,
+            received_at: bill.received_at,
+            approvals: &approvals,
+            signals: &signals,
+            released_at: bill.released_at,
+            release_by_person: bill.release_by_person,
+            payable_by_override: false,
+            auto_pay_limit: limits.for_vendor(bill.vendor_id),
+            now: cx.now,
+        },
+    );
+    Ok(matches!(
+        progress.status,
+        Status::AwaitingRelease { .. } | Status::ReadyToPay | Status::Released { .. }
+    ) || bill.state != payvy_domain::bills::State::Open)
+}
+
+/// Run one queued job in a fresh command transaction (the worker's
+/// entry point). The job's own outcome is the caller's to record.
+pub async fn execute_job(
+    state: &crate::AppState,
+    org: Uuid,
+    job: &store::LedgerJob,
+) -> Result<JobOutcome, CommandError> {
+    let actor = crate::Actor::agent(org, "ledger");
+    let mut tx = state.store.begin(org).await?;
+    let roles = crate::permissions::roles(&mut tx, &actor).await?;
+    let mut cx = Cx {
+        tx,
+        roles,
+        store: &state.store,
+        org,
+        actor: &actor,
+        now: (state.clock)(),
+        clock: &state.clock,
+        events: Vec::new(),
+        extraction_claim: None,
+        preview: false,
+        storage: state.storage.as_deref(),
+        inbound_domain: state.inbound.as_ref().map(|i| i.domain.as_str()),
+        extractor: state.extractor.as_deref(),
+        bank: state.bank.as_deref(),
+        auth: state.auth.as_deref(),
+        ledger: state.ledger.as_deref(),
+    };
+    let result = run_job(&mut cx, job).await;
+    let Cx { tx, .. } = cx;
+    match result {
+        Ok(outcome) => {
+            tx.commit().await.map_err(anyhow::Error::from)?;
+            Ok(outcome)
+        }
+        Err(error) => {
+            // A recorded ledger refusal keeps its link row; anything
+            // else rolls back, exactly as a command would.
+            let finished = if error.persists() {
+                tx.commit().await
+            } else {
+                tx.rollback().await
+            };
+            finished.map_err(anyhow::Error::from)?;
+            Err(error)
+        }
+    }
+}
+
+/// What a job did, for `execute_job` to record: posted, or not yet time
+/// (a held bill's post waits without burning an attempt).
+pub enum JobOutcome {
+    Done,
+    Defer,
+}
+
+async fn run_job(cx: &mut Cx<'_>, job: &store::LedgerJob) -> Result<JobOutcome, CommandError> {
+    match job.kind.as_str() {
+        "post_bill" => {
+            let bill_id = job.bill_id.ok_or(CommandError::NotFound("job bill"))?;
+            // In approval mode a held (or still-approving) bill's post
+            // waits for its moment; the job defers instead of failing.
+            if let Ok(connection) = connection_read(cx).await
+                && connection.post_when == "approval"
+            {
+                let bill = store::get_bill_read(&mut cx.tx, bill_id)
+                    .await?
+                    .ok_or(CommandError::NotFound("bill"))?;
+                if !bill_at_pay_step(cx, &bill).await? {
+                    return Ok(JobOutcome::Defer);
+                }
+            }
+            let post_date = job
+                .payload
+                .get("post_date")
+                .and_then(Value::as_str)
+                .and_then(|s| s.parse().ok());
+            post_bill_at(cx, bill_id, post_date).await?;
+            Ok(JobOutcome::Done)
+        }
+        "post_payment" => {
+            if job.payload.get("outside").and_then(Value::as_bool) == Some(true) {
+                let bill_id = job.bill_id.ok_or(CommandError::NotFound("job bill"))?;
+                let bill = store::get_bill_read(&mut cx.tx, bill_id)
+                    .await?
+                    .ok_or(CommandError::NotFound("bill"))?;
+                let connection = connection_read(cx).await?;
+                let method = job
+                    .payload
+                    .get("method")
+                    .and_then(Value::as_str)
+                    .unwrap_or("other");
+                let tran_date = job
+                    .payload
+                    .get("tran_date")
+                    .and_then(Value::as_str)
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(cx.now.date_naive());
+                let reference = job.payload.get("reference").and_then(Value::as_str);
+                post_outside_leg(cx, &connection, &bill, method, tran_date, reference).await?;
+                Ok(JobOutcome::Done)
+            } else {
+                let payment_id = job
+                    .payment_id
+                    .ok_or(CommandError::NotFound("job payment"))?;
+                post_payment(cx, PaymentId { payment_id }).await?;
+                // The reference follows in the same job when it is known.
+                let payment = store::get_payment(&mut cx.tx, payment_id)
+                    .await?
+                    .ok_or(CommandError::NotFound("payment"))?;
+                if let Some(reference) = payment.transaction_id.clone() {
+                    let connection = connection_read(cx).await?;
+                    let link =
+                        store::ledger_link_read(&mut cx.tx, connection.id, "payment", payment_id)
+                            .await?;
+                    if link.is_some_and(|l| l.bank_reference.as_deref() != Some(reference.as_str()))
+                    {
+                        set_bank_reference_now(cx, &connection, payment_id, &reference).await?;
+                    }
+                }
+                Ok(JobOutcome::Done)
+            }
+        }
+        "bank_reference" => {
+            // Read the reference as it stands now: a newer one may have
+            // arrived while this job waited, and an old payload must
+            // never overwrite it.
+            let payment_id = job
+                .payment_id
+                .ok_or(CommandError::NotFound("job payment"))?;
+            let payment = store::get_payment(&mut cx.tx, payment_id)
+                .await?
+                .ok_or(CommandError::NotFound("payment"))?;
+            let Some(reference) = payment.transaction_id.clone() else {
+                return Ok(JobOutcome::Done);
+            };
+            let connection = connection_read(cx).await?;
+            let link =
+                store::ledger_link_read(&mut cx.tx, connection.id, "payment", payment_id).await?;
+            if link.is_some_and(|l| l.bank_reference.as_deref() == Some(reference.as_str())) {
+                return Ok(JobOutcome::Done);
+            }
+            set_bank_reference_now(cx, &connection, payment_id, &reference).await?;
+            Ok(JobOutcome::Done)
+        }
+        other => Err(CommandError::Invalid(format!("unknown ledger job {other}"))),
+    }
 }

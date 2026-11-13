@@ -14,6 +14,9 @@ mod extract;
 mod inbox;
 mod invoice_reviews;
 mod ledger;
+
+/// The ledger worker runs queued posting jobs (see `ledger_jobs`).
+pub(crate) use ledger::{JobOutcome, execute_job};
 mod notifications;
 mod org;
 mod payee_invites;
@@ -375,6 +378,9 @@ async fn execute(cx: &mut Cx<'_>, name: &str, input: &Value) -> Result<Value, Co
         "po.allocation_accept" => purchase_orders::allocation_accept(cx, parse(input)?).await,
         "po.allocation_reverse" => purchase_orders::allocation_reverse(cx, parse(input)?).await,
         "event.list" => events::list(cx, parse(input)?).await,
+        "ledger.connect" => ledger::connect(cx, parse(input)?).await,
+        "ledger.settings" => ledger::settings(cx, parse(input)?).await,
+        "ledger.configure" => ledger::configure(cx, parse(input)?).await,
         "ledger.post_bill" => ledger::post_bill(cx, parse(input)?).await,
         "ledger.post_payment" => ledger::post_payment(cx, parse(input)?).await,
         "ledger.void" => ledger::void(cx, parse(input)?).await,
@@ -435,6 +441,10 @@ impl<'a> Cx<'a> {
         self.bank.ok_or(CommandError::NotConfigured(
             "paying through a bank isn't configured (set PAYVY_SECRETS_KEY)",
         ))
+    }
+
+    pub fn auth(&self) -> Option<&'a crate::auth::Auth> {
+        self.auth
     }
 
     pub fn ledger(&self) -> Result<&'a (dyn payvy_ledger::Ledger + Send + Sync), CommandError> {
