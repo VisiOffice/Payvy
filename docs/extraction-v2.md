@@ -88,8 +88,11 @@ have their own slot. CI retries required OCR package installation four times bef
 
 Extraction analysis records schema/prompt versions and hashes, original SHA-256, selected
 pages, arrangement version, timestamps, elapsed time, coverage, source method/text and
-location results. Existing extraction records retain provider/model identity. No provider
-usage/cost estimate is currently recorded.
+location results. Existing extraction records retain provider/model identity. AI
+usage and estimated cost are recorded per attempt (`ai_usage_attempts`);
+`payvy extract-eval` is excluded, and 1-hour cache writes (2x input), the 1.1x
+US-only inference surcharge, and batch discounts are not modelled in the price
+table.
 
 ## Evaluation and rollout gate
 
