@@ -1,10 +1,10 @@
-import { Access } from './permissions';
+import { Access, useCan } from './permissions';
 import { lazy, Suspense, useCallback, useEffect, useState } from 'react';
 import { Navigate, Route, Routes, useLocation, useParams } from 'react-router';
 import { Center } from '@astryxdesign/core/Center';
 import { Spinner } from '@astryxdesign/core/Spinner';
 import { ApiError, auth, type Me } from './api/client';
-import { SessionContext } from './session';
+import { SessionContext, useSession } from './session';
 import { Shell } from './Shell';
 import { SignIn } from './pages/SignIn';
 import { Bills } from './pages/Bills';
@@ -106,7 +106,7 @@ export function App() {
     <SessionContext value={{ me: state.me, signOut, setMe: (me) => setState({ kind: 'signed_in', me }) }}>
       <Shell>
         <Routes>
-          <Route path="/" element={<Inbox />} />
+          <Route path="/" element={<Home />} />
           <Route path="/bills" element={<Bills />} />
           <Route
             path="/bills/:id"
@@ -200,4 +200,17 @@ export function App() {
 function OldWorkflowLink() {
   const { key } = useParams();
   return <Navigate to={key === 'default' ? '/settings/workflows' : `/vendors/${key}#workflow`} replace />;
+}
+
+/** A hosted company without a plan can't read or pay yet: its Admins start
+ *  on Settings > Billing to choose one. Everyone else, and every later visit
+ *  once a plan is in force, starts on the inbox. Only `/` redirects, so the
+ *  rest of the app stays reachable. */
+function Home() {
+  const { me } = useSession();
+  const can = useCan();
+  if (me.plan?.billing && !me.plan.payments && can('billing.checkout')) {
+    return <Navigate to="/settings/billing" replace />;
+  }
+  return <Inbox />;
 }
