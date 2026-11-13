@@ -15,6 +15,20 @@ use crate::commands;
 const EVERY: Duration = Duration::from_secs(15);
 const PER_TICK: i64 = 20;
 
+/// Whether a failure says nothing about the job itself: the ledger
+/// couldn't be reached or didn't answer in time, or Payvy's own store
+/// hiccuped. Those retry for as long as they take to clear; a refusal
+/// from the ledger (a closed period, an unmapped account) is permanent
+/// and stops at the attempt cap.
+fn transient(error: &commands::CommandError) -> bool {
+    use commands::CommandError;
+    match error {
+        CommandError::Ledger { code, .. } => matches!(*code, "timeout" | "concurrency"),
+        CommandError::Internal(_) => true,
+        _ => false,
+    }
+}
+
 /// Runs until the process stops.
 pub async fn run(state: AppState) {
     loop {
@@ -54,7 +68,14 @@ pub async fn tick(state: &AppState) -> anyhow::Result<usize> {
                 Err(e) => {
                     let message = e.to_string();
                     let message: String = message.chars().take(300).collect();
-                    store::fail_ledger_job(&mut tx, job.id, &message, (state.clock)()).await?;
+                    store::fail_ledger_job(
+                        &mut tx,
+                        job.id,
+                        &message,
+                        (state.clock)(),
+                        transient(&e),
+                    )
+                    .await?;
                 }
             }
             tx.commit().await?;

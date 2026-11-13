@@ -556,12 +556,18 @@ pub async fn finish_ledger_job(tx: &mut Tx, id: Uuid, now: DateTime<Utc>) -> any
 }
 
 /// A failed attempt waits with backoff (attempts squared minutes, capped
-/// at an hour) and keeps its error where a person can see it.
+/// at an hour) and keeps its error where a person can see it. A permanent
+/// refusal stops after 8 attempts: the job is dead, and the by-hand
+/// commands remain the retry path. A transient failure (the ledger is
+/// unreachable, a call timed out) never counts toward that cap: an
+/// outage longer than the retry window must not kill a job that would
+/// have posted fine once the ledger is back.
 pub async fn fail_ledger_job(
     tx: &mut Tx,
     id: Uuid,
     error: &str,
     now: DateTime<Utc>,
+    transient: bool,
 ) -> anyhow::Result<()> {
     let attempts: i32 = sqlx::query("SELECT attempts FROM ledger_jobs WHERE id = $1")
         .bind(id)
@@ -569,10 +575,11 @@ pub async fn fail_ledger_job(
         .await?
         .get("attempts");
     let backoff = chrono::Duration::minutes(i64::from(attempts * attempts).min(60));
-    // A permanent refusal stops after 8 attempts: the job is dead, its
-    // error stays where a person can see it, and the by-hand commands
-    // remain the retry path.
-    let status = if attempts >= 8 { "dead" } else { "failed" };
+    let status = if !transient && attempts >= 8 {
+        "dead"
+    } else {
+        "failed"
+    };
     sqlx::query(
         "UPDATE ledger_jobs SET status = $5, last_error = $2, next_attempt_at = $3, updated_at = $4 WHERE id = $1",
     )
