@@ -224,7 +224,7 @@ async fn apply(
             // The ledger follows the money: post (at payment, the bill
             // first) and then the bank reference. Recorded failures
             // never touch the bank facts above.
-            super::ledger::on_payment_sent(cx, &updated, bill).await;
+            super::ledger::on_payment_sent(cx, &updated, bill, paid_on).await;
         }
         Status::Returned if bill.state == State::Paid => {
             store::reopen_returned_bill(&mut cx.tx, bill.id).await?;

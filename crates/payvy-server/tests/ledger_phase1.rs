@@ -183,6 +183,27 @@ async fn connect_seals_the_key_and_configure_changes_how_it_posts() {
     assert!(!row.token_sealed.windows(13).any(|w| w == b"vk_live_secret"));
     let first_id = row.id;
     tx.rollback().await.unwrap();
+    // Rotating the key on the same entity and origin keeps the connection.
+    confirm(
+        &state,
+        &person("ada"),
+        "ledger.connect",
+        json!({ "origin": "https://books.example.test", "entity": "42", "api_key": "vk_live_secret2" }),
+    )
+    .await
+    .unwrap();
+    let mut tx = state.store.begin(DEFAULT_ORG).await.unwrap();
+    assert_eq!(
+        store::active_ledger_connection(&mut tx)
+            .await
+            .unwrap()
+            .unwrap()
+            .id,
+        first_id
+    );
+    tx.rollback().await.unwrap();
+    // A different entity is a different set of books: a new connection,
+    // and the old one's links do not carry over.
     confirm(
         &state,
         &person("ada"),
@@ -196,7 +217,7 @@ async fn connect_seals_the_key_and_configure_changes_how_it_posts() {
         .unwrap();
     assert_eq!(settings["result"]["entity"], "43");
     let mut tx = state.store.begin(DEFAULT_ORG).await.unwrap();
-    assert_eq!(
+    assert_ne!(
         store::active_ledger_connection(&mut tx)
             .await
             .unwrap()
@@ -206,20 +227,30 @@ async fn connect_seals_the_key_and_configure_changes_how_it_posts() {
     );
     tx.rollback().await.unwrap();
 
-    // Configure changes timing; asking for the same thing is refused.
-    commit(
-        &state,
-        &person("ada"),
-        "ledger.configure",
-        json!({ "post_when": "approval" }),
-    )
-    .await
-    .unwrap();
+    // Configure is confirmed (it carries how money is recorded), and
+    // asking for what is already set is refused.
     let e = commit(
         &state,
         &person("ada"),
         "ledger.configure",
-        json!({ "post_when": "approval" }),
+        json!({ "post_when": "payment" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(e, CommandError::NeedsConfirmation(_)), "{e}");
+    confirm(
+        &state,
+        &person("ada"),
+        "ledger.configure",
+        json!({ "post_when": "payment" }),
+    )
+    .await
+    .unwrap();
+    let e = confirm(
+        &state,
+        &person("ada"),
+        "ledger.configure",
+        json!({ "post_when": "payment" }),
     )
     .await
     .unwrap_err();
@@ -266,6 +297,9 @@ async fn approval_mode_posts_when_the_last_approval_lands() {
     )
     .await
     .unwrap();
+    // Queued, not posted inside the approval: the worker posts it.
+    assert!(fake.calls().is_empty(), "queued only: {:?}", fake.calls());
+    payvy_server::ledger_worker::tick(&state).await.unwrap();
     let key = format!("payvy:bill:{bill}");
     assert!(
         fake.calls()
@@ -285,7 +319,7 @@ async fn approval_mode_posts_when_the_last_approval_lands() {
 }
 
 #[tokio::test]
-async fn payment_mode_posts_the_bill_at_an_outside_payment_and_says_the_leg_is_skipped() {
+async fn payment_mode_posts_the_bill_at_an_outside_payment_and_records_the_unmapped_leg() {
     let Some(db) = TestDb::new().await else {
         return;
     };
@@ -316,6 +350,10 @@ async fn payment_mode_posts_the_bill_at_an_outside_payment_and_says_the_leg_is_s
     )
     .await
     .unwrap();
+    // Queued at mark_paid; the worker posts the bill, and the payment
+    // leg — with no method mapped to a ledger account — fails on its
+    // link where a person can see it, ready to retry once mapped.
+    payvy_server::ledger_worker::tick(&state).await.unwrap();
     let key = format!("payvy:bill:{bill}");
     assert!(
         fake.calls()
@@ -324,21 +362,16 @@ async fn payment_mode_posts_the_bill_at_an_outside_payment_and_says_the_leg_is_s
         "{:?}",
         fake.calls()
     );
-    let got = commit(
-        &state,
-        &person("ada"),
-        "bill.get",
-        json!({ "bill_id": bill }),
-    )
-    .await
-    .unwrap();
-    assert!(
-        got["result"]["history"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|e| e["kind"] == "ledger.payment_skipped"),
-        "the skipped payment leg is on the bill's history"
-    );
+    let mut tx = state.store.begin(DEFAULT_ORG).await.unwrap();
+    let conn = store::active_ledger_connection(&mut tx)
+        .await
+        .unwrap()
+        .unwrap();
+    let link = store::ledger_link(&mut tx, conn.id, "payment", bill)
+        .await
+        .unwrap()
+        .expect("the outside payment leg has a link");
+    assert_eq!(link.status, "error");
+    tx.rollback().await.unwrap();
     db.drop().await;
 }

@@ -821,8 +821,8 @@
       "name": "ledger.configure",
       "permission": "admin",
       "person_only": true,
-      "summary": "Change how the connected ledger posts (person only): post_when (approval or payment), the AP account, coding defaults, and the map from Payvy bank connections (or payment methods) to ledger bank accounts. Asking for what is already set is refused.",
-      "tier": "routine"
+      "summary": "Change how the connected ledger posts (person only, confirmed): post_when (approval or payment), the AP account, coding defaults, and the map from Payvy bank connections (or payment methods) to ledger bank accounts. Map keys are validated against the company's bank connections and methods. Asking for what is already set is refused.",
+      "tier": "confirmed"
     },
     {
       "input_schema": "{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"bill_id\"],\"properties\":{\"bill_id\":{\"type\":\"string\",\"format\":\"uuid\"}}}",

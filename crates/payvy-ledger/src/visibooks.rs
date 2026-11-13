@@ -19,6 +19,12 @@ impl VisiBooks {
         Self::build(origin, entity, token, false)
     }
 
+    /// A loopback origin over plain HTTP, for development and tests
+    /// against a local VisiAPI. Refuses anything that isn't loopback.
+    pub fn new_local(origin: &str, entity: &str, token: &str) -> Result<Self, LedgerError> {
+        Self::build(origin, entity, token, true)
+    }
+
     fn build(
         origin: &str,
         entity: &str,
@@ -188,6 +194,8 @@ impl Ledger for VisiBooks {
             // VisiBooks requires a date; an undated invoice is due on its
             // invoice date for this ledger export, without editing Payvy's bill.
             let due = body.due_date.as_ref().unwrap_or(&body.invoice_date);
+            // Posted at payment, the bill carries the payment date.
+            let issue = body.post_date.as_ref().unwrap_or(&body.invoice_date);
             let mut lines = Vec::new();
             for line in &body.lines {
                 // Configured dimensions must name actual VisiBooks segment IDs.
@@ -209,7 +217,7 @@ impl Ledger for VisiBooks {
                 lines.push(value);
             }
             let mut bill = json!({ "contact_id": id(&body.vendor_external_id)?, "vendor_invoice_number": body.invoice_number,
-                "issue_date": body.invoice_date, "due_date": due, "currency": body.currency, "notes": body.memo, "lines": lines });
+                "issue_date": issue, "due_date": due, "currency": body.currency, "notes": body.memo, "lines": lines });
             if let Some(period) = &body.service_period {
                 bill["service_period"] =
                     json!({ "starts_on": period.starts_on, "ends_on": period.ends_on });
@@ -398,6 +406,7 @@ mod tests {
     fn bill() -> BillBody {
         BillBody {
             external_key: "payvy:bill:example".into(),
+            post_date: None,
             service_period: None,
             vendor_external_id: "38".into(),
             subsidiary_id: "12".into(),

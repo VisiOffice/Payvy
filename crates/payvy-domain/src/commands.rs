@@ -875,8 +875,8 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "ledger.configure",
-        summary: "Change how the connected ledger posts (person only): post_when (approval or payment), the AP account, coding defaults, and the map from Payvy bank connections (or payment methods) to ledger bank accounts. Asking for what is already set is refused.",
-        tier: RiskTier::Routine,
+        summary: "Change how the connected ledger posts (person only, confirmed): post_when (approval or payment), the AP account, coding defaults, and the map from Payvy bank connections (or payment methods) to ledger bank accounts. Map keys are validated against the company's bank connections and methods. Asking for what is already set is refused.",
+        tier: RiskTier::Confirmed,
         person_only: true,
         permission: Permission::Admin,
         input_schema: r#"{"type":"object","additionalProperties":false,"properties":{"post_when":{"type":"string","enum":["approval","payment"]},"ap_account_id":{"type":["string","null"]},"defaults":{"type":"object"},"bank_account_map":{"type":"object"}}}"#,
