@@ -216,6 +216,10 @@ pub struct DraftLine {
 #[derive(Debug, Clone)]
 pub struct BillDraft {
     pub bill_id: Uuid,
+    /// The service period the bill covers, when known (an allocated PO's
+    /// period). Part of the post body and therefore of its hash: changing
+    /// it after posting is a changed bill, never a silent replay.
+    pub service_period: Option<(NaiveDate, NaiveDate)>,
     pub vendor_external_id: String,
     pub invoice_number: String,
     pub invoice_date: NaiveDate,
@@ -250,9 +254,18 @@ pub struct BillLineBody {
     pub location_id: Option<String>,
 }
 
+/// A service period as calendar dates, as sent to the ledger.
+#[derive(Debug, Clone, Serialize)]
+pub struct ServicePeriod {
+    pub starts_on: String,
+    pub ends_on: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct BillBody {
     pub external_key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_period: Option<ServicePeriod>,
     pub vendor_external_id: String,
     pub subsidiary_id: String,
     pub invoice_number: String,
@@ -400,6 +413,23 @@ pub trait Ledger: Send + Sync {
         external_id: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<(), LedgerError>> + Send + 'a>>;
 
+    /// Point the ledger's bill at its document in Payvy. Idempotent and
+    /// cheap; not part of the post body or its hash.
+    fn set_document_link<'a>(
+        &'a self,
+        bill_external_key: &'a str,
+        url: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), LedgerError>> + Send + 'a>>;
+
+    /// Tell the ledger the bank's reference for a payment (learned after
+    /// posting, often by polling the bank). Idempotent; not part of the
+    /// payment body or its hash, so a late reference never replays a post.
+    fn set_bank_reference<'a>(
+        &'a self,
+        payment_external_key: &'a str,
+        reference: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), LedgerError>> + Send + 'a>>;
+
     /// The ledger's file id. The same bill and name with the same bytes returns
     /// the id already stored. Different bytes for that name are a conflict.
     fn attach_file<'a>(
@@ -519,7 +549,7 @@ pub async fn void_posted(
 
 enum Decision {
     Replay(PostedOutcome),
-    Send { body: BillBody, hash: String },
+    Send { body: Box<BillBody>, hash: String },
 }
 
 enum DecisionPay {
@@ -543,7 +573,10 @@ fn decide_bill(
         })),
         Gate::Ready => {
             validate_bill(books, draft, &body)?;
-            Ok(Decision::Send { body, hash })
+            Ok(Decision::Send {
+                body: Box::new(body),
+                hash,
+            })
         }
     }
 }
@@ -624,6 +657,10 @@ struct PaymentIdentity {
 fn compose_bill(books: &Books, draft: &BillDraft) -> (BillBody, String) {
     let body = BillBody {
         external_key: bill_key(draft.bill_id),
+        service_period: draft.service_period.map(|(starts, ends)| ServicePeriod {
+            starts_on: starts.to_string(),
+            ends_on: ends.to_string(),
+        }),
         vendor_external_id: draft.vendor_external_id.trim().to_owned(),
         subsidiary_id: books.subsidiary_id.trim().to_owned(),
         invoice_number: draft.invoice_number.clone(),
@@ -988,6 +1025,7 @@ mod tests {
     fn draft(memo: &str) -> BillDraft {
         BillDraft {
             bill_id: Uuid::from_u128(7),
+            service_period: None,
             vendor_external_id: "v1".into(),
             invoice_number: "1001".into(),
             invoice_date: NaiveDate::from_ymd_opt(2027, 1, 15).unwrap(),

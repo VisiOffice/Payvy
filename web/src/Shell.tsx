@@ -42,6 +42,7 @@ export const SETTINGS: { title: string; items: { href: string; label: string; co
       { href: '/settings/bank', label: 'Bank', command: 'bank.connect' },
       { href: '/settings/auto-pay', label: 'Auto-pay limit', command: 'auto_pay.raise_limit' },
       { href: '/settings/purchase-orders', label: 'Purchase orders', command: 'po.configure' },
+      { href: '/settings/ledger', label: 'Ledger', command: 'ledger.configure' },
     ],
   },
 ];

@@ -208,8 +208,13 @@ impl Ledger for VisiBooks {
                 }
                 lines.push(value);
             }
-            let request = json!({ "bill": { "contact_id": id(&body.vendor_external_id)?, "vendor_invoice_number": body.invoice_number,
-                "issue_date": body.invoice_date, "due_date": due, "currency": body.currency, "notes": body.memo, "lines": lines }});
+            let mut bill = json!({ "contact_id": id(&body.vendor_external_id)?, "vendor_invoice_number": body.invoice_number,
+                "issue_date": body.invoice_date, "due_date": due, "currency": body.currency, "notes": body.memo, "lines": lines });
+            if let Some(period) = &body.service_period {
+                bill["service_period"] =
+                    json!({ "starts_on": period.starts_on, "ends_on": period.ends_on });
+            }
+            let request = json!({ "bill": bill });
             self.posted(
                 &format!(
                     "/api/v1/books/bills/by_external/payvy/{}",
@@ -247,6 +252,36 @@ impl Ledger for VisiBooks {
                 &body.external_key,
             )
             .await
+        })
+    }
+
+    fn set_document_link<'a>(&'a self, bill_external_key: &'a str, url: &'a str) -> Call<'a, ()> {
+        Box::pin(async move {
+            key(bill_external_key)?;
+            self.request(
+                Method::PUT,
+                &format!("/api/v1/books/bills/by_external/payvy/{bill_external_key}/document_link"),
+                json!({ "document_link": url }),
+            )
+            .await?;
+            Ok(())
+        })
+    }
+
+    fn set_bank_reference<'a>(
+        &'a self,
+        payment_external_key: &'a str,
+        reference: &'a str,
+    ) -> Call<'a, ()> {
+        Box::pin(async move {
+            key(payment_external_key)?;
+            self.request(
+                Method::PUT,
+                &format!("/api/v1/books/vendor_payments/by_external/payvy/{payment_external_key}/bank_reference"),
+                json!({ "bank_reference": reference }),
+            )
+            .await?;
+            Ok(())
         })
     }
 
@@ -363,6 +398,7 @@ mod tests {
     fn bill() -> BillBody {
         BillBody {
             external_key: "payvy:bill:example".into(),
+            service_period: None,
             vendor_external_id: "38".into(),
             subsidiary_id: "12".into(),
             invoice_number: "ALLIED-123".into(),
@@ -649,5 +685,37 @@ mod tests {
             client.void_bill(&posted.external_id).await.unwrap();
             client.void_bill(&posted.external_id).await.unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn service_period_and_followup_calls_hit_their_endpoints() {
+        let (books, received, task) = mock(
+            StatusCode::OK,
+            json!({ "data": { "id": 88, "external_id": "payvy:bill:example", "status": "posted" } }),
+        )
+        .await;
+        let mut body = bill();
+        body.service_period = Some(crate::ServicePeriod {
+            starts_on: "2026-11-01".into(),
+            ends_on: "2026-11-30".into(),
+        });
+        books.post_bill(&body).await.unwrap();
+        books
+            .set_document_link("payvy:bill:example", "https://app.payvy.com/bills/abc")
+            .await
+            .unwrap();
+        books
+            .set_bank_reference("payvy:payment:example", "ach-123")
+            .await
+            .unwrap();
+        task.abort();
+        let calls = received.lock().unwrap();
+        assert_eq!(
+            calls[0]["bill"]["service_period"]["starts_on"],
+            "2026-11-01"
+        );
+        assert_eq!(calls[0]["bill"]["service_period"]["ends_on"], "2026-11-30");
+        assert_eq!(calls[1]["document_link"], "https://app.payvy.com/bills/abc");
+        assert_eq!(calls[2]["bank_reference"], "ach-123");
     }
 }

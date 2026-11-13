@@ -1034,6 +1034,22 @@ export interface EmailGetInput {
   email_id: string;
 }
 
+export interface LedgerConnectInput {
+  origin: string;
+  entity: string;
+  api_key: string;
+  post_when?: "approval" | "payment";
+}
+
+export interface LedgerSettingsInput {}
+
+export interface LedgerConfigureInput {
+  post_when?: "approval" | "payment";
+  ap_account_id?: string | null;
+  defaults?: {};
+  bank_account_map?: {};
+}
+
 export interface LedgerPostBillInput {
   bill_id: string;
 }
@@ -1152,6 +1168,9 @@ export interface CommandInputs {
   "email.import": EmailImportInput;
   "email.list": EmailListInput;
   "email.get": EmailGetInput;
+  "ledger.connect": LedgerConnectInput;
+  "ledger.settings": LedgerSettingsInput;
+  "ledger.configure": LedgerConfigureInput;
   "ledger.post_bill": LedgerPostBillInput;
   "ledger.post_payment": LedgerPostPaymentInput;
   "ledger.void": LedgerVoidInput;
@@ -1263,6 +1282,9 @@ export const COMMANDS: Record<CommandName, { tier: Tier; personOnly: boolean; su
   "email.import": { tier: "routine", personOnly: false, summary: "Read a raw email (an .eml file, base64) into the inbox: its PDF and image attachments become documents, including those of a forwarded email. The inbound webhook uses this too. Refused if the same email is already here. The result lists what was skipped and why." },
   "email.list": { tier: "read", personOnly: false, summary: "Emails received, newest first: sender, subject and what was skipped." },
   "email.get": { tier: "read", personOnly: false, summary: "One email: its details, the documents it brought in, and a 15-minute download link for the original message." },
+  "ledger.connect": { tier: "confirmed", personOnly: true, summary: "Connect VisiBooks for this company (person only): its HTTPS origin, entity id and API key. The key is sealed at once and never read back; reconnecting updates the same connection, so its links stand. Confirmed, because it carries a credential." },
+  "ledger.settings": { tier: "read", personOnly: false, summary: "The company's ledger connection: provider, origin, entity, when it posts (post_when), the AP account and the bank account map. Never the credential. Disconnected companies read connected: false." },
+  "ledger.configure": { tier: "routine", personOnly: true, summary: "Change how the connected ledger posts (person only): post_when (approval or payment), the AP account, coding defaults, and the map from Payvy bank connections (or payment methods) to ledger bank accounts. Asking for what is already set is refused." },
   "ledger.post_bill": { tier: "routine", personOnly: false, summary: "Post one bill to the connected ledger. The same bill posted again returns the first ledger id and sends nothing. A changed bill after posting is a conflict. A rejected or void bill is refused. Preview sends nothing." },
   "ledger.post_payment": { tier: "routine", personOnly: false, summary: "Record one sent payment in the ledger, applied to its posted bill and drawn on the mapped ledger bank account. Payvy has already paid through the customer's bank. Preview sends nothing." },
   "ledger.void": { tier: "confirmed", personOnly: true, summary: "Void the ledger's copy of a bill. Every posted payment is voided first, oldest first, including one the bank later returned. If a payment void is refused the bill stays posted. This cannot be undone, so it asks for confirmation. Only a person with admin may do this. Preview sends nothing." },

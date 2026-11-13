@@ -11,6 +11,9 @@ use crate::Tx;
 #[derive(Clone)]
 pub struct LedgerConnection {
     pub id: Uuid,
+    /// Where the ledger lives (a VisiBooks base URL). Null for providers
+    /// that don't take one; a VisiBooks connection can't post without it.
+    pub origin: Option<String>,
     pub provider: String,
     pub environment: String,
     pub account_id: String,
@@ -32,6 +35,7 @@ impl std::fmt::Debug for LedgerConnection {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LedgerConnection")
             .field("id", &self.id)
+            .field("origin", &self.origin)
             .field("provider", &self.provider)
             .field("environment", &self.environment)
             .field("account_id", &self.account_id)
@@ -53,6 +57,7 @@ impl std::fmt::Debug for LedgerConnection {
 
 pub struct NewLedgerConnection<'a> {
     pub id: Uuid,
+    pub origin: Option<&'a str>,
     pub provider: &'a str,
     pub environment: &'a str,
     pub account_id: &'a str,
@@ -73,6 +78,7 @@ pub struct NewLedgerConnection<'a> {
 fn connection(row: &sqlx::postgres::PgRow) -> LedgerConnection {
     LedgerConnection {
         id: row.get("id"),
+        origin: row.get("origin"),
         provider: row.get("provider"),
         environment: row.get("environment"),
         account_id: row.get("account_id"),
@@ -93,7 +99,7 @@ fn connection(row: &sqlx::postgres::PgRow) -> LedgerConnection {
 
 macro_rules! connection_cols {
     () => {
-        "id, provider, environment, account_id, subsidiary_id, subsidiary_name, currency, status, auth_kind, token_sealed, post_when, ap_account_id, defaults, bank_account_map, created_at, created_by"
+"id, origin, provider, environment, account_id, subsidiary_id, subsidiary_name, currency, status, auth_kind, token_sealed, post_when, ap_account_id, defaults, bank_account_map, created_at, created_by"
     };
 }
 
@@ -103,15 +109,16 @@ pub async fn insert_ledger_connection(
     new: &NewLedgerConnection<'_>,
 ) -> anyhow::Result<LedgerConnection> {
     let row = sqlx::query(concat!(
-        "INSERT INTO ledger_connections (id, org_id, provider, environment, account_id, subsidiary_id,
+        "INSERT INTO ledger_connections (id, org_id, origin, provider, environment, account_id, subsidiary_id,
             subsidiary_name, currency, status, auth_kind, token_sealed, post_when, ap_account_id,
             defaults, bank_account_map, created_at, created_by)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
          RETURNING ",
         connection_cols!()
     ))
         .bind(new.id)
         .bind(org_id)
+        .bind(new.origin)
         .bind(new.provider)
         .bind(new.environment)
         .bind(new.account_id)
@@ -146,6 +153,38 @@ pub async fn active_ledger_connection(tx: &mut Tx) -> anyhow::Result<Option<Ledg
     .fetch_optional(&mut **tx)
     .await?;
     Ok(row.as_ref().map(connection))
+}
+
+/// An Admin's settings change on the active connection: where it lives,
+/// what it posts as, when it posts, and how banks and defaults map. A new
+/// sealed token replaces the old when one is given; the row (and so its
+/// links) is the same connection.
+#[allow(clippy::too_many_arguments)]
+pub async fn update_ledger_connection(
+    tx: &mut Tx,
+    id: Uuid,
+    origin: Option<&str>,
+    account_id: &str,
+    post_when: &str,
+    ap_account_id: Option<&str>,
+    defaults: &Value,
+    bank_account_map: &Value,
+    token_sealed: Option<&[u8]>,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "UPDATE ledger_connections SET origin = $2, account_id = $3, post_when = $4, ap_account_id = $5, defaults = $6, bank_account_map = $7, token_sealed = COALESCE($8, token_sealed) WHERE id = $1",
+    )
+    .bind(id)
+    .bind(origin)
+    .bind(account_id)
+    .bind(post_when)
+    .bind(ap_account_id)
+    .bind(defaults)
+    .bind(bank_account_map)
+    .bind(token_sealed)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
 }
 
 pub async fn set_ledger_bank_map(tx: &mut Tx, id: Uuid, map: &Value) -> anyhow::Result<()> {

@@ -897,7 +897,14 @@ pub async fn approve(cx: &mut Cx<'_>, input: Approve) -> Result<Value, CommandEr
         json!({ "bill_id": bill.id, "step_id": step_id, "note": note }),
     )
     .await?;
-    detail(cx, bill.id).await
+    let out = detail(cx, bill.id).await?;
+    // Approval complete (no approval step left): the ledger hook posts
+    // when the company posts at approval. Its failures are recorded on
+    // the bill's ledger link; the approval stands either way.
+    if out["progress"]["status"] != "awaiting_approval" {
+        super::ledger::on_bill_approved(cx, bill.id).await;
+    }
+    Ok(out)
 }
 
 #[derive(Deserialize)]
@@ -1187,6 +1194,9 @@ pub async fn mark_paid(cx: &mut Cx<'_>, input: MarkPaid) -> Result<Value, Comman
                 "method": input.method, "reference": reference }),
     )
     .await?;
+    // In payment mode the ledger's bill posts now; its payment leg has
+    // no Payvy payment row (see ledger::on_outside_payment).
+    super::ledger::on_outside_payment(cx, &bill).await;
     let mut out = detail(cx, bill.id).await?;
     out["po_warning"] = json!(po_warning);
     out["revision_warning"] = json!(revision_warning);
