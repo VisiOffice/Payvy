@@ -13,7 +13,9 @@ use axum::{Json, Router};
 use payvy_domain::ai_usage::{format_usd, utc_month_bounds};
 use payvy_domain::commands;
 use payvy_domain::workflow::DEFAULT_AUTO_PAY_LIMIT_CENTS;
-use payvy_store::{AiUsageSummary, ProvisionOrgInput, ProvisionOrgOutcome};
+use payvy_store::{
+    AiUsageSummary, ProvisionOrgInput, ProvisionOrgOutcome, SetEntitlement, SetEntitlementOutcome,
+};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -171,7 +173,8 @@ async fn run_command(
     run(&state, &name, body.input, mode).await.map(Json)
 }
 
-/// Runs one operator command (`org.create`, `org.list`, `usage.summary`).
+/// Runs one operator command (`org.create`, `org.list`, `usage.summary`,
+/// `entitlement.set`, `entitlement.get`).
 pub async fn run(
     state: &AppState,
     name: &str,
@@ -192,6 +195,8 @@ pub async fn run(
         "org.create" => create_org(state, parse(&input)?, preview).await?,
         "org.list" => (list_orgs(state, parse(&input)?).await?, Vec::new()),
         "usage.summary" => (usage_summary(state, parse(&input)?).await?, Vec::new()),
+        "entitlement.set" => set_entitlement(state, parse(&input)?, preview).await?,
+        "entitlement.get" => (get_entitlement(state, parse(&input)?).await?, Vec::new()),
         other => return Err(CommandError::Unknown(other.to_owned())),
     };
 
@@ -341,6 +346,84 @@ async fn usage_summary(
     out["period_end"] = json!(end);
     out["organizations"] = json!(organizations);
     Ok(out)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SetEntitlementInput {
+    org_id: Uuid,
+    reader: bool,
+    payments: bool,
+    version: i64,
+}
+
+/// The only way a company's plan changes. Versions only go up, so a late or
+/// reordered call from the management app can't undo a newer one.
+async fn set_entitlement(
+    state: &AppState,
+    input: SetEntitlementInput,
+    preview: bool,
+) -> Result<(Value, Vec<String>), CommandError> {
+    if input.version < 1 {
+        return Err(CommandError::Invalid("version must be at least 1".into()));
+    }
+    let outcome = state
+        .store
+        .set_entitlement(
+            &SetEntitlement {
+                org_id: input.org_id,
+                reader: input.reader,
+                payments: input.payments,
+                version: input.version,
+                now: (state.clock)(),
+                actor: "operator",
+            },
+            preview,
+        )
+        .await?;
+    match outcome {
+        SetEntitlementOutcome::Changed { before, after } => Ok((
+            json!({ "changed": true, "before": before, "entitlement": after,
+                    "in_force": crate::entitlements::view(true, Some(&after)) }),
+            vec!["entitlement.set".to_owned()],
+        )),
+        SetEntitlementOutcome::Replayed(current) => Ok((
+            json!({ "changed": false, "entitlement": current,
+                    "in_force": crate::entitlements::view(true, Some(&current)) }),
+            Vec::new(),
+        )),
+        SetEntitlementOutcome::Stale(current) => Err(CommandError::Conflict(format!(
+            "version {} is not newer than the stored version {}; nothing changed",
+            input.version, current.version
+        ))),
+        SetEntitlementOutcome::NoOrganization => Err(CommandError::NotFound("organization")),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GetEntitlementInput {
+    org_id: Uuid,
+}
+
+async fn get_entitlement(
+    state: &AppState,
+    input: GetEntitlementInput,
+) -> Result<Value, CommandError> {
+    let mut tx = state.store.begin(input.org_id).await?;
+    let exists = payvy_store::organization(&mut tx, input.org_id)
+        .await?
+        .is_some();
+    tx.rollback().await.map_err(anyhow::Error::from)?;
+    if !exists {
+        return Err(CommandError::NotFound("organization"));
+    }
+    let stored = state.store.get_entitlement(input.org_id).await?;
+    Ok(json!({
+        "org_id": input.org_id,
+        "entitlement": stored,
+        "in_force": crate::entitlements::view(true, stored.as_ref()),
+    }))
 }
 
 fn summary_fields(s: &AiUsageSummary) -> Value {

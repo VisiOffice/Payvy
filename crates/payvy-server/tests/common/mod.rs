@@ -222,3 +222,30 @@ pub async fn set_workflow(state: &AppState, by: &Actor, vendor_id: Option<&str>,
     .await
     .unwrap();
 }
+
+pub const OPERATOR_KEY: &str = "test-operator-key-9876543210fedcba9876543210";
+
+/// The same state in hosted mode: plan entitlements are enforced, and a
+/// company with none stored is provisional.
+pub fn hosted(state: &AppState) -> AppState {
+    state.clone().with_operator_key(OPERATOR_KEY).hosted()
+}
+
+/// Sets a company's plan the way the management app does.
+pub async fn entitle(
+    state: &AppState,
+    org: Uuid,
+    reader: bool,
+    payments: bool,
+    version: i64,
+) -> Result<Value, CommandError> {
+    payvy_server::operator::run(
+        state,
+        "entitlement.set",
+        json!({ "org_id": org, "reader": reader, "payments": payments, "version": version }),
+        Mode::Commit {
+            confirm_token: None,
+        },
+    )
+    .await
+}

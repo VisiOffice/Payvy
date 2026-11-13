@@ -34,6 +34,12 @@ pub async fn run(state: AppState) {
 pub async fn tick(state: &AppState) -> anyhow::Result<usize> {
     let mut done = 0;
     for org in state.store.org_ids().await? {
+        // A plan without the built-in reader: its own agent reads. With it,
+        // only what arrived since the reader was switched on is read
+        // automatically, so an upgrade doesn't read a backlog unasked.
+        let Some(since) = crate::entitlements::auto_read_since(state, org).await? else {
+            continue;
+        };
         let mut tx = state.store.begin(org).await?;
         let ids = store::documents_to_extract(
             &mut tx,
@@ -41,6 +47,7 @@ pub async fn tick(state: &AppState) -> anyhow::Result<usize> {
             chrono::Duration::minutes(15),
             MAX_FAILURES,
             PER_TICK,
+            since,
         )
         .await?;
         tx.rollback().await?;

@@ -114,6 +114,12 @@ pub async fn check_invites(state: &AppState) -> anyhow::Result<usize> {
 pub async fn auto_pay(state: &AppState) -> anyhow::Result<usize> {
     let mut attempted = 0;
     for org in state.store.org_ids().await? {
+        // Bills wait at their pay step while the plan excludes payments.
+        if !crate::entitlements::company_allows(state, org, crate::entitlements::Need::Payments)
+            .await?
+        {
+            continue;
+        }
         let actor = Actor::agent(org, "workflow");
         let ready = commands::run(
             state,

@@ -995,6 +995,18 @@ pub const OPERATOR_COMMANDS: &[OperatorCommandSpec] = &[
         tier: RiskTier::Read,
         input_schema: r#"{"type":"object","additionalProperties":false,"properties":{"month":{"type":"string","pattern":"^\\d{4}-\\d{2}$","description":"UTC month as YYYY-MM; defaults to the current UTC month"},"org_id":{"type":"string","format":"uuid","description":"Optional single organization filter"}}}"#,
     },
+    OperatorCommandSpec {
+        name: "entitlement.set",
+        summary: "Set what a company's plan allows: reader (Payvy's built-in invoice reader) and payments (new payments through the bank). Applies only when version is higher than the stored one; the same version with the same values is a replay and changes nothing; a lower version is refused.",
+        tier: RiskTier::Routine,
+        input_schema: r#"{"type":"object","additionalProperties":false,"required":["org_id","reader","payments","version"],"properties":{"org_id":{"type":"string","format":"uuid","description":"The company"},"reader":{"type":"boolean","description":"Payvy's built-in reader may read this company's documents"},"payments":{"type":"boolean","description":"This company may release or auto-pay bills through its bank"},"version":{"type":"integer","minimum":1,"description":"Must be higher than the stored version; the caller's own ordering (e.g. a Stripe event time)"}}}"#,
+    },
+    OperatorCommandSpec {
+        name: "entitlement.get",
+        summary: "A company's stored entitlement and what is in force, in hosted mode (no stored entitlement means provisional: reader and payments off).",
+        tier: RiskTier::Read,
+        input_schema: r#"{"type":"object","additionalProperties":false,"required":["org_id"],"properties":{"org_id":{"type":"string","format":"uuid","description":"The company"}}}"#,
+    },
 ];
 
 pub fn find(name: &str) -> Option<&'static CommandSpec> {

@@ -27,6 +27,12 @@ enum Command {
         /// At least 32 characters and distinct from PAYVY_API_KEY.
         #[arg(long, env = "PAYVY_OPERATOR_KEY", hide_env_values = true)]
         operator_key: Option<String>,
+        /// Hosted Payvy: each company's plan (`entitlement.set`, operator
+        /// only) gates the built-in reader and new payments; a company with
+        /// none is provisional. Needs PAYVY_OPERATOR_KEY. Self-hosted leaves
+        /// it off: no plans, everything on.
+        #[arg(long, env = "PAYVY_HOSTED", default_value_t = false, action = clap::ArgAction::Set)]
+        hosted: bool,
         #[command(flatten)]
         storage: StorageArgs,
         #[command(flatten)]
@@ -296,6 +302,25 @@ enum OrgCommand {
         #[arg(long, default_value_t = 500)]
         limit: i64,
     },
+    /// Set what a company's plan allows (hosted mode). The version must be
+    /// higher than the stored one.
+    Entitle {
+        #[arg(long)]
+        org: uuid::Uuid,
+        /// Payvy's built-in reader may read this company's documents.
+        #[arg(long, action = clap::ArgAction::Set)]
+        reader: bool,
+        /// This company may send new payments through its bank.
+        #[arg(long, action = clap::ArgAction::Set)]
+        payments: bool,
+        #[arg(long)]
+        version: i64,
+    },
+    /// Show a company's stored plan and what is in force in hosted mode.
+    Entitlement {
+        #[arg(long)]
+        org: uuid::Uuid,
+    },
 }
 
 #[derive(Subcommand)]
@@ -364,6 +389,7 @@ async fn main() -> anyhow::Result<()> {
             bind,
             ref api_key,
             ref operator_key,
+            hosted,
             storage,
             inbound,
             extract,
@@ -395,6 +421,14 @@ async fn main() -> anyhow::Result<()> {
             if let Some(op_key) = operator_key {
                 tracing::info!("operator API enabled");
                 state = state.with_operator_key(op_key);
+            }
+            if hosted {
+                anyhow::ensure!(
+                    operator_key.is_some(),
+                    "PAYVY_HOSTED=true needs PAYVY_OPERATOR_KEY: only the operator grants a plan"
+                );
+                tracing::info!("hosted mode: plan entitlements are enforced");
+                state = state.hosted();
             }
             let create_bucket = storage.s3_create_bucket;
             match storage.config() {
@@ -549,6 +583,19 @@ async fn main() -> anyhow::Result<()> {
                     )
                 }
                 OrgCommand::List { limit } => ("org.list", serde_json::json!({ "limit": limit })),
+                OrgCommand::Entitle {
+                    org,
+                    reader,
+                    payments,
+                    version,
+                } => (
+                    "entitlement.set",
+                    serde_json::json!({ "org_id": org, "reader": reader,
+                                        "payments": payments, "version": version }),
+                ),
+                OrgCommand::Entitlement { org } => {
+                    ("entitlement.get", serde_json::json!({ "org_id": org }))
+                }
             };
             let out = payvy_server::operator::run(
                 &state,

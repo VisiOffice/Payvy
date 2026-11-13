@@ -916,3 +916,93 @@ async fn write_and_commit_failures_release_claim_without_clearing_a_replacement(
     );
     db.drop().await;
 }
+
+#[tokio::test]
+async fn a_plan_without_the_reader_makes_no_model_calls() {
+    let Some((mut db, fake)) = db_with(Provider::OpenAiCompatible).await else {
+        return;
+    };
+    db.state = common::hosted(&db.state);
+    let org = payvy_store::DEFAULT_ORG;
+    // Bring your own agent: payments on, Payvy's reader off.
+    common::entitle(&db.state, org, false, true, 1)
+        .await
+        .unwrap();
+    let doc = upload(&db).await;
+
+    // The background reader leaves the company alone; a direct read is refused.
+    assert_eq!(
+        payvy_server::extract_worker::tick(&db.state).await.unwrap(),
+        0
+    );
+    for again in [false, true] {
+        let e = commit(
+            &db.state,
+            &agent("claude-ap"),
+            "document.extract",
+            json!({ "document_id": doc, "again": again }),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(e, CommandError::NotEntitled(_)), "{e}");
+        assert!(e.to_string().contains("your own agent"), "{e}");
+    }
+    assert!(fake.requests().is_empty());
+    let usage = commit(&db.state, &person("robert"), "usage.summary", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(usage["result"]["attempts"], 0, "{usage:#}");
+
+    // The customer's agent still files the bill from the document.
+    let v = king(&db).await;
+    let made = commit(
+        &db.state,
+        &agent("claude-ap"),
+        "bill.create",
+        json!({ "vendor_id": v, "invoice_number": "189727", "invoice_date": "2027-01-10",
+                "amount_cents": 45_900, "document_id": doc }),
+    )
+    .await
+    .unwrap();
+    assert!(made["result"]["bill"]["id"].is_string(), "{made:#}");
+
+    // Left unread on the old plan: nobody handled it.
+    let backlog = upload(&db).await;
+    *db.clock.lock().unwrap() += chrono::Duration::minutes(1);
+
+    // Upgraded to the managed plan: the reader reads what arrives from now
+    // on, not the backlog, which is read only when someone asks.
+    common::entitle(&db.state, org, true, true, 2)
+        .await
+        .unwrap();
+    let fresh = upload(&db).await;
+    fake.answer(StatusCode::OK, openai_says(&king_invoice()));
+    assert_eq!(
+        payvy_server::extract_worker::tick(&db.state).await.unwrap(),
+        1
+    );
+    assert_eq!(fake.requests().len(), 1, "only the new document was read");
+    let read = commit(
+        &db.state,
+        &person("robert"),
+        "document.get",
+        json!({ "document_id": fresh }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        read["result"]["extractions"][0]["extraction"]["status"],
+        "read"
+    );
+    fake.answer(StatusCode::OK, openai_says(&king_invoice()));
+    commit(
+        &db.state,
+        &agent("claude-ap"),
+        "document.extract",
+        json!({ "document_id": backlog }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(fake.requests().len(), 2);
+    db.drop().await;
+}

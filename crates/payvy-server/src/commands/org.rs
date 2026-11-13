@@ -13,7 +13,15 @@ pub async fn get(cx: &mut Cx<'_>) -> Result<Value, CommandError> {
     let org = store::organization(&mut cx.tx, cx.org)
         .await?
         .ok_or(CommandError::NotFound("organization"))?;
-    Ok(json!({ "organization": org }))
+    // What the company's plan includes, so the app can say so before a
+    // command is refused. The server still checks on every command.
+    let stored = if cx.hosted {
+        store::entitlement(&mut cx.tx, cx.org).await?
+    } else {
+        None
+    };
+    let plan = crate::entitlements::view(cx.hosted, stored.as_ref());
+    Ok(json!({ "organization": org, "plan": plan }))
 }
 
 #[derive(Deserialize)]
