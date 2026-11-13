@@ -30,6 +30,8 @@ struct Fake {
     /// that already subscribes.
     subscribed: Arc<Mutex<bool>>,
     refuse: Arc<Mutex<bool>>,
+    /// Answer with a link that isn't https.
+    plain_link: Arc<Mutex<bool>>,
 }
 
 async fn fake_billing(fake: Fake) -> String {
@@ -52,7 +54,8 @@ async fn fake_billing(fake: Fake) -> String {
                         );
                     }
                     let kind = if *f.subscribed.lock().unwrap() { "portal" } else { "checkout" };
-                    (StatusCode::OK, Json(json!({ "kind": kind, "url": format!("https://pay.example/{kind}/1") })))
+                    let scheme = if *f.plain_link.lock().unwrap() { "http" } else { "https" };
+                    (StatusCode::OK, Json(json!({ "kind": kind, "url": format!("{scheme}://pay.example/{kind}/1") })))
                 },
             ),
         )
@@ -69,7 +72,19 @@ async fn fake_billing(fake: Fake) -> String {
             "/api/billing/status",
             get(|State(f): State<Fake>, uri: Uri, h: HeaderMap| async move {
                 record(&f, &uri, &h, Value::Null).await;
-                Json(json!({ "subscribed": true, "plan": "byoa", "status": "trialing" }))
+                Json(json!({
+                    "subscription": {
+                        "plan": "byoa", "status": "past_due", "trial_end": null,
+                        "current_period_end": "2026-12-01T00:00:00.000Z",
+                        "cancel_at_period_end": false,
+                        "payments_stop_at": "2026-11-20T12:00:00.000Z",
+                        "portal_url": "https://pay.example/portal/leak",
+                    },
+                    "offers": [{ "id": "byoa", "name": "Bring your own agent", "price": "$39 a month",
+                                 "description": ["Your agent reads."], "trial_days": 14,
+                                 "checkout_url": "https://pay.example/checkout/leak" }],
+                    "customer_id": "cus_secret",
+                }))
             }),
         )
         .with_state(fake);
@@ -198,7 +213,21 @@ async fn preview_asks_nothing_and_billing_get_shows_both_sides() {
         .unwrap();
     assert_eq!(r["result"]["plan"]["reader"], false);
     assert_eq!(r["result"]["plan"]["payments"], true);
-    assert_eq!(r["result"]["subscription"]["status"], "trialing");
+    let b = &r["result"];
+    assert_eq!(b["available"], true);
+    assert_eq!(b["subscription"]["status"], "past_due");
+    assert_eq!(
+        b["subscription"]["payments_stop_at"],
+        "2026-11-20T12:00:00Z"
+    );
+    assert_eq!(b["offers"][0]["price"], "$39 a month");
+    assert_eq!(b["offers"][0]["trial_days"], 14);
+    // Only the known fields pass through: nothing the management app adds
+    // (a link, a Stripe id) reaches an agent or the page.
+    let text = b.to_string();
+    for leak in ["leak", "cus_secret", "portal_url", "checkout_url"] {
+        assert!(!text.contains(leak), "{leak} passed through: {text}");
+    }
 }
 
 #[tokio::test]
@@ -276,6 +305,26 @@ async fn a_refusal_or_an_outage_is_a_billing_error_with_nothing_recorded() {
     let e = commit(&down, &person("robert"), "billing.portal", json!({}))
         .await
         .unwrap_err();
+    assert_eq!(e.code(), "billing_error");
+    // The page still shows the plan in force when billing is down.
+    let r = commit(&down, &person("robert"), "billing.get", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(r["result"]["available"], false);
+    assert_eq!(r["result"]["plan"]["hosted"], true);
+    assert_eq!(r["result"]["offers"], json!([]));
+
+    // A link that isn't https never reaches the browser.
+    *fake.refuse.lock().unwrap() = false;
+    *fake.plain_link.lock().unwrap() = true;
+    let e = commit(
+        &state,
+        &person("robert"),
+        "billing.checkout",
+        json!({ "plan": "byoa" }),
+    )
+    .await
+    .unwrap_err();
     assert_eq!(e.code(), "billing_error");
     assert!(events(&state).await.is_empty());
 }

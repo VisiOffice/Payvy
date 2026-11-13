@@ -19,41 +19,31 @@ import { Page } from '../Page';
 
 type PlanName = 'byoa' | 'managed';
 
+// Names, prices and terms come from the management app (billing.get); this
+// open-source page states none of its own.
 interface Subscription {
-  subscribed: boolean;
-  plan?: PlanName | null;
-  status?: string | null;
-  trial_end?: string | null;
-  current_period_end?: string | null;
-  cancel_at_period_end?: boolean | null;
-  past_due_since?: string | null;
+  plan: PlanName | null;
+  status: string;
+  trial_end: string | null;
+  current_period_end: string | null;
+  cancel_at_period_end: boolean;
+  payments_stop_at: string | null;
+}
+
+interface Offer {
+  id: PlanName;
+  name: string;
+  price: string;
+  description: string[];
+  trial_days: number;
 }
 
 interface Billing {
   plan: { provisional?: boolean; reader: boolean; payments: boolean };
-  subscription: Subscription;
+  available: boolean;
+  subscription: Subscription | null;
+  offers: Offer[];
 }
-
-const PLANS: { id: PlanName; name: string; price: string; points: string[] }[] = [
-  {
-    id: 'byoa',
-    name: 'Bring your own agent',
-    price: '$39 a month',
-    points: [
-      'Your agent reads invoices over MCP or the API, with your own model key.',
-      'Approvals, workflows, and payments through your bank.',
-    ],
-  },
-  {
-    id: 'managed',
-    name: 'Payvy reads for you',
-    price: '$99 a month',
-    points: [
-      'Payvy reads every invoice that arrives and drafts the bill.',
-      'Everything in Bring your own agent.',
-    ],
-  },
-];
 
 const STATUS: Record<string, { label: string; variant: 'success' | 'warning' | 'error' | 'neutral' }> = {
   trialing: { label: 'Trial', variant: 'success' },
@@ -67,9 +57,6 @@ const STATUS: Record<string, { label: string; variant: 'success' | 'warning' | '
 };
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
-
-/** The past-due grace in the management app's plan policy. */
-const GRACE_DAYS = 7;
 
 export function BillingSettings() {
   const [billing, setBilling] = useState<Billing | null>(null);
@@ -87,8 +74,10 @@ export function BillingSettings() {
     setBusy(key);
     setOpenError(null);
     try {
-      const r = await run<{ kind: string; url: string }>(command, input);
-      window.location.assign(r.result.url);
+      const r = await run<{ kind: string; url: string | null }>(command, input);
+      const url = r.result.url;
+      if (!url?.startsWith('https://')) throw new Error('Billing answered without a usable link; try again.');
+      window.location.assign(url);
     } catch (e) {
       setOpenError(message(e));
       setBusy(null);
@@ -96,41 +85,59 @@ export function BillingSettings() {
   }
 
   const sub = billing?.subscription;
-  const live = !!sub?.subscribed && ['trialing', 'active', 'past_due'].includes(sub.status ?? '');
-  const current = PLANS.find((p) => p.id === sub?.plan);
-  const status = sub?.status ? STATUS[sub.status] : undefined;
-  const graceEnds = sub?.past_due_since
-    ? new Date(new Date(sub.past_due_since).getTime() + GRACE_DAYS * 86_400_000).toISOString()
-    : null;
+  const offers = billing?.offers ?? [];
+  const live = !!sub && ['trialing', 'active', 'past_due'].includes(sub.status);
+  const current = offers.find((p) => p.id === sub?.plan);
+  const status = sub ? STATUS[sub.status] : undefined;
+  const trialDays = Math.max(0, ...offers.map((o) => o.trial_days));
 
   return (
     <Page title="Billing" narrow description="Your Payvy plan. Payments go through Stripe; Payvy never sees your card.">
       {error && <Banner status="error" title="Couldn't load billing" description={error} />}
       {openError && <Banner status="error" title="Couldn't open billing" description={openError} />}
       {!billing && !error && <Spinner label="Loading" />}
-      {billing && live && current && (
+      {billing && !billing.available && (
+        <VStack gap={3}>
+          <Banner
+            status="warning"
+            title="Billing can't be reached right now"
+            description="Your plan and card details will be back shortly. Nothing about your plan has changed."
+          />
+          <Card>
+            <MetadataList>
+              <MetadataListItem label="Payments through your bank">{billing.plan.payments ? 'On' : 'Off'}</MetadataListItem>
+              <MetadataListItem label="Payvy reads invoices">{billing.plan.reader ? 'On' : 'Off'}</MetadataListItem>
+            </MetadataList>
+          </Card>
+        </VStack>
+      )}
+      {billing && billing.available && live && sub && (
         <Card>
           <VStack gap={3}>
             <HStack gap={2} align="center">
-              <Heading level={2}>{current.name}</Heading>
+              <Heading level={2}>{current?.name ?? 'Your plan'}</Heading>
               {status && <Badge label={status.label} variant={status.variant} />}
             </HStack>
             <MetadataList>
-              <MetadataListItem label="Price">{current.price}</MetadataListItem>
-              {sub?.status === 'trialing' && sub.trial_end && (
+              {current && <MetadataListItem label="Price">{current.price}</MetadataListItem>}
+              {sub.status === 'trialing' && sub.trial_end && (
                 <MetadataListItem label="Trial ends">{date(sub.trial_end)}</MetadataListItem>
               )}
-              {sub?.current_period_end && (
+              {sub.current_period_end && (
                 <MetadataListItem label={sub.cancel_at_period_end ? 'Ends' : 'Renews'}>
                   {date(sub.current_period_end)}
                 </MetadataListItem>
               )}
             </MetadataList>
-            {sub?.status === 'past_due' && graceEnds && (
+            {sub.status === 'past_due' && (
               <Banner
                 status="warning"
                 title="Your last payment failed"
-                description={`Update your card by ${date(graceEnds)}, or new payments through your bank stop then. You can still sign in, read and export everything.`}
+                description={
+                  sub.payments_stop_at
+                    ? `Update your card by ${date(sub.payments_stop_at)}, or new payments through your bank stop then. You can still sign in, read and export everything.`
+                    : 'Update your card, or new payments through your bank will stop. You can still sign in, read and export everything.'
+                }
               />
             )}
             <HStack>
@@ -145,13 +152,17 @@ export function BillingSettings() {
           </VStack>
         </Card>
       )}
-      {billing && !live && (
+      {billing && billing.available && !live && (
         <VStack gap={4}>
           {billing.plan.provisional && (
             <Banner
               status="info"
               title="Choose a plan to start"
-              description="Until you do, Payvy won't read invoices or send payments. Both plans start with a 14-day free trial; you won't be charged until it ends, and you can cancel any time."
+              description={
+                trialDays > 0
+                  ? `Until you do, Payvy won't read invoices or send payments. Plans start with a ${trialDays}-day free trial; you won't be charged until it ends, and you can cancel any time.`
+                  : "Until you do, Payvy won't read invoices or send payments."
+              }
             />
           )}
           {!billing.plan.provisional && !billing.plan.payments && (
@@ -161,16 +172,17 @@ export function BillingSettings() {
               description="Payments and reading are off. You can still sign in, read and export everything. Choose a plan to turn them back on."
             />
           )}
-          {PLANS.map((p) => (
+          {offers.map((p) => (
             <Card key={p.id}>
               <VStack gap={2}>
                 <HStack gap={2} align="center">
                   <Heading level={2}>{p.name}</Heading>
                   <Text type="supporting">{p.price}</Text>
                 </HStack>
-                {p.points.map((pt) => (
-                  <Text key={pt}>{pt}</Text>
+                {p.description.map((line) => (
+                  <Text key={line}>{line}</Text>
                 ))}
+                {p.trial_days > 0 && <Text type="supporting">{`${p.trial_days}-day free trial`}</Text>}
                 <HStack>
                   <Button
                     label={`Choose ${p.name}`}
