@@ -45,6 +45,9 @@ pub struct Actor {
     pub name: String,
     pub kind: ActorKind,
     bootstrap: bool,
+    /// Set when this caller authenticated with an `api_keys` row.
+    /// The bootstrap admin key and a session cookie have none.
+    pub key_id: Option<Uuid>,
 }
 
 impl Actor {
@@ -55,6 +58,7 @@ impl Actor {
             name: name.into(),
             kind: ActorKind::Person,
             bootstrap: true,
+            key_id: None,
         }
     }
 
@@ -64,6 +68,7 @@ impl Actor {
             name: name.into(),
             kind: ActorKind::Person,
             bootstrap: false,
+            key_id: None,
         }
     }
 
@@ -73,7 +78,14 @@ impl Actor {
             name: name.into(),
             kind: ActorKind::Agent,
             bootstrap: false,
+            key_id: None,
         }
+    }
+
+    /// The `api_keys` row this caller authenticated as.
+    pub fn with_key(mut self, key_id: Uuid) -> Self {
+        self.key_id = Some(key_id);
+        self
     }
 }
 
@@ -285,11 +297,12 @@ async fn authenticate(State(state): State<AppState>, mut req: Request, next: Nex
             Some(Actor::administrator(payvy_store::DEFAULT_ORG, "admin"))
         }
         Some(k) => match state.store.actor_for_key_hash(&hash_key(&k)).await {
-            Ok(found) => found.map(|(org_id, name, kind)| Actor {
+            Ok(found) => found.map(|(org_id, key_id, name, kind)| Actor {
                 org_id,
                 name,
                 kind,
                 bootstrap: false,
+                key_id: Some(key_id),
             }),
             Err(e) => {
                 tracing::error!("api key lookup: {e:#}");

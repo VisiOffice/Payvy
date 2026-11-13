@@ -37,6 +37,12 @@ export interface PurchaseOrder extends Record<string, unknown> {
   status: 'draft' | 'active' | 'suspended' | 'closed' | 'canceled';
   owner: string | null;
   activated_by: string | null;
+  vendor_reference: string | null;
+  service_address: string | null;
+  period_start: string | null;
+  period_end: string | null;
+  final_period: boolean;
+  metadata: Record<string, unknown>;
   amounts: PoAmounts;
   revision: { revision: number; authorized_cents: number; allowance_cents: number } | null;
   lines: { description: string; amount_cents: number }[];
@@ -186,6 +192,16 @@ function PurchaseOrderList() {
               : `Available ${money(selected.amounts.available_cents)}`}
             {selected.amounts.allowance_cents > 0 && ` (includes ${money(selected.amounts.allowance_cents)} overage allowance)`}
           </Text>
+          {(selected.vendor_reference || selected.service_address || selected.period_start || selected.final_period) && (
+            <Text type="supporting">
+              {selected.final_period ? 'Final period' : 'Period'}
+              {selected.period_start || selected.period_end
+                ? ` ${selected.period_start ?? '…'} – ${selected.period_end ?? '…'}`
+                : ''}
+              {selected.vendor_reference ? ` · contract ${selected.vendor_reference}` : ''}
+              {selected.service_address ? ` · ${selected.service_address}` : ''}
+            </Text>
+          )}
           {selected.lines.length > 0 && (
             <VStack gap={1}>
               {selected.lines.map((l, i) => (

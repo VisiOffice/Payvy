@@ -212,3 +212,71 @@ pub async fn remove_account(cx: &mut Cx<'_>, input: RemoveAccount) -> Result<Val
     .await?;
     Ok(json!(account))
 }
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LinkExternal {
+    vendor_id: Uuid,
+    source: String,
+    external_id: String,
+}
+
+/// Link a Payvy vendor to its id in another system, once per source.
+/// The same link again is a no-op. A different id, or another vendor
+/// already holding this id, is refused.
+pub async fn link_external(cx: &mut Cx<'_>, input: LinkExternal) -> Result<Value, CommandError> {
+    let source = text(Some(input.source))
+        .ok_or_else(|| CommandError::Invalid("source is required".into()))?;
+    let external_id = text(Some(input.external_id))
+        .ok_or_else(|| CommandError::Invalid("external_id is required".into()))?;
+    store::get_vendor(&mut cx.tx, input.vendor_id)
+        .await?
+        .ok_or(CommandError::NotFound("vendor"))?;
+    let links = store::purchase_orders::vendor_links_touching(
+        &mut cx.tx,
+        &source,
+        input.vendor_id,
+        &external_id,
+    )
+    .await?;
+    let same = links
+        .iter()
+        .any(|l| l.vendor_id == input.vendor_id && l.external_id == external_id);
+    if links
+        .iter()
+        .any(|l| l.vendor_id == input.vendor_id && l.external_id != external_id)
+    {
+        return Err(CommandError::Conflict(
+            "this vendor is already linked to a different id for that source".into(),
+        ));
+    }
+    if links.iter().any(|l| l.vendor_id != input.vendor_id) {
+        return Err(CommandError::Conflict(
+            "that external id is already linked to another vendor".into(),
+        ));
+    }
+    if !same {
+        store::purchase_orders::insert_vendor_link(
+            &mut cx.tx,
+            cx.org,
+            input.vendor_id,
+            &source,
+            &external_id,
+            &cx.actor.name,
+            cx.now,
+        )
+        .await?;
+        cx.emit(
+            "vendor.external_linked",
+            input.vendor_id,
+            json!({ "vendor_id": input.vendor_id, "source": source, "external_id": external_id }),
+        )
+        .await?;
+    }
+    Ok(json!({
+        "vendor_id": input.vendor_id,
+        "source": source,
+        "external_id": external_id,
+        "outcome": if same { "unchanged" } else { "linked" },
+    }))
+}

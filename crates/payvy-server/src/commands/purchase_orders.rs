@@ -1,7 +1,9 @@
 //! Purchase orders and the allocation ledger (PO Matching Spec v2, step 1:
 //! lifecycle + amounts; matching UI and the payment gate are step 2).
 //! Matching here is preparation only: reserving or accepting an allocation
-//! never approves a bill, and only a person activates/closes/cancels a PO.
+//! never approves a bill. A person activates, closes or cancels a PO.
+//! `po.upsert` may also activate one, when the caller is the agent key bound
+//! by id on a standing authorization a person granted with `po.source_authorize`.
 
 use std::collections::BTreeMap;
 
@@ -11,6 +13,7 @@ use payvy_domain::purchase_orders::allowance_cents;
 use payvy_store as store;
 use serde::{Deserialize, Deserializer};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use store::purchase_orders as po_store;
 use uuid::Uuid;
 
@@ -122,6 +125,8 @@ async fn view(cx: &mut Cx<'_>, po: &po_store::PurchaseOrder) -> Result<Value, Co
         "external_source": po.external_source, "external_id": po.external_id,
         "service_address": po.service_address,
         "period_start": po.period_start, "period_end": po.period_end,
+        "vendor_reference": po.vendor_reference, "metadata": po.metadata,
+        "final_period": po.final_period,
         "lifecycle_reason": po.lifecycle_reason, "created_by": po.created_by,
         "revision": po.revision.as_ref().map(|r| json!({
             "revision": r.revision, "authorized_cents": r.authorized_cents,
@@ -237,6 +242,11 @@ pub async fn create(cx: &mut Cx<'_>, input: Create) -> Result<Value, CommandErro
             "a purchase order {number} already exists"
         )));
     }
+    let external_source = text(input.external_source);
+    let external_id = text(input.external_id);
+    if let Some(source) = external_source.as_deref() {
+        ensure_can_create(cx, source, input.vendor_id, false).await?;
+    }
     let id = po_store::insert_po(
         &mut cx.tx,
         cx.org,
@@ -244,8 +254,8 @@ pub async fn create(cx: &mut Cx<'_>, input: Create) -> Result<Value, CommandErro
             vendor_id: input.vendor_id,
             po_number: &number,
             owner: text(input.owner).as_deref(),
-            external_source: text(input.external_source.clone()).as_deref(),
-            external_id: text(input.external_id).as_deref(),
+            external_source: external_source.as_deref(),
+            external_id: external_id.as_deref(),
             service_address: text(input.service_address).as_deref(),
             period_start: input.period_start,
             period_end: input.period_end,
@@ -300,6 +310,7 @@ pub async fn update(cx: &mut Cx<'_>, input: Update) -> Result<Value, CommandErro
             po.po_number, po.status
         )));
     }
+    let mut edited = false;
     if input.owner.is_some()
         || input.service_address.is_some()
         || input.period_start.is_some()
@@ -319,6 +330,7 @@ pub async fn update(cx: &mut Cx<'_>, input: Update) -> Result<Value, CommandErro
             cx.now,
         )
         .await?;
+        edited = true;
     }
     if let Some(a) = input.authorized_cents {
         let po = must_po(cx, input.po_id).await?;
@@ -336,6 +348,7 @@ pub async fn update(cx: &mut Cx<'_>, input: Update) -> Result<Value, CommandErro
             json!({ "authorized_cents": a, "reason": input.reason }),
         )
         .await?;
+        edited = true;
     } else if let Some(l) = &input.lines {
         let a = po
             .revision
@@ -348,11 +361,38 @@ pub async fn update(cx: &mut Cx<'_>, input: Update) -> Result<Value, CommandErro
         make_revision(cx, &po, a, Some(lines(l)?), input.reason.clone()).await?;
         cx.emit("po.revised", po.id, json!({ "reason": input.reason }))
             .await?;
+        edited = true;
+    }
+    // A person's edit holds the PO. A later sync that would change it waits.
+    if edited {
+        po_store::hold_for_person(&mut cx.tx, input.po_id, cx.now).await?;
     }
     {
         let fresh = must_po(cx, input.po_id).await?;
         view(cx, &fresh).await
     }
+}
+
+/// Lift the hold a person's edit placed on a PO. An unchanged sync does not do this.
+pub async fn release_hold(cx: &mut Cx<'_>, input: PoId) -> Result<Value, CommandError> {
+    ensure_enabled(cx).await?;
+    let po = must_po(cx, input.po_id).await?;
+    if !po.person_hold {
+        let mut fresh = view(cx, &po).await?;
+        fresh["outcome"] = json!("unchanged");
+        return Ok(fresh);
+    }
+    po_store::clear_person_hold(&mut cx.tx, po.id, cx.now).await?;
+    cx.emit(
+        "po.hold_cleared",
+        po.id,
+        json!({ "po_number": po.po_number }),
+    )
+    .await?;
+    let po = must_po(cx, po.id).await?;
+    let mut out = view(cx, &po).await?;
+    out["outcome"] = json!("cleared");
+    Ok(out)
 }
 
 #[derive(Deserialize)]
@@ -426,26 +466,92 @@ pub struct Close {
     reason: String,
 }
 
+/// `po.close` and `po.cancel`. A person passes `po_id`. The authorized agent
+/// key passes the external id, and only for its own source and a vendor on
+/// that authorization. That path is refused while allocations are reserved
+/// so a sync job leaves the PO for a person. A person's close still leaves
+/// reserved allocations standing.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct End {
+    po_id: Option<Uuid>,
+    external_source: Option<String>,
+    external_id: Option<String>,
+    reason: String,
+}
+
 pub async fn close(
     cx: &mut Cx<'_>,
-    input: Close,
+    input: End,
     status: &'static str,
 ) -> Result<Value, CommandError> {
     ensure_enabled(cx).await?;
     let reason = text(Some(input.reason))
         .ok_or_else(|| CommandError::Invalid("a reason is required".to_owned()))?;
-    let po = must_po(cx, input.po_id).await?;
+    if input.po_id.is_some() && cx.actor.kind != store::ActorKind::Person {
+        let name = if status == "closed" {
+            "po.close"
+        } else {
+            "po.cancel"
+        };
+        return Err(CommandError::PersonOnly(name));
+    }
+    let by_external = input.po_id.is_none();
+    let mut po = match (
+        input.po_id,
+        text(input.external_source),
+        text(input.external_id),
+    ) {
+        (Some(id), None, None) => must_po(cx, id).await?,
+        (None, Some(source), Some(ext)) => po_store::po_by_external(&mut cx.tx, &source, &ext)
+            .await?
+            .ok_or(CommandError::NotFound("purchase order"))?,
+        _ => {
+            return Err(CommandError::Invalid(
+                "give po_id, or external_source and external_id".into(),
+            ));
+        }
+    };
+    if by_external {
+        let locked = po_store::lock_pos(&mut cx.tx, &[po.id]).await?;
+        po = locked
+            .into_iter()
+            .next()
+            .ok_or(CommandError::NotFound("purchase order"))?;
+        let source = po.external_source.as_deref().unwrap_or("");
+        let allowed = match cx.actor.key_id {
+            Some(key_id) if cx.actor.kind == store::ActorKind::Agent => {
+                po_store::key_can_end(&mut cx.tx, key_id, source, po.vendor_id).await?
+            }
+            _ => false,
+        };
+        if !allowed {
+            return Err(CommandError::Conflict(
+                "po_source: only the authorized key can close or cancel this source".into(),
+            ));
+        }
+        let amounts = po_store::amounts(&mut cx.tx, &po).await?;
+        if amounts.reserved_cents > 0 {
+            return Err(CommandError::Conflict(format!(
+                "allocations_reserved: PO {} has allocations reserved; leave it for a person",
+                po.po_number
+            )));
+        }
+        if po.status == status {
+            let mut fresh = view(cx, &po).await?;
+            fresh["outcome"] = json!("unchanged");
+            return Ok(fresh);
+        }
+    }
     if po.status != "draft" && po.status != "active" && po.status != "suspended" {
         return Err(CommandError::Conflict(format!(
             "PO {} is already {}",
             po.po_number, po.status
         )));
     }
-    // Q6, as proposed in review and taken in the decisions: closing stops
-    // new allocations (only active POs take them); reserved and consumed
-    // allocations already made stand, and nothing is released implicitly.
-    // Their bills carry ineligible_po until the allocation is reversed or
-    // a person permits the bill.
+    // A person's close leaves reserved and consumed allocations standing.
+    // Nothing is released implicitly. Their bills carry ineligible_po until
+    // the allocation is reversed or a person permits the bill.
     po_store::set_status(&mut cx.tx, po.id, status, None, Some(&reason), cx.now).await?;
     let kind = if status == "closed" {
         "po.closed"
@@ -993,13 +1099,30 @@ pub async fn match_preview(cx: &mut Cx<'_>, input: Preview) -> Result<Value, Com
             any_available = true;
         }
         let (qty_findings, _) = quantity_check(cx, &bill, &po).await?;
+        let reference = input.po_number.as_deref();
+        let over_period = payvy_domain::purchase_orders::outside_period(
+            po.period_start,
+            po.period_end,
+            bill.invoice_date,
+        );
+        // A final period matches an invoice that still fits in what is left
+        // when the service window fits. The address is on the PO for the
+        // person reviewing the match. Leftover stays until they close it.
+        let final_match =
+            po.final_period && !over_period && bill.amount_cents <= amounts.available_cents();
         candidates.push(json!({
             "po_id": po.id, "po_number": po.po_number,
-            "verified_reference": input.po_number.as_deref() == Some(po.po_number.as_str()),
+            "vendor_reference": po.vendor_reference,
+            "service_address": po.service_address,
+            "final_period": po.final_period,
+            "final_match": final_match,
+            "verified_reference": reference.is_some() && (
+                reference == Some(po.po_number.as_str())
+                    || reference == po.vendor_reference.as_deref()
+            ),
             "available_cents": amounts.available_cents(),
             "proposed_cents": proposed,
-            "over_period": payvy_domain::purchase_orders::outside_period(
-                po.period_start, po.period_end, bill.invoice_date),
+            "over_period": over_period,
             "quantity_findings": qty_findings.iter()
                 .map(|f| json!({ "kind": f.kind(), "detail": finding_detail(f) }))
                 .collect::<Vec<_>>(),
@@ -1731,4 +1854,614 @@ pub async fn release_bill_allocations(
         })).await?;
     }
     Ok(())
+}
+
+// ── Quarry feed: upsert, standing authorization ───────────────────────────
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+fn metadata_object(value: Option<Value>) -> Result<Value, CommandError> {
+    match value {
+        None | Some(Value::Null) => Ok(json!({})),
+        Some(v) if v.is_object() => Ok(v),
+        Some(_) => Err(CommandError::Invalid("metadata must be an object".into())),
+    }
+}
+
+fn line_body(lines: &[po_store::NewLine]) -> Value {
+    Value::Array(
+        lines
+            .iter()
+            .map(|l| {
+                json!({
+                    "account": l.account,
+                    "amount_cents": l.amount_cents,
+                    "description": l.description,
+                    "quantity": l.quantity,
+                    "unit": l.unit,
+                    "unit_price_cents": l.unit_price_cents,
+                })
+            })
+            .collect(),
+    )
+}
+
+fn same_lines(stored: &[po_store::PoLine], incoming: &[po_store::NewLine]) -> bool {
+    stored.len() == incoming.len()
+        && stored.iter().zip(incoming).all(|(s, n)| {
+            s.description == n.description
+                && s.quantity == n.quantity
+                && s.unit == n.unit
+                && s.unit_price_cents == n.unit_price_cents
+                && s.amount_cents == n.amount_cents
+                && s.account == n.account
+        })
+}
+
+fn po_number_taken(err: &anyhow::Error) -> bool {
+    err.to_string().contains("purchase_orders_org_id_po_number")
+}
+
+struct PreparedUpsert {
+    number: String,
+    source: String,
+    external_id: String,
+    owner: Option<String>,
+    address: Option<String>,
+    reference: Option<String>,
+    metadata: Value,
+    lines: Vec<po_store::NewLine>,
+    hash: String,
+    period_start: Option<NaiveDate>,
+    period_end: Option<NaiveDate>,
+    final_period: bool,
+    authorized: Cents,
+    vendor_id: Uuid,
+}
+
+impl PreparedUpsert {
+    fn feed(&self) -> po_store::FeedFields<'_> {
+        po_store::FeedFields {
+            owner: self.owner.as_deref(),
+            write_owner: self.owner.is_some(),
+            service_address: self.address.as_deref(),
+            period_start: self.period_start,
+            period_end: self.period_end,
+            vendor_reference: self.reference.as_deref(),
+            metadata: &self.metadata,
+            final_period: self.final_period,
+            body_hash: Some(&self.hash),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Upsert {
+    vendor_id: Uuid,
+    po_number: String,
+    external_source: String,
+    external_id: String,
+    authorized_cents: Cents,
+    owner: Option<String>,
+    service_address: Option<String>,
+    period_start: Option<NaiveDate>,
+    period_end: Option<NaiveDate>,
+    vendor_reference: Option<String>,
+    #[serde(default)]
+    final_period: bool,
+    #[serde(default)]
+    metadata: Option<Value>,
+    lines: Vec<LineIn>,
+}
+
+fn prepare_upsert(input: Upsert) -> Result<PreparedUpsert, CommandError> {
+    let number = input.po_number.trim().to_owned();
+    let source = input.external_source.trim().to_owned();
+    let external_id = input.external_id.trim().to_owned();
+    if number.is_empty() || source.is_empty() || external_id.is_empty() {
+        return Err(CommandError::Invalid(
+            "po_number, external_source and external_id are required".into(),
+        ));
+    }
+    if input.authorized_cents <= 0 {
+        return Err(CommandError::Invalid(
+            "authorized_cents must be over 0".into(),
+        ));
+    }
+    let metadata = metadata_object(input.metadata)?;
+    let owner = text(input.owner);
+    let address = text(input.service_address);
+    let reference = text(input.vendor_reference);
+    let parsed = lines(&input.lines)?;
+    let body = json!({
+        "authorized_cents": input.authorized_cents,
+        "external_id": external_id,
+        "external_source": source,
+        "final_period": input.final_period,
+        "lines": line_body(&parsed),
+        "metadata": metadata,
+        "owner": owner,
+        "period_end": input.period_end,
+        "period_start": input.period_start,
+        "po_number": number,
+        "service_address": address,
+        "vendor_id": input.vendor_id,
+        "vendor_reference": reference,
+    });
+    let hash = sha256_hex(&serde_json::to_vec(&body).expect("upsert body serializes"));
+    Ok(PreparedUpsert {
+        number,
+        source,
+        external_id,
+        owner,
+        address,
+        reference,
+        metadata,
+        lines: parsed,
+        hash,
+        period_start: input.period_start,
+        period_end: input.period_end,
+        final_period: input.final_period,
+        authorized: input.authorized_cents,
+        vendor_id: input.vendor_id,
+    })
+}
+
+async fn with_outcome(cx: &mut Cx<'_>, id: Uuid, outcome: &str) -> Result<Value, CommandError> {
+    let po = must_po(cx, id).await?;
+    let mut view = view(cx, &po).await?;
+    view["outcome"] = json!(outcome);
+    Ok(view)
+}
+
+/// The standing authorization for this caller, when they authenticated as
+/// its agent key and the request's source is the source stored on it.
+async fn standing_auth(
+    cx: &mut Cx<'_>,
+    vendor_id: Uuid,
+    request_source: &str,
+) -> Result<Option<po_store::SourceAuth>, CommandError> {
+    if cx.actor.kind != store::ActorKind::Agent {
+        return Ok(None);
+    }
+    let Some(key_id) = cx.actor.key_id else {
+        return Ok(None);
+    };
+    let auths = po_store::active_auths_for_key(&mut cx.tx, key_id, vendor_id).await?;
+    Ok(auths.into_iter().find(|a| a.source == request_source))
+}
+
+/// A feed upsert creates a PO only for the authorized key. `po.create` and
+/// `po.import` stay open until a standing authorization covers the source;
+/// after that, only that key can take an external id on it.
+async fn ensure_can_create(
+    cx: &mut Cx<'_>,
+    source: &str,
+    vendor_id: Uuid,
+    feed: bool,
+) -> Result<(), CommandError> {
+    if standing_auth(cx, vendor_id, source).await?.is_some() {
+        return Ok(());
+    }
+    if feed || po_store::source_has_active_auth(&mut cx.tx, source).await? {
+        return Err(CommandError::Conflict(
+            "po_source: only the authorized key can create a purchase order for this source".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Activate a draft when this caller is the authorized key and the amount is
+/// within the limit. Any other caller, or a PO over the limit, stays a draft.
+async fn try_auto_activate(cx: &mut Cx<'_>, po_id: Uuid) -> Result<bool, CommandError> {
+    let po = must_po(cx, po_id).await?;
+    if po.status != "draft" || po.revision.is_none() {
+        return Ok(false);
+    }
+    let Some(source) = po.external_source.clone() else {
+        return Ok(false);
+    };
+    let Some(auth) = standing_auth(cx, po.vendor_id, &source).await? else {
+        return Ok(false);
+    };
+    let authorized = po
+        .revision
+        .as_ref()
+        .map(|r| r.authorized_cents)
+        .unwrap_or(0);
+    if authorized > auth.max_cents {
+        return Ok(false);
+    }
+    let owner = match text(po.owner.clone()) {
+        Some(owner) => owner,
+        None => {
+            po_store::update_po_details(
+                &mut cx.tx,
+                po.id,
+                Some(&auth.owner),
+                po.service_address.as_deref(),
+                po.period_start,
+                po.period_end,
+                cx.now,
+            )
+            .await?;
+            auth.owner.clone()
+        }
+    };
+    let people = store::people(&mut cx.tx, cx.org).await?;
+    if !people.iter().any(|p| p.actor == owner) {
+        return Ok(false);
+    }
+    let po = must_po(cx, po_id).await?;
+    let amounts = po_store::amounts(&mut cx.tx, &po).await?;
+    if amounts.committed_cents() > amounts.ceiling_cents() {
+        return Ok(false);
+    }
+    po_store::set_status(
+        &mut cx.tx,
+        po.id,
+        "active",
+        Some(&auth.authorized_by),
+        None,
+        cx.now,
+    )
+    .await?;
+    cx.emit(
+        "po.activated",
+        po.id,
+        json!({
+            "po_number": po.po_number,
+            "activated_by": auth.authorized_by,
+            "authorization_id": auth.id,
+        }),
+    )
+    .await?;
+    Ok(true)
+}
+
+async fn same_body(
+    cx: &mut Cx<'_>,
+    po: &po_store::PurchaseOrder,
+    prepared: &PreparedUpsert,
+) -> Result<bool, CommandError> {
+    if po.vendor_id != prepared.vendor_id || po.po_number != prepared.number {
+        return Ok(false);
+    }
+    if prepared.owner.is_some() && prepared.owner != po.owner {
+        return Ok(false);
+    }
+    let authorized = po.revision.as_ref().map(|r| r.authorized_cents);
+    if authorized != Some(prepared.authorized) {
+        return Ok(false);
+    }
+    if po.service_address != prepared.address
+        || po.period_start != prepared.period_start
+        || po.period_end != prepared.period_end
+        || po.vendor_reference != prepared.reference
+        || po.final_period != prepared.final_period
+        || po.metadata != prepared.metadata
+    {
+        return Ok(false);
+    }
+    let stored = match &po.revision {
+        Some(r) => po_store::lines_for(&mut cx.tx, r.id).await?,
+        None => Vec::new(),
+    };
+    Ok(same_lines(&stored, &prepared.lines))
+}
+
+/// An increase applies only inside the standing limit. A decrease applies
+/// when the new amount still covers reserved plus consumed. Either one that
+/// does not is left for a person, and this call writes nothing.
+fn amount_change(
+    current: Cents,
+    new: Cents,
+    committed: Cents,
+    limit: Option<Cents>,
+) -> Result<(), CommandError> {
+    if new < current && new < committed {
+        return Err(CommandError::Conflict(format!(
+            "po_needs_person: authorized {new} is under the {committed} already reserved or consumed"
+        )));
+    }
+    if new > current {
+        match limit {
+            Some(limit) if new <= limit => {}
+            Some(limit) => {
+                return Err(CommandError::Conflict(format!(
+                    "po_needs_person: an increase to {new} is above the standing limit of {limit}"
+                )));
+            }
+            None => {
+                return Err(CommandError::Conflict(format!(
+                    "po_needs_person: an increase to {new} needs a person; no standing limit covers it"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn apply_existing(
+    cx: &mut Cx<'_>,
+    po: po_store::PurchaseOrder,
+    prepared: &PreparedUpsert,
+) -> Result<Value, CommandError> {
+    if po.status == "closed" || po.status == "canceled" {
+        return Err(CommandError::Conflict(format!(
+            "po_closed: PO {} is {}",
+            po.po_number, po.status
+        )));
+    }
+    if po.body_hash.as_deref() == Some(prepared.hash.as_str()) && po.status != "draft" {
+        return with_outcome(cx, po.id, "unchanged").await;
+    }
+    if po.vendor_id != prepared.vendor_id || po.po_number != prepared.number {
+        return Err(CommandError::Conflict(
+            "po_identity: vendor, number and currency cannot change".into(),
+        ));
+    }
+    if same_body(cx, &po, prepared).await? {
+        po_store::update_feed(&mut cx.tx, po.id, &prepared.feed(), cx.now).await?;
+        // A hold stays until a person clears it. The same body does not lift it
+        // or activate the PO.
+        if po.status == "draft" && !po.person_hold && try_auto_activate(cx, po.id).await? {
+            return with_outcome(cx, po.id, "activated").await;
+        }
+        return with_outcome(cx, po.id, "unchanged").await;
+    }
+    if po.person_hold {
+        return Err(CommandError::Conflict(format!(
+            "po_needs_person: a person edited PO {}; the sync cannot change it",
+            po.po_number
+        )));
+    }
+    if po.status == "active" || po.status == "suspended" {
+        let Some(auth) = standing_auth(cx, po.vendor_id, &prepared.source).await? else {
+            return Err(CommandError::Conflict(format!(
+                "po_needs_person: only the authorized key can revise PO {}",
+                po.po_number
+            )));
+        };
+        let current = po
+            .revision
+            .as_ref()
+            .map(|r| r.authorized_cents)
+            .ok_or_else(|| {
+                CommandError::Conflict("po_closed: the PO has no authorized amount".into())
+            })?;
+        let amounts = po_store::amounts(&mut cx.tx, &po).await?;
+        amount_change(
+            current,
+            prepared.authorized,
+            amounts.committed_cents(),
+            Some(auth.max_cents),
+        )?;
+        po_store::update_feed(&mut cx.tx, po.id, &prepared.feed(), cx.now).await?;
+        let po = must_po(cx, po.id).await?;
+        make_revision(
+            cx,
+            &po,
+            prepared.authorized,
+            Some(prepared.lines.clone()),
+            Some(format!("synced from {}", prepared.source)),
+        )
+        .await?;
+        cx.emit(
+            "po.revised",
+            po.id,
+            json!({ "authorized_cents": prepared.authorized, "reason": format!("synced from {}", prepared.source) }),
+        )
+        .await?;
+        return with_outcome(cx, po.id, "revised").await;
+    }
+    po_store::update_feed(&mut cx.tx, po.id, &prepared.feed(), cx.now).await?;
+    let po = must_po(cx, po.id).await?;
+    make_revision(
+        cx,
+        &po,
+        prepared.authorized,
+        Some(prepared.lines.clone()),
+        Some(format!("synced from {}", prepared.source)),
+    )
+    .await?;
+    let outcome = if try_auto_activate(cx, po.id).await? {
+        "activated"
+    } else {
+        "updated"
+    };
+    with_outcome(cx, po.id, outcome).await
+}
+
+pub async fn upsert(cx: &mut Cx<'_>, input: Upsert) -> Result<Value, CommandError> {
+    ensure_enabled(cx).await?;
+    let prepared = prepare_upsert(input)?;
+    store::get_vendor(&mut cx.tx, prepared.vendor_id)
+        .await?
+        .ok_or(CommandError::NotFound("vendor"))?;
+    if let Some(po) =
+        po_store::lock_po_by_external(&mut cx.tx, &prepared.source, &prepared.external_id).await?
+    {
+        return apply_existing(cx, po, &prepared).await;
+    }
+    ensure_can_create(cx, &prepared.source, prepared.vendor_id, true).await?;
+    let inserted = po_store::insert_feed_po(
+        &mut cx.tx,
+        cx.org,
+        &po_store::NewFeedPo {
+            vendor_id: prepared.vendor_id,
+            po_number: &prepared.number,
+            external_source: &prepared.source,
+            external_id: &prepared.external_id,
+            created_by: &cx.actor.name,
+            feed: prepared.feed(),
+        },
+        cx.now,
+    )
+    .await
+    .map_err(|err| {
+        if po_number_taken(&err) {
+            CommandError::Conflict(format!(
+                "a purchase order {} already exists",
+                prepared.number
+            ))
+        } else {
+            CommandError::Internal(err)
+        }
+    })?;
+    let Some(id) = inserted else {
+        let po = po_store::lock_po_by_external(&mut cx.tx, &prepared.source, &prepared.external_id)
+            .await?
+            .ok_or(CommandError::NotFound("purchase order"))?;
+        return apply_existing(cx, po, &prepared).await;
+    };
+    cx.emit(
+        "po.created",
+        id,
+        json!({ "po_number": prepared.number, "vendor_id": prepared.vendor_id, "external_id": prepared.external_id }),
+    )
+    .await?;
+    let po = must_po(cx, id).await?;
+    make_revision(
+        cx,
+        &po,
+        prepared.authorized,
+        Some(prepared.lines.clone()),
+        Some(format!("synced from {}", prepared.source)),
+    )
+    .await?;
+    let outcome = if try_auto_activate(cx, id).await? {
+        "activated"
+    } else {
+        "created"
+    };
+    with_outcome(cx, id, outcome).await
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceAuthorize {
+    source: String,
+    key_id: Uuid,
+    vendor_ids: Vec<Uuid>,
+    max_cents: Cents,
+    owner: String,
+}
+
+pub async fn source_authorize(
+    cx: &mut Cx<'_>,
+    input: SourceAuthorize,
+) -> Result<Value, CommandError> {
+    ensure_enabled(cx).await?;
+    let source = text(Some(input.source))
+        .ok_or_else(|| CommandError::Invalid("source is required".into()))?;
+    let owner =
+        text(Some(input.owner)).ok_or_else(|| CommandError::Invalid("owner is required".into()))?;
+    if !store::live_agent_key(&mut cx.tx, cx.org, input.key_id).await? {
+        return Err(CommandError::Invalid(format!(
+            "key {} isn't an agent key in this company",
+            input.key_id
+        )));
+    }
+    if input.max_cents <= 0 {
+        return Err(CommandError::Invalid("max_cents must be over 0".into()));
+    }
+    if input.vendor_ids.is_empty() {
+        return Err(CommandError::Invalid("name at least one vendor".into()));
+    }
+    let people = store::people(&mut cx.tx, cx.org).await?;
+    if !people.iter().any(|p| p.actor == owner) {
+        return Err(CommandError::Invalid(format!(
+            "the owner {owner:?} isn't a person in this company; set the owner to someone in Settings > People"
+        )));
+    }
+    let mut vendor_ids = input.vendor_ids;
+    vendor_ids.sort();
+    vendor_ids.dedup();
+    let found = po_store::lock_vendors(&mut cx.tx, &vendor_ids).await?;
+    if found != vendor_ids.len() {
+        return Err(CommandError::NotFound("vendor"));
+    }
+    let taken = po_store::vendors_already_authorized(&mut cx.tx, &source, &vendor_ids).await?;
+    if !taken.is_empty() {
+        return Err(CommandError::Conflict(format!(
+            "source {source} is already authorized for a named vendor; revoke that authorization first"
+        )));
+    }
+    let id = po_store::insert_source_auth(
+        &mut cx.tx,
+        cx.org,
+        &po_store::NewSourceAuth {
+            source: &source,
+            key_id: input.key_id,
+            max_cents: input.max_cents,
+            owner: &owner,
+            vendor_ids: &vendor_ids,
+            by: &cx.actor.name,
+        },
+        cx.now,
+    )
+    .await?;
+    cx.emit(
+        "po.source_authorized",
+        id,
+        json!({
+            "source": source,
+            "key_id": input.key_id,
+            "vendor_ids": vendor_ids,
+            "max_cents": input.max_cents,
+            "owner": owner,
+            "authorized_by": cx.actor.name,
+        }),
+    )
+    .await?;
+    Ok(json!({
+        "id": id,
+        "source": source,
+        "key_id": input.key_id,
+        "vendor_ids": vendor_ids,
+        "max_cents": input.max_cents,
+        "owner": owner,
+        "authorized_by": cx.actor.name,
+        "outcome": "authorized",
+    }))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceRevoke {
+    authorization_id: Uuid,
+}
+
+pub async fn source_revoke(cx: &mut Cx<'_>, input: SourceRevoke) -> Result<Value, CommandError> {
+    ensure_enabled(cx).await?;
+    let changed =
+        po_store::revoke_source_auth(&mut cx.tx, input.authorization_id, &cx.actor.name, cx.now)
+            .await?
+            .ok_or(CommandError::NotFound("authorization"))?;
+    let auth = po_store::source_auth(&mut cx.tx, input.authorization_id)
+        .await?
+        .ok_or(CommandError::NotFound("authorization"))?;
+    if changed {
+        cx.emit(
+            "po.source_revoked",
+            auth.id,
+            json!({ "source": auth.source, "revoked_by": cx.actor.name }),
+        )
+        .await?;
+    }
+    Ok(json!({
+        "id": auth.id,
+        "source": auth.source,
+        "max_cents": auth.max_cents,
+        "owner": auth.owner,
+        "authorized_by": auth.authorized_by,
+        "outcome": if changed { "revoked" } else { "unchanged" },
+    }))
 }

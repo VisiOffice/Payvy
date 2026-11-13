@@ -72,13 +72,13 @@ impl Store {
         Ok(())
     }
 
-    /// The organization, name and kind for an API key; None if unknown or revoked.
+    /// The organization, key id, name and kind for an API key. None if unknown or revoked.
     pub async fn actor_for_key_hash(
         &self,
         key_hash: &str,
-    ) -> anyhow::Result<Option<(Uuid, String, ActorKind)>> {
+    ) -> anyhow::Result<Option<(Uuid, Uuid, String, ActorKind)>> {
         let row = sqlx::query(
-            "SELECT org_id, actor, kind FROM api_keys WHERE key_hash = $1 AND revoked_at IS NULL",
+            "SELECT id, org_id, actor, kind FROM api_keys WHERE key_hash = $1 AND revoked_at IS NULL",
         )
         .bind(key_hash)
         .fetch_optional(&self.pool)
@@ -89,7 +89,7 @@ impl Store {
             } else {
                 ActorKind::Agent
             };
-            (r.get("org_id"), r.get("actor"), kind)
+            (r.get("org_id"), r.get("id"), r.get("actor"), kind)
         }))
     }
 
@@ -113,6 +113,20 @@ impl Store {
         .await?;
         Ok(id)
     }
+}
+
+/// True when this organization has this unrevoked agent key.
+/// `api_keys` has no row-level security, so the organization is an explicit predicate.
+pub async fn live_agent_key(tx: &mut Tx, org: Uuid, key_id: Uuid) -> anyhow::Result<bool> {
+    let row = sqlx::query(
+        "SELECT 1 AS ok FROM api_keys \
+         WHERE id = $1 AND org_id = $2 AND kind = 'agent' AND revoked_at IS NULL",
+    )
+    .bind(key_id)
+    .bind(org)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(row.is_some())
 }
 
 // ── Events and confirm tokens ───────────────────────────────────────────────
