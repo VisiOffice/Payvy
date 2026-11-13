@@ -248,8 +248,8 @@ async fn records_success_refusal_truncation_invalid_retry_and_unknown_pricing() 
     assert_eq!(r["cache_read_tokens"], 1000);
     assert_eq!(r["cache_write_tokens"], 200);
 
-    // Non-admin cannot read usage.summary
-    let err = commit(&db.state, &agent("importer"), "usage.summary", json!({}))
+    // Non-admin person cannot read usage.summary
+    let err = commit(&db.state, &person("clerk"), "usage.summary", json!({}))
         .await
         .unwrap_err();
     assert!(matches!(err, CommandError::Forbidden(_)));
@@ -400,8 +400,15 @@ async fn timeout_stale_pending_and_document_delete_keep_usage() {
     assert_eq!(r["unknown_usage_attempts"], 2);
     assert_eq!(r["estimated_cost_microcents"], 0);
 
-    // Deleting the document is not blocked and preserves usage rows with document_id = NULL
+    // Deleting the document is not blocked by ai_usage_attempts and preserves
+    // usage rows with document_id = NULL (clear extractions first since 0004
+    // uses a restrictive FK).
     let mut tx = db.state.store.begin(store::DEFAULT_ORG).await.unwrap();
+    sqlx::query("DELETE FROM extractions WHERE document_id = $1")
+        .bind(doc_id)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
     sqlx::query("DELETE FROM documents WHERE id = $1")
         .bind(doc_id)
         .execute(&mut *tx)
