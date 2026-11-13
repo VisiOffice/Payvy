@@ -965,8 +965,44 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
 ];
 
+/// Cross-company commands exposed only on `/operator/commands/*` to the
+/// environment-configured operator service credential (never to company keys,
+/// sessions, MCP, or the browser client).
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct OperatorCommandSpec {
+    pub name: &'static str,
+    pub summary: &'static str,
+    pub tier: RiskTier,
+    pub input_schema: &'static str,
+}
+
+pub const OPERATOR_COMMANDS: &[OperatorCommandSpec] = &[
+    OperatorCommandSpec {
+        name: "org.create",
+        summary: "Create a company, its first Admin person, and built-in company defaults in one transaction. Idempotent on idempotency_key when parameters match.",
+        tier: RiskTier::Routine,
+        input_schema: r#"{"type":"object","additionalProperties":false,"required":["idempotency_key","name","admin_email","admin_name"],"properties":{"idempotency_key":{"type":"string","minLength":1,"maxLength":255,"description":"Caller-supplied idempotency key; retrying with the same key and inputs returns the created organization"},"name":{"type":"string","minLength":1,"maxLength":100,"description":"Company display name"},"admin_email":{"type":"string","format":"email","description":"Email address of the first Admin"},"admin_name":{"type":"string","minLength":1,"maxLength":200,"description":"Full name of the first Admin"},"admin_actor":{"type":"string","description":"Optional actor handle (a-z 0-9 . _ -); defaults to the normalized local part of admin_email"}}}"#,
+    },
+    OperatorCommandSpec {
+        name: "org.list",
+        summary: "List all organizations with creation timestamps and active member counts.",
+        tier: RiskTier::Read,
+        input_schema: r#"{"type":"object","additionalProperties":false,"properties":{"limit":{"type":"integer","minimum":1,"maximum":500,"description":"Maximum organizations to return (default 500)"}}}"#,
+    },
+    OperatorCommandSpec {
+        name: "usage.summary",
+        summary: "Monthly AI extraction usage and estimated cost across all organizations (or one organization when org_id is given) in UTC.",
+        tier: RiskTier::Read,
+        input_schema: r#"{"type":"object","additionalProperties":false,"properties":{"month":{"type":"string","pattern":"^\\d{4}-\\d{2}$","description":"UTC month as YYYY-MM; defaults to the current UTC month"},"org_id":{"type":"string","format":"uuid","description":"Optional single organization filter"}}}"#,
+    },
+];
+
 pub fn find(name: &str) -> Option<&'static CommandSpec> {
     COMMANDS.iter().find(|c| c.name == name)
+}
+
+pub fn find_operator(name: &str) -> Option<&'static OperatorCommandSpec> {
+    OPERATOR_COMMANDS.iter().find(|c| c.name == name)
 }
 
 #[cfg(test)]
@@ -991,6 +1027,20 @@ mod tests {
             let v: Value =
                 serde_json::from_str(c.input_schema).unwrap_or_else(|e| panic!("{}: {e}", c.name));
             assert_eq!(v["type"], "object", "{}", c.name);
+        }
+    }
+
+    #[test]
+    fn operator_commands_have_unique_names_and_object_schemas() {
+        for (i, a) in OPERATOR_COMMANDS.iter().enumerate() {
+            assert!(
+                OPERATOR_COMMANDS[i + 1..].iter().all(|b| b.name != a.name),
+                "duplicate operator command {}",
+                a.name
+            );
+            let v: Value =
+                serde_json::from_str(a.input_schema).unwrap_or_else(|e| panic!("{}: {e}", a.name));
+            assert_eq!(v["type"], "object", "{}", a.name);
         }
     }
 

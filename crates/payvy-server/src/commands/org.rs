@@ -23,7 +23,7 @@ pub struct Update {
 }
 
 /// Trimmed, not empty, at most NAME_MAX characters, no control characters.
-fn valid_name(name: &str) -> Result<String, CommandError> {
+pub(crate) fn valid_name(name: &str) -> Result<String, CommandError> {
     let name = name.trim();
     if name.is_empty() {
         return Err(CommandError::Invalid("name can't be empty".into()));

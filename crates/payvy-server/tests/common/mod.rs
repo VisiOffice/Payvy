@@ -16,6 +16,7 @@ pub const ADMIN_KEY: &str = "test-admin-key-0123456789abcdef0123456789";
 pub struct TestDb {
     pub state: AppState,
     pub clock: Arc<Mutex<DateTime<Utc>>>,
+    pub app_url: String,
     admin_url: String,
     name: String,
 }
@@ -41,9 +42,8 @@ impl TestDb {
             )))
             .await
             .unwrap();
-        let store = payvy_store::Store::connect(&format!("{app_url}/{name}"))
-            .await
-            .unwrap();
+        let db_url = format!("{app_url}/{name}");
+        let store = payvy_store::Store::connect(&db_url).await.unwrap();
         let clock = Arc::new(Mutex::new(
             DateTime::from_timestamp(1_800_000_000, 0).unwrap(),
         ));
@@ -53,6 +53,7 @@ impl TestDb {
         Some(Self {
             state,
             clock,
+            app_url: db_url,
             admin_url,
             name,
         })

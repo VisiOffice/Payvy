@@ -10,8 +10,10 @@ pub use invoice_reviews::*;
 mod ledger;
 pub use ledger::*;
 mod notifications;
+mod operator;
 mod roles;
 pub use notifications::*;
+pub use operator::*;
 pub use roles::*;
 
 use chrono::{DateTime, NaiveDate, Utc};
