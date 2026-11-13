@@ -466,7 +466,7 @@ async fn crashed_claim_is_reclaimed_and_permanent_failures_stop() {
         let mut tx = state.store.begin(DEFAULT_ORG).await.unwrap();
         let jobs = store::claim_ledger_jobs(&mut tx, at, 10).await.unwrap();
         for job in &jobs {
-            store::fail_ledger_job(&mut tx, job.id, "boom", at)
+            store::fail_ledger_job(&mut tx, job.id, "boom", at, false)
                 .await
                 .unwrap();
         }
@@ -480,6 +480,107 @@ async fn crashed_claim_is_reclaimed_and_permanent_failures_stop() {
         .unwrap();
     tx.commit().await.unwrap();
     assert_eq!(status, "dead");
+
+    // But a transient failure (an outage) never goes dead, however
+    // long it lasts: the job posts when the ledger comes back.
+    let ghost2 = Uuid::new_v4();
+    let mut tx = state.store.begin(DEFAULT_ORG).await.unwrap();
+    store::enqueue_ledger_job(
+        &mut tx,
+        DEFAULT_ORG,
+        "bank_reference",
+        None,
+        Some(ghost2),
+        &json!({}),
+        now,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    for hours in 1..=12 {
+        let at = now + chrono::Duration::hours(hours);
+        let mut tx = state.store.begin(DEFAULT_ORG).await.unwrap();
+        let jobs = store::claim_ledger_jobs(&mut tx, at, 10).await.unwrap();
+        for job in &jobs {
+            store::fail_ledger_job(&mut tx, job.id, "timeout", at, true)
+                .await
+                .unwrap();
+        }
+        tx.commit().await.unwrap();
+    }
+    let mut tx = state.store.begin(DEFAULT_ORG).await.unwrap();
+    let status: String = sqlx::query_scalar("SELECT status FROM ledger_jobs WHERE payment_id = $1")
+        .bind(ghost2)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(status, "failed", "an outage must not kill the job");
+    db.drop().await;
+}
+
+#[tokio::test]
+async fn unfinished_workflow_ends_the_job_until_the_last_step_lands() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let (state, fake) = with_fake(&db);
+    let vendor = connected(&db, &state, "approval").await;
+    common::set_workflow(
+        &state,
+        &person("ada"),
+        Some(&vendor.to_string()),
+        json!([
+            { "id": "one", "type": "approve", "approvers": ["ada"] },
+            { "id": "wait", "type": "wait_for", "signal": "funded" },
+            { "id": "pay", "type": "pay", "release": "manual" }]),
+    )
+    .await;
+    let bill = invoice(&state, vendor, "LP-SIGNAL").await;
+    commit(
+        &state,
+        &person("ada"),
+        "bill.approve",
+        json!({ "bill_id": bill }),
+    )
+    .await
+    .unwrap();
+    // The approval queued a job, but the workflow still waits on a
+    // signal: the job ends instead of deferring forever, and posts
+    // nothing.
+    payvy_server::ledger_worker::tick(&state).await.unwrap();
+    payvy_server::ledger_worker::tick(&state).await.unwrap();
+    assert!(
+        !fake.calls().iter().any(|c| c.starts_with("post_bill")),
+        "waiting on a signal posts nothing yet: {:?}",
+        fake.calls()
+    );
+    let mut tx = state.store.begin(DEFAULT_ORG).await.unwrap();
+    let live: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM ledger_jobs WHERE bill_id = $1 AND status IN ('pending', 'sending', 'failed')",
+    )
+    .bind(bill)
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(live, 0, "the job ended rather than deferring forever");
+
+    // The signal finishes the workflow and queues a fresh job.
+    commit(
+        &state,
+        &person("ada"),
+        "bill.signal",
+        json!({ "bill_id": bill, "signal": "funded" }),
+    )
+    .await
+    .unwrap();
+    payvy_server::ledger_worker::tick(&state).await.unwrap();
+    assert!(
+        fake.calls().iter().any(|c| c.starts_with("post_bill")),
+        "the signal's job posts: {:?}",
+        fake.calls()
+    );
     db.drop().await;
 }
 
@@ -521,6 +622,67 @@ async fn held_bill_posts_when_the_hold_releases() {
     assert!(
         fake.calls().iter().any(|c| c.starts_with("post_bill")),
         "posts once the hold releases: {:?}",
+        fake.calls()
+    );
+    db.drop().await;
+}
+
+#[tokio::test]
+async fn an_outage_does_not_kill_the_job() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let (state, fake) = with_fake(&db);
+    let vendor = connected(&db, &state, "approval").await;
+    common::set_workflow(
+        &state,
+        &person("ada"),
+        Some(&vendor.to_string()),
+        json!([
+            { "id": "one", "type": "approve", "approvers": ["ada"] },
+            { "id": "pay", "type": "pay", "release": "manual" }]),
+    )
+    .await;
+    let bill = invoice(&state, vendor, "LP-OUTAGE").await;
+    commit(
+        &state,
+        &person("ada"),
+        "bill.approve",
+        json!({ "bill_id": bill }),
+    )
+    .await
+    .unwrap();
+    // The ledger is down for longer than the old eight-attempt cap
+    // would have survived (about two hours of backoff).
+    for _ in 0..10 {
+        fake.script_err(payvy_ledger::LedgerError::new(
+            payvy_ledger::Code::Timeout,
+            "the ledger did not answer",
+        ));
+    }
+    for _ in 0..10 {
+        payvy_server::ledger_worker::tick(&state).await.unwrap();
+        *db.clock.lock().unwrap() += chrono::Duration::hours(2);
+    }
+    // The fake records attempts too: ten tries, none of them a post
+    // that stuck (the job is still live, not dead).
+    let attempts = fake
+        .calls()
+        .iter()
+        .filter(|c| c.starts_with("post_bill"))
+        .count();
+    assert_eq!(attempts, 10, "ten failed tries: {:?}", fake.calls());
+    // The ledger comes back; the same job posts.
+    payvy_server::ledger_worker::tick(&state).await.unwrap();
+    let calls = fake
+        .calls()
+        .iter()
+        .filter(|c| c.starts_with("post_bill"))
+        .count();
+    assert_eq!(
+        calls,
+        11,
+        "posted once the ledger returned: {:?}",
         fake.calls()
     );
     db.drop().await;

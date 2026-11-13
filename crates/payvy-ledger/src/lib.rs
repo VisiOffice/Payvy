@@ -29,8 +29,8 @@ pub use fake::FakeLedger;
 /// How many times a busy ledger is tried before the refusal is returned.
 pub const CONCURRENCY_ATTEMPTS: u32 = 3;
 
-/// How long one ledger call may take. The connection row stays locked across
-/// the call, so a hung adapter must not hold every other ledger action.
+/// How long one ledger call may take, so a hung adapter cannot stall
+/// the posting worker (or a by-hand post) forever.
 pub const LEDGER_CALL_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Stable codes a person can act on. `bill_not_posted` is Payvy's own: the

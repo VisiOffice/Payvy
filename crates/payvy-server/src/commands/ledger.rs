@@ -111,27 +111,10 @@ async fn post_bill_at(
         Ok(outcome) => outcome,
         Err(error) => return record_failure(cx, connection.id, "bill", bill.id, &key, error).await,
     };
-    if !outcome.replay {
-        store::put_ledger_link(
-            &mut cx.tx,
-            cx.org,
-            &store::PutLedgerLink {
-                connection_id: connection.id,
-                entity: "bill",
-                payvy_id: bill.id,
-                external_id: Some(&outcome.posted.external_id),
-                external_key: &outcome.posted.external_key,
-                status: "posted",
-                error_code: None,
-                error_detail: None,
-                request_hash: Some(&outcome.hash),
-                posted_at: Some(cx.now),
-            },
-        )
-        .await?;
-    }
     // Point the ledger's bill at its document in Payvy. Idempotent and
-    // not part of the post's hash; a failure is said, never hidden.
+    // not part of the post's hash; a failure is said, never hidden. It
+    // runs before the link row is written, so no row lock is held
+    // across this call.
     let document_link = if outcome.replay {
         "replay"
     } else {
@@ -157,6 +140,25 @@ async fn post_bill_at(
             None => "skipped",
         }
     };
+    if !outcome.replay {
+        store::put_ledger_link(
+            &mut cx.tx,
+            cx.org,
+            &store::PutLedgerLink {
+                connection_id: connection.id,
+                entity: "bill",
+                payvy_id: bill.id,
+                external_id: Some(&outcome.posted.external_id),
+                external_key: &outcome.posted.external_key,
+                status: "posted",
+                error_code: None,
+                error_detail: None,
+                request_hash: Some(&outcome.hash),
+                posted_at: Some(cx.now),
+            },
+        )
+        .await?;
+    }
     cx.emit(
         "ledger.bill_posted",
         bill.id,
@@ -1018,9 +1020,10 @@ async fn hook_connection(cx: &mut Cx<'_>) -> Result<Option<store::LedgerConnecti
     Ok(store::ledger_connection_read(&mut cx.tx).await?)
 }
 
-/// A bill's approval completed: queue its post when the company posts
-/// at approval.
-pub async fn on_bill_approved(cx: &mut Cx<'_>, bill_id: Uuid) -> Result<(), CommandError> {
+/// A bill moved in its workflow (an approval landed, a signal
+/// arrived): queue its post when the company posts at approval. The
+/// job itself sorts out whether the bill is at its pay step yet.
+pub async fn on_bill_progressed(cx: &mut Cx<'_>, bill_id: Uuid) -> Result<(), CommandError> {
     let Some(connection) = hook_connection(cx).await? else {
         return Ok(());
     };
@@ -1224,10 +1227,27 @@ async fn post_outside_leg(
     Ok(posted_json(&outcome))
 }
 
-/// Where a bill stands for an approval-mode post job, evaluated the
-/// same way bill commands evaluate it (a worker-side read).
-async fn bill_at_pay_step(cx: &mut Cx<'_>, bill: &store::Bill) -> Result<bool, CommandError> {
+/// What an approval-mode post job should do with its bill right now,
+/// evaluated the same way bill commands evaluate it (a worker-side
+/// read). Only a hold defers: it is the one wait with an end date, and
+/// when it lifts the bill is at its pay step. Still being approved or
+/// waiting on a signal ends the job instead — the approval or signal
+/// that finishes the workflow queues a fresh one, and a bill that is
+/// rejected or voided will never be posted at all.
+enum Posture {
+    Post,
+    Defer,
+    Drop,
+}
+
+async fn bill_posture(cx: &mut Cx<'_>, bill: &store::Bill) -> Result<Posture, CommandError> {
     use payvy_domain::workflow::{self, Facts, Status, Workflow};
+    if matches!(
+        bill.state,
+        payvy_domain::bills::State::Rejected | payvy_domain::bills::State::Void
+    ) {
+        return Ok(Posture::Drop);
+    }
     let wf = match bill.workflow_id {
         Some(id) => store::get_workflow(&mut cx.tx, id)
             .await?
@@ -1253,10 +1273,13 @@ async fn bill_at_pay_step(cx: &mut Cx<'_>, bill: &store::Bill) -> Result<bool, C
             now: cx.now,
         },
     );
-    Ok(matches!(
-        progress.status,
-        Status::AwaitingRelease { .. } | Status::ReadyToPay | Status::Released { .. }
-    ) || bill.state != payvy_domain::bills::State::Open)
+    Ok(match progress.status {
+        Status::AwaitingRelease { .. } | Status::ReadyToPay | Status::Released { .. } => {
+            Posture::Post
+        }
+        Status::Held { .. } => Posture::Defer,
+        Status::AwaitingApproval { .. } | Status::WaitingFor { .. } => Posture::Drop,
+    })
 }
 
 /// Run one queued job in a fresh command transaction (the worker's
@@ -1319,16 +1342,19 @@ async fn run_job(cx: &mut Cx<'_>, job: &store::LedgerJob) -> Result<JobOutcome, 
     match job.kind.as_str() {
         "post_bill" => {
             let bill_id = job.bill_id.ok_or(CommandError::NotFound("job bill"))?;
-            // In approval mode a held (or still-approving) bill's post
-            // waits for its moment; the job defers instead of failing.
+            // In approval mode a held bill's post waits for the hold to
+            // lift; anything earlier ends the job, and the approval or
+            // signal that finishes the workflow queues a fresh one.
             if let Ok(connection) = connection_read(cx).await
                 && connection.post_when == "approval"
             {
                 let bill = store::get_bill_read(&mut cx.tx, bill_id)
                     .await?
                     .ok_or(CommandError::NotFound("bill"))?;
-                if !bill_at_pay_step(cx, &bill).await? {
-                    return Ok(JobOutcome::Defer);
+                match bill_posture(cx, &bill).await? {
+                    Posture::Post => {}
+                    Posture::Defer => return Ok(JobOutcome::Defer),
+                    Posture::Drop => return Ok(JobOutcome::Done),
                 }
             }
             let post_date = job

@@ -60,8 +60,17 @@ makes safe. After eight failed attempts the job is `dead` — it stops
 retrying, its last error stays on the job and on the bill's link, and a
 person retries by hand. A bill whose approval-mode post is queued
 before its pay step (still approving, or held) defers without spending
-an attempt and posts when it gets there. The manual commands remain
-the by-hand path and run at once: `ledger.post_bill`,
+an attempt and posts when it gets there. Only a hold defers: a bill
+still being approved or waiting on a signal ends its job, and the
+approval or signal that finishes the workflow queues a fresh one (a
+rejected or voided bill's job ends too — there is nothing to post).
+A failure that says nothing about the job — the ledger unreachable, a
+call timed out — never counts toward the eight: an outage of any
+length retries with the same capped backoff and posts when the ledger
+returns, where a refusal (closed period, unmapped account) goes dead
+at eight for a person to sort out. No row lock is held across a ledger
+call, including the document-link follow-up after a post. The manual
+commands remain the by-hand path and run at once: `ledger.post_bill`,
 `ledger.post_payment`, `ledger.void`.
 
 ## What is not posted yet

@@ -901,7 +901,7 @@ pub async fn approve(cx: &mut Cx<'_>, input: Approve) -> Result<Value, CommandEr
     // Queue the ledger post (approval mode): the job itself waits
     // until the bill reaches its pay step, so a held bill posts when
     // its hold is released. The approval stands either way.
-    super::ledger::on_bill_approved(cx, bill.id).await?;
+    super::ledger::on_bill_progressed(cx, bill.id).await?;
     Ok(out)
 }
 
@@ -961,6 +961,9 @@ pub async fn signal(cx: &mut Cx<'_>, input: SignalInput) -> Result<Value, Comman
         json!({ "bill_id": bill.id, "signal": input.signal, "note": note }),
     )
     .await?;
+    // A signal can be the last thing a workflow waits on: queue the
+    // ledger post the same way an approval does.
+    super::ledger::on_bill_progressed(cx, bill.id).await?;
     let mut out = detail(cx, bill.id).await?;
     out["signal_used_by_step"] = json!(used_by);
     out["was"] = json!(status_name(&progress));
