@@ -3,7 +3,7 @@
 Hosted Payvy sells two flat plans per company. The plan decides two things, and the core
 enforces both on the server for the browser, the API, MCP and the workers:
 
-| Entitlement | Gates | Bring your own agent ($39) | Payvy-managed agent ($99) |
+| Entitlement | Gates | Bring your own agent (`byoa`) | Payvy reads for you (`managed`) |
 | --- | --- | --- | --- |
 | `reader` | Every paid model call: `document.extract` (direct, retried or a split part), the background reader, and the reads behind *Create N bills* | off | on |
 | `payments` | Every new payment through the bank: `bill.release` with a paying bank, `bill.auto_pay`, and `payments::submit` | on | on |
@@ -78,14 +78,23 @@ Plans are paid through Stripe, which the private management app owns: prices, Ch
 customer portal, webhooks and the plan policy. The core keeps no Stripe state. It asks the
 management app, server to server, with `PAYVY_BILLING_URL` and `PAYVY_BILLING_KEY`:
 
-- `billing.get` shows the subscription as the management app last saw it, and the plan in force.
+- `billing.get` shows the subscription as the management app last saw it, the plans it offers
+  (name, price, description, trial days) and the plan in force.
 - `billing.checkout {plan: byoa|managed}` returns a Checkout link. A company that already
   subscribes gets the portal instead, never a second subscription.
 - `billing.portal` returns the portal link, to change plan or card, see invoices or cancel.
 
+Prices and terms (trial length, the past-due grace and the date payments stop) live only in the
+management app; the open-source app shows what `billing.get` returns and states none of its
+own. The core passes on only the known fields of the management app's answer, so nothing else
+it sends (a link, a Stripe id) reaches the page or an agent. If the management app can't be
+reached, `billing.get` still answers, with `available: false` and the plan in force. The app
+shows Settings > Billing only when `me.plan.billing` is true (hosted, with both settings).
+
 `billing.get` is a shared read, open to agents too: it carries no links. The other two are
 person-only and need Admin. The company id comes from the session and the
-email from the person asking; the return URL is `PAYVY_PUBLIC_URL/settings/billing`. Opening a
+email from the person asking; the return URL is `PAYVY_PUBLIC_URL/settings/billing`. A link that
+isn't https is refused before it reaches the browser. Opening a
 link appends `billing.checkout_opened` or `billing.portal_opened`, without the link, which is a
 bearer URL for the company's billing. Nothing here changes what a company may do: the plan
 changes only when Stripe confirms and the management app calls `entitlement.set`. Preview asks

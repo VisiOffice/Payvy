@@ -6,8 +6,94 @@
 
 use std::time::Duration;
 
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
+
+/// The plans the core knows by name, because each grants a different
+/// entitlement. Their names, prices and terms come from the management app.
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanId {
+    Byoa,
+    Managed,
+}
+
+impl PlanId {
+    pub fn name(self) -> &'static str {
+        match self {
+            PlanId::Byoa => "byoa",
+            PlanId::Managed => "managed",
+        }
+    }
+}
+
+/// What Settings > Billing shows. Only these fields pass through, whatever
+/// else the management app sends, and nothing here is a link.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct Status {
+    pub subscription: Option<Subscription>,
+    #[serde(default)]
+    pub offers: Vec<Offer>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct Subscription {
+    pub plan: Option<PlanId>,
+    pub status: String,
+    pub trial_end: Option<DateTime<Utc>>,
+    pub current_period_end: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub cancel_at_period_end: bool,
+    /// When payments stop if a failed payment isn't fixed, from the
+    /// management app's grace policy.
+    pub payments_stop_at: Option<DateTime<Utc>>,
+}
+
+/// A plan as the management app offers it: the price and trial are its to
+/// state, so the open-source app never carries them.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct Offer {
+    pub id: PlanId,
+    pub name: String,
+    pub price: String,
+    #[serde(default)]
+    pub description: Vec<String>,
+    #[serde(default)]
+    pub trial_days: u32,
+}
+
+/// A Checkout or portal link for the person who asked.
+#[derive(Debug, Deserialize)]
+pub struct Link {
+    pub kind: String,
+    pub url: String,
+}
+
+impl Status {
+    /// Bounded text, so a misbehaving management app can't fill the page.
+    fn tidy(mut self) -> Self {
+        fn clip(s: &mut String, n: usize) {
+            if let Some((i, _)) = s.char_indices().nth(n) {
+                s.truncate(i);
+            }
+        }
+        if let Some(sub) = &mut self.subscription {
+            clip(&mut sub.status, 40);
+        }
+        self.offers.truncate(4);
+        for o in &mut self.offers {
+            clip(&mut o.name, 80);
+            clip(&mut o.price, 80);
+            o.description.truncate(6);
+            for d in &mut o.description {
+                clip(d, 200);
+            }
+        }
+        self
+    }
+}
 
 pub struct Billing {
     /// The management app, e.g. https://signup.payvy.com (PAYVY_BILLING_URL).
@@ -56,30 +142,41 @@ impl Billing {
         })
     }
 
-    pub async fn status(&self, org_id: Uuid) -> Result<Value, BillingError> {
+    pub async fn status(&self, org_id: Uuid) -> Result<Status, BillingError> {
         let req = self
             .http
             .get(format!("{}/api/billing/status", self.url))
             .query(&[("org_id", org_id.to_string())]);
-        self.send(req).await
+        Ok(Self::parse::<Status>(self.send(req).await?)?.tidy())
     }
 
-    pub async fn checkout(&self, company: &Company<'_>, plan: &str) -> Result<Value, BillingError> {
+    pub async fn checkout(
+        &self,
+        company: &Company<'_>,
+        plan: PlanId,
+    ) -> Result<Link, BillingError> {
         let mut body = Self::body(company);
         body["plan"] = json!(plan);
         let req = self
             .http
             .post(format!("{}/api/billing/checkout", self.url))
             .json(&body);
-        self.send(req).await
+        Self::parse(self.send(req).await?)
     }
 
-    pub async fn portal(&self, company: &Company<'_>) -> Result<Value, BillingError> {
+    pub async fn portal(&self, company: &Company<'_>) -> Result<Link, BillingError> {
         let req = self
             .http
             .post(format!("{}/api/billing/portal", self.url))
             .json(&Self::body(company));
-        self.send(req).await
+        Self::parse(self.send(req).await?)
+    }
+
+    fn parse<T: serde::de::DeserializeOwned>(body: Value) -> Result<T, BillingError> {
+        serde_json::from_value(body).map_err(|e| {
+            tracing::warn!("billing answered in a shape Payvy doesn't know: {e}");
+            BillingError::Unavailable
+        })
     }
 
     fn body(c: &Company<'_>) -> Value {

@@ -45,7 +45,7 @@ export interface Me {
   companies?: Company[];
   /** What the company's plan includes. Self-hosted: everything. Optional:
    *  a server older than the app doesn't send it, which means everything on. */
-  plan?: { hosted: boolean; provisional?: boolean; reader: boolean; payments: boolean };
+  plan?: { hosted: boolean; provisional?: boolean; reader: boolean; payments: boolean; billing?: boolean };
 }
 
 export interface Company {
