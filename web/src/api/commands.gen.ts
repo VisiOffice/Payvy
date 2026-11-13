@@ -1067,6 +1067,13 @@ export interface EventListInput {
   limit?: number;
 }
 
+export interface UsageSummaryInput {
+  /**
+   * UTC month as YYYY-MM; defaults to the current UTC month
+   */
+  month?: string;
+}
+
 export interface CommandInputs {
   "invoice_review.settings": InvoiceReviewSettingsInput;
   "invoice_review.configure": InvoiceReviewConfigureInput;
@@ -1175,6 +1182,7 @@ export interface CommandInputs {
   "ledger.post_payment": LedgerPostPaymentInput;
   "ledger.void": LedgerVoidInput;
   "event.list": EventListInput;
+  "usage.summary": UsageSummaryInput;
 }
 
 export type CommandName = keyof CommandInputs;
@@ -1289,4 +1297,5 @@ export const COMMANDS: Record<CommandName, { tier: Tier; personOnly: boolean; su
   "ledger.post_payment": { tier: "routine", personOnly: false, summary: "Record one sent payment in the ledger, applied to its posted bill and drawn on the mapped ledger bank account. Payvy has already paid through the customer's bank. Preview sends nothing." },
   "ledger.void": { tier: "confirmed", personOnly: true, summary: "Void the ledger's copy of a bill. Every posted payment is voided first, oldest first, including one the bank later returned. If a payment void is refused the bill stays posted. This cannot be undone, so it asks for confirmation. Only a person with admin may do this. Preview sends nothing." },
   "event.list": { tier: "read", personOnly: false, summary: "The audit log, newest first: every change, who made it and when. Filter to one bill, vendor or proposal with entity_id." },
+  "usage.summary": { tier: "read", personOnly: false, summary: "Monthly AI extraction usage and estimated cost for this organization in UTC." },
 };

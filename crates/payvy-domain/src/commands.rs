@@ -914,6 +914,15 @@ pub const COMMANDS: &[CommandSpec] = &[
         permission: Permission::Read,
         input_schema: r#"{"type":"object","properties":{"entity_id":{"type":"string","format":"uuid"},"limit":{"type":"integer","minimum":1,"maximum":500}}}"#,
     },
+    // ── Usage ───────────────────────────────────────────────────────────────
+    CommandSpec {
+        name: "usage.summary",
+        summary: "Monthly AI extraction usage and estimated cost for this organization in UTC.",
+        tier: RiskTier::Read,
+        person_only: false,
+        permission: Permission::Admin,
+        input_schema: r#"{"type":"object","properties":{"month":{"type":"string","pattern":"^\\d{4}-\\d{2}$","description":"UTC month as YYYY-MM; defaults to the current UTC month"}}}"#,
+    },
 ];
 
 pub fn find(name: &str) -> Option<&'static CommandSpec> {

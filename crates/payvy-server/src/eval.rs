@@ -2,6 +2,9 @@
 //! (`fixtures/invoices`), so a self-hoster can see how a model does before
 //! trusting it, and the README can say how each one does instead of
 //! claiming they're all equal. `payvy extract-eval fixtures/invoices`.
+//!
+//! This developer CLI tool calls `Extractor` directly without a database
+//! and is not recorded in `ai_usage_attempts`.
 
 use std::path::Path;
 
