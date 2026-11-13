@@ -119,6 +119,15 @@ and uses no repository secrets.
   for real: download and decrypt as restore-check does, then `pg_restore` into a fresh database.
   Without the encryption key the backups are unreadable, and without `PAYVY_SECRETS_KEY` a
   restore still needs every bank reconnected; both are in 1Password.
+- **Hosted management app backups** (payvy-hosted: signups, Stripe customers and
+  subscriptions): `deploy/install-backups.sh --with-hosted` adds a second line at 09:27 UTC. The
+  same script and keys back up `payvy_hosted_production` from the `payvy-hosted-db` accessory,
+  as `backups/{daily,weekly,monthly}/payvy-hosted-*.dump.enc` in the same bucket, so the same
+  lifecycle rules expire them (log: `/var/log/payvy-hosted-backup.log`). The script's
+  `PAYVY_DB_*` and `PAYVY_BACKUP_NAME` settings choose the database; `restore-check.sh` takes
+  the same settings and `PAYVY_CHECK_TABLES`. Run it after the hosted app's first deploy. Only
+  the primary database is backed up: Solid Queue and Solid Cache rebuild themselves, and
+  Stripe is the source of truth for subscriptions.
 - **API traffic:** Cloudflare DNS (`dev.payvy.com`, DNS-only A record) → host nginx, TLS from
   certbot (`deploy/nginx-payvy-beta.conf`) → kamal-proxy on `127.0.0.1:8090` → the app on
   7430. kamal-proxy is shared: its `proxy.run` settings must match the other apps on the box.

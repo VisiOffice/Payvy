@@ -13,6 +13,12 @@
 #     B2_KEY_ID, B2_APPLICATION_KEY, BACKUP_ENCRYPTION_KEY
 #   and optionally B2_BUCKET (default payvy-db-backups) and HEARTBEAT_URL,
 #   pinged on success and with /fail on failure.
+# - Backs up the core by default. The hosted management app's database uses the
+#   same script and keys, with PAYVY_DB_CONTAINER=payvy-hosted-db,
+#   PAYVY_DB_NAME=payvy_hosted_production, PAYVY_DB_USER=payvy_hosted and
+#   PAYVY_BACKUP_NAME=payvy-hosted (install-backups.sh --with-hosted). Its files
+#   sit beside the core's under the same prefixes, so the same lifecycle rules
+#   expire them.
 # - No secret is ever passed on a command line (visible in ps): curl reads its
 #   credentials from a config on stdin, openssl from the environment.
 set -euo pipefail
@@ -20,7 +26,10 @@ set -euo pipefail
 ENV_FILE=${PAYVY_BACKUP_ENV:-/root/payvy-backup.env}
 DB_CONTAINER=${PAYVY_DB_CONTAINER:-payvy-db}
 DB_NAME=${PAYVY_DB_NAME:-payvy}
-say() { echo "[payvy-backup] $(date -u +%FT%TZ) $*"; }
+# The accessory's superuser: postgres for the core, the app role for hosted.
+DB_USER=${PAYVY_DB_USER:-postgres}
+BACKUP_NAME=${PAYVY_BACKUP_NAME:-payvy}
+say() { echo "[$BACKUP_NAME-backup] $(date -u +%FT%TZ) $*"; }
 
 # shellcheck disable=SC1090
 if [ -f "$ENV_FILE" ]; then set -a; . "$ENV_FILE"; set +a; fi
@@ -44,14 +53,14 @@ STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 if [ "$(date -u +%d)" = 01 ]; then KIND=monthly
 elif [ "$(date -u +%u)" = 7 ]; then KIND=weekly
 else KIND=daily; fi
-NAME="${PREFIX}/${KIND}/payvy-${KIND}-${STAMP}.dump.enc"
+NAME="${PREFIX}/${KIND}/${BACKUP_NAME}-${KIND}-${STAMP}.dump.enc"
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 OUT="$TMP/payvy.dump.enc"
 
 say "dumping $DB_NAME from $DB_CONTAINER ($KIND)"
 # Custom format is compressed and restores with pg_restore, table by table.
-docker exec "$DB_CONTAINER" pg_dump -U postgres -Fc "$DB_NAME" \
+docker exec "$DB_CONTAINER" pg_dump -U "$DB_USER" -Fc "$DB_NAME" \
   | openssl enc -aes-256-cbc -salt -pbkdf2 -iter 200000 -pass env:BACKUP_ENCRYPTION_KEY > "$OUT"
 SIZE=$(stat -c%s "$OUT")
 [ "$SIZE" -gt 1024 ] || fail "dump is only $SIZE bytes"

@@ -9,8 +9,12 @@ set -euo pipefail
 ENV_FILE=${PAYVY_BACKUP_ENV:-/root/payvy-backup.env}
 DB_CONTAINER=${PAYVY_DB_CONTAINER:-payvy-db}
 DB_NAME=${PAYVY_DB_NAME:-payvy}
-SCRATCH=payvy_restore_check
-say() { echo "[payvy-restore-check] $*"; }
+DB_USER=${PAYVY_DB_USER:-postgres}
+# Which backups (backup-db.sh's PAYVY_BACKUP_NAME) and which tables to compare.
+BACKUP_NAME=${PAYVY_BACKUP_NAME:-payvy}
+CHECK_TABLES=${PAYVY_CHECK_TABLES:-organizations people vendors bills documents payments events}
+SCRATCH=${BACKUP_NAME//-/_}_restore_check
+say() { echo "[$BACKUP_NAME-restore-check] $*"; }
 
 # shellcheck disable=SC1090
 if [ -f "$ENV_FILE" ]; then set -a; . "$ENV_FILE"; set +a; fi
@@ -37,27 +41,28 @@ BUCKET_ID=$(b2 b2_list_buckets "{\"accountId\":\"$ACCOUNT\",\"bucketName\":\"$B2
 # Newest across daily/weekly/monthly: names sort by their UTC timestamp.
 LATEST=$(b2 b2_list_file_names "{\"bucketId\":\"$BUCKET_ID\",\"prefix\":\"$PREFIX/\",\"maxFileCount\":10000}" \
   | grep -o '"fileName": *"[^"]*"' | cut -d'"' -f4 \
+  | grep -E "/${BACKUP_NAME}-(daily|weekly|monthly)-[0-9]{8}T" \
   | awk -F- '{print $NF" "$0}' | sort | tail -1 | cut -d' ' -f2)
 [ -n "$LATEST" ] || { say "no backups in $B2_BUCKET"; exit 1; }
 say "newest backup: $LATEST"
 
 TMP=$(mktemp -d)
-trap 'rm -rf "$TMP"; docker exec "$DB_CONTAINER" dropdb -U postgres --if-exists "$SCRATCH" >/dev/null 2>&1 || true' EXIT
+trap 'rm -rf "$TMP"; docker exec "$DB_CONTAINER" dropdb -U "$DB_USER" --if-exists "$SCRATCH" >/dev/null 2>&1 || true' EXIT
 printf 'header = "Authorization: %s"\n' "$TOKEN" \
   | curl -fsS -m 1800 -K - -o "$TMP/b.enc" "$DOWN/file/$B2_BUCKET/$LATEST"
 openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass env:BACKUP_ENCRYPTION_KEY \
   -in "$TMP/b.enc" -out "$TMP/b.dump"
 say "decrypted $(stat -c%s "$TMP/b.dump") bytes"
 
-docker exec "$DB_CONTAINER" dropdb -U postgres --if-exists "$SCRATCH"
-docker exec "$DB_CONTAINER" createdb -U postgres "$SCRATCH"
-docker exec -i "$DB_CONTAINER" pg_restore -U postgres --no-owner --exit-on-error -d "$SCRATCH" < "$TMP/b.dump"
+docker exec "$DB_CONTAINER" dropdb -U "$DB_USER" --if-exists "$SCRATCH"
+docker exec "$DB_CONTAINER" createdb -U "$DB_USER" "$SCRATCH"
+docker exec -i "$DB_CONTAINER" pg_restore -U "$DB_USER" --no-owner --exit-on-error -d "$SCRATCH" < "$TMP/b.dump"
 
-count() { docker exec "$DB_CONTAINER" psql -U postgres -d "$1" -Atc "$2"; }
+count() { docker exec "$DB_CONTAINER" psql -U "$DB_USER" -d "$1" -Atc "$2"; }
 Q_TABLES="select count(*) from information_schema.tables where table_schema='public'"
 printf '%-22s %10s %10s\n' "" backup live
 printf '%-22s %10s %10s\n' tables "$(count "$SCRATCH" "$Q_TABLES")" "$(count "$DB_NAME" "$Q_TABLES")"
-for t in organizations people vendors bills documents payments events; do
+for t in $CHECK_TABLES; do
   q="select count(*) from $t"
   printf '%-22s %10s %10s\n' "$t" "$(count "$SCRATCH" "$q" 2>/dev/null || echo -)" "$(count "$DB_NAME" "$q" 2>/dev/null || echo -)"
 done

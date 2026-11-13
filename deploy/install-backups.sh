@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Installs the nightly database backup on the host, from your machine. Run from the repo root:
 #
-#   deploy/install-backups.sh
+#   deploy/install-backups.sh                 # the core's database
+#   deploy/install-backups.sh --with-hosted   # and the hosted management app's
 #
 # Copies backup-db.sh and restore-check.sh to /root/bin on the host, writes
 # /root/payvy-backup.env (mode 600) with the B2 key and the encryption key from
@@ -9,6 +10,9 @@
 # adds the cron line (09:17 UTC, after midnight in the US), then runs one backup
 # and a restore check. Safe to run again.
 set -euo pipefail
+WITH_HOSTED=false
+[ "${1:-}" = --with-hosted ] && WITH_HOSTED=true
+HOSTED_ENV='PAYVY_DB_CONTAINER=payvy-hosted-db PAYVY_DB_NAME=payvy_hosted_production PAYVY_DB_USER=payvy_hosted PAYVY_BACKUP_NAME=payvy-hosted'
 
 HOST=root@5.78.94.150
 JUMP=root@100.95.75.126
@@ -29,9 +33,16 @@ vp run --purpose "Install the Payvy database backup credentials on the host" \
        "$BACKUP_ENCRYPTION_KEY" \
      | ssh -J '"$JUMP $HOST"' "umask 077; cat > /root/payvy-backup.env"'
 
-ssh_h '(crontab -l 2>/dev/null | grep -v "# payvy-backup$" || true;
-        echo "17 9 * * * /root/bin/backup-db.sh >> /var/log/payvy-backup.log 2>&1 # payvy-backup") | crontab -
-       crontab -l | grep payvy-backup'
+HOSTED_LINE=""
+$WITH_HOSTED && HOSTED_LINE="27 9 * * * $HOSTED_ENV /root/bin/backup-db.sh >> /var/log/payvy-hosted-backup.log 2>&1 # payvy-hosted-backup"
+ssh_h "(crontab -l 2>/dev/null | grep -v -e '# payvy-backup\$' -e '# payvy-hosted-backup\$' || true;
+        echo '17 9 * * * /root/bin/backup-db.sh >> /var/log/payvy-backup.log 2>&1 # payvy-backup';
+        if [ -n '$HOSTED_LINE' ]; then echo '$HOSTED_LINE'; fi) | crontab -
+       crontab -l | grep -e payvy-backup -e payvy-hosted-backup"
 
 echo "--- first backup and restore check ---"
 ssh_h '/root/bin/backup-db.sh && /root/bin/restore-check.sh'
+if $WITH_HOSTED; then
+  echo "--- hosted: first backup and restore check ---"
+  ssh_h "$HOSTED_ENV /root/bin/backup-db.sh && $HOSTED_ENV PAYVY_CHECK_TABLES='signups accounts subscriptions stripe_events' /root/bin/restore-check.sh"
+fi
