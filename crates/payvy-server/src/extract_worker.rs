@@ -34,6 +34,12 @@ pub async fn run(state: AppState) {
 pub async fn tick(state: &AppState) -> anyhow::Result<usize> {
     let mut done = 0;
     for org in state.store.org_ids().await? {
+        // A plan without the built-in reader: its own agent reads.
+        if !crate::entitlements::company_allows(state, org, crate::entitlements::Need::Reader)
+            .await?
+        {
+            continue;
+        }
         let mut tx = state.store.begin(org).await?;
         let ids = store::documents_to_extract(
             &mut tx,

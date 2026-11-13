@@ -125,6 +125,9 @@ and uses no repository secrets.
   Host nginx blocks `/operator` (`location ^~ /operator { return 404; }`), and Kamal does **not**
   deploy `/etc/nginx/sites-available/payvy` — always apply and reload `deploy/nginx-payvy-beta.conf`
   via `deploy/setup-host.sh` on `thatch-api-prod` **before** setting `PAYVY_OPERATOR_KEY` in Kamal.
+- **Hosted mode:** `PAYVY_HOSTED=true` enforces plan entitlements and needs `PAYVY_OPERATOR_KEY`.
+  Entitle every company already in use first (`payvy org entitle`), or the deploy turns its
+  reader and payments off. See `docs/hosted.md`.
 - **Documents:** R2 bucket `payvy-documents` in the Robert@payvy.com Cloudflare account.
 - **Inbound email:** `in.payvy.com` on the payvy.com Email Routing. The zone's catch-all still
   belongs to the legacy app's `payvy-email-worker`, which hands `@in.payvy.com` mail to

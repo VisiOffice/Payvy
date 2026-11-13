@@ -63,6 +63,9 @@ pub enum CommandError {
     Forbidden(String),
     #[error("{0}")]
     NotConfigured(&'static str),
+    /// The company's hosted plan doesn't include this (`entitlements.rs`).
+    #[error("{0}")]
+    NotEntitled(&'static str),
     /// The customer's bank refused or didn't answer.
     #[error("{0}")]
     Bank(String),
@@ -86,6 +89,7 @@ impl CommandError {
             CommandError::PersonOnly(_) => "person_only",
             CommandError::Forbidden(_) => "forbidden",
             CommandError::NotConfigured(_) => "not_configured",
+            CommandError::NotEntitled(_) => "not_entitled",
             CommandError::Bank(_) => "bank_error",
             CommandError::Ledger { code, .. } => code,
             CommandError::Internal(_) => "internal",
@@ -104,7 +108,9 @@ impl CommandError {
             CommandError::Conflict(_)
             | CommandError::NeedsConfirmation(_)
             | CommandError::BadToken(_) => StatusCode::CONFLICT,
-            CommandError::PersonOnly(_) | CommandError::Forbidden(_) => StatusCode::FORBIDDEN,
+            CommandError::PersonOnly(_)
+            | CommandError::Forbidden(_)
+            | CommandError::NotEntitled(_) => StatusCode::FORBIDDEN,
             CommandError::NotConfigured(_) => StatusCode::SERVICE_UNAVAILABLE,
             CommandError::Bank(_) => StatusCode::BAD_GATEWAY,
             CommandError::Ledger { code, .. } => match *code {
@@ -209,6 +215,7 @@ pub async fn run(
         bank: state.bank.as_deref(),
         auth: state.auth.as_deref(),
         ledger: state.ledger.as_deref(),
+        hosted: state.hosted,
     };
     let result = execute(&mut cx, spec.name, &input).await;
     let Cx {
@@ -427,6 +434,7 @@ pub(crate) struct Cx<'a> {
     bank: Option<&'a crate::Bank>,
     auth: Option<&'a crate::auth::Auth>,
     ledger: Option<&'a (dyn payvy_ledger::Ledger + Send + Sync)>,
+    hosted: bool,
 }
 
 impl<'a> Cx<'a> {
@@ -466,6 +474,21 @@ impl<'a> Cx<'a> {
     pub fn ledger(&self) -> Result<&'a (dyn payvy_ledger::Ledger + Send + Sync), CommandError> {
         self.ledger
             .ok_or(CommandError::NotConfigured("no ledger is configured"))
+    }
+
+    /// Refuses unless the company's plan includes `need`. Always passes when
+    /// self-hosted. Read in this command's transaction, so a confirmation
+    /// token issued before a lapse is refused when committed after it.
+    pub async fn require(&mut self, need: crate::entitlements::Need) -> Result<(), CommandError> {
+        if !self.hosted {
+            return Ok(());
+        }
+        let stored = store::entitlement(&mut self.tx, self.org).await?;
+        if crate::entitlements::allows(stored.as_ref(), need) {
+            Ok(())
+        } else {
+            Err(CommandError::NotEntitled(need.refusal()))
+        }
     }
 
     pub async fn emit(

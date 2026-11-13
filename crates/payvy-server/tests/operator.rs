@@ -145,7 +145,16 @@ async fn org_create_provisions_admin_audit_events_sign_in_and_defaults() {
         .iter()
         .map(|c| c["name"].as_str().unwrap())
         .collect();
-    assert_eq!(cmd_names, vec!["org.create", "org.list", "usage.summary"]);
+    assert_eq!(
+        cmd_names,
+        vec![
+            "org.create",
+            "org.list",
+            "usage.summary",
+            "entitlement.set",
+            "entitlement.get"
+        ]
+    );
 
     let res = call(
         &db.state,

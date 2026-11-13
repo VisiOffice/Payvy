@@ -1662,3 +1662,235 @@ async fn a_check_recipient_needs_only_the_mailing_address() {
     assert!(sent.get("electronicRoutingInfo").is_none());
     db.drop().await;
 }
+
+// ── Hosted plans (docs/hosted.md) ───────────────────────────────────────────
+
+const ORG: uuid::Uuid = payvy_store::DEFAULT_ORG;
+
+#[tokio::test]
+async fn a_hosted_company_pays_only_while_its_plan_includes_payments() {
+    let Some((mut db, fake)) = db().await else {
+        return;
+    };
+    db.state = common::hosted(&db.state);
+    connect(&db, "direct").await;
+    let v = king_vendor(&db).await;
+    let b = bill(&db, &v).await;
+    let robert = person("robert");
+
+    // Provisional: nothing stored, so no payment, not even in a preview.
+    let e = payvy_server::commands::run(
+        &db.state,
+        &robert,
+        "bill.release",
+        json!({ "bill_id": b }),
+        payvy_server::commands::Mode::Preview,
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(e, CommandError::NotEntitled(_)), "{e}");
+    assert_eq!(e.code(), "not_entitled");
+    assert!(e.to_string().contains("bill.mark_paid"), "{e}");
+    let plan = commit(&db.state, &robert, "org.get", json!({}))
+        .await
+        .unwrap()["result"]["plan"]
+        .clone();
+    assert_eq!(
+        plan,
+        json!({ "hosted": true, "provisional": true, "reader": false, "payments": false })
+    );
+
+    // A token issued while payments are on is refused once they lapse.
+    common::entitle(&db.state, ORG, false, true, 1)
+        .await
+        .unwrap();
+    let preview = payvy_server::commands::run(
+        &db.state,
+        &robert,
+        "bill.release",
+        json!({ "bill_id": b }),
+        payvy_server::commands::Mode::Preview,
+    )
+    .await
+    .unwrap();
+    let token = preview["confirm_token"].as_str().unwrap().to_owned();
+    let lapse = common::entitle(&db.state, ORG, false, false, 2)
+        .await
+        .unwrap();
+    assert_eq!(lapse["events"], json!(["entitlement.set"]));
+    assert_eq!(lapse["result"]["before"]["payments"], true);
+    let e = payvy_server::commands::run(
+        &db.state,
+        &robert,
+        "bill.release",
+        json!({ "bill_id": b }),
+        payvy_server::commands::Mode::Commit {
+            confirm_token: Some(token),
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(e, CommandError::NotEntitled(_)), "{e}");
+    assert!(fake.posts().is_empty());
+    assert_eq!(status(&db.state, &robert, &b).await, "awaiting_release");
+
+    // A late, older call can't undo the lapse; a retry of it changes nothing.
+    let e = common::entitle(&db.state, ORG, false, true, 1)
+        .await
+        .unwrap_err();
+    assert!(matches!(e, CommandError::Conflict(_)), "{e}");
+    let again = common::entitle(&db.state, ORG, false, false, 2)
+        .await
+        .unwrap();
+    assert_eq!(again["result"]["changed"], false);
+    assert_eq!(again["events"], json!([]));
+
+    // Paying elsewhere and recording it still works during a lapse.
+    let other = common::bill(&db.state, &agent("claude-ap"), &v, "189728", 12_000).await;
+    confirm(
+        &db.state,
+        &robert,
+        "bill.release",
+        json!({ "bill_id": other, "pay_elsewhere": true }),
+    )
+    .await
+    .unwrap();
+    confirm(
+        &db.state,
+        &robert,
+        "bill.mark_paid",
+        json!({ "bill_id": other, "paid_on": "2027-01-16", "method": "check" }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(get_bill(&db, &other).await["bill"]["state"], "paid");
+
+    // Renewed: the release goes to the bank.
+    common::entitle(&db.state, ORG, false, true, 3)
+        .await
+        .unwrap();
+    let out = release(&db, &b).await;
+    assert_eq!(out["payments"][0]["status"], "pending");
+    assert_eq!(fake.posts().len(), 1);
+
+    // The history says who changed the plan and from what.
+    let events = commit(
+        &db.state,
+        &robert,
+        "event.list",
+        json!({ "entity_id": ORG }),
+    )
+    .await
+    .unwrap()["result"]
+        .to_string();
+    assert!(
+        events.contains("entitlement.set") && events.contains("operator"),
+        "{events}"
+    );
+    db.drop().await;
+}
+
+#[tokio::test]
+async fn a_lapse_never_strands_a_payment_the_bank_is_working_on() {
+    let Some((mut db, fake)) = db().await else {
+        return;
+    };
+    db.state = common::hosted(&db.state);
+    common::entitle(&db.state, ORG, false, true, 1)
+        .await
+        .unwrap();
+    connect(&db, "direct").await;
+    let v = king_vendor(&db).await;
+    let b = bill(&db, &v).await;
+
+    // Sent before the lapse, answer lost: it is resolved with the same key.
+    fake.fail_next(502, "bad gateway", true);
+    let out = release(&db, &b).await;
+    assert_eq!(out["payments"][0]["status"], "submitting");
+    common::entitle(&db.state, ORG, false, false, 2)
+        .await
+        .unwrap();
+    assert_eq!(check(&db).await, 1);
+    let got = get_bill(&db, &b).await;
+    assert_eq!(got["payments"][0]["status"], "pending");
+    let posts = fake.posts();
+    assert_eq!(posts.len(), 2);
+    assert_eq!(posts[0]["idempotencyKey"], posts[1]["idempotencyKey"]);
+
+    // The bank's later answers still land: an ACH return reopens the bill.
+    fake.set_transaction("txn-1", "sent");
+    assert_eq!(check(&db).await, 1);
+    assert_eq!(get_bill(&db, &b).await["bill"]["state"], "paid");
+    fake.set_transaction("txn-1", "reversed");
+    assert_eq!(check(&db).await, 1);
+    assert_eq!(
+        status(&db.state, &person("robert"), &b).await,
+        "awaiting_release"
+    );
+    db.drop().await;
+}
+
+#[tokio::test]
+async fn automatic_payments_wait_while_the_plan_excludes_payments() {
+    let Some((mut db, fake)) = db().await else {
+        return;
+    };
+    db.state = common::hosted(&db.state);
+    connect(&db, "direct").await;
+    let v = king_vendor(&db).await;
+    set_workflow(
+        &db.state,
+        &person("robert"),
+        Some(&v),
+        json!([{ "id": "pay", "type": "pay", "release": "auto" }]),
+    )
+    .await;
+    let b = bill(&db, &v).await;
+    assert_eq!(
+        status(&db.state, &person("robert"), &b).await,
+        "ready_to_pay"
+    );
+
+    // The worker skips the company; the bill waits, and isn't sent to a person.
+    assert_eq!(payment_worker::auto_pay(&db.state).await.unwrap(), 0);
+    let e = commit(
+        &db.state,
+        &agent("workflow"),
+        "bill.auto_pay",
+        json!({ "bill_id": b }),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(e, CommandError::NotEntitled(_)), "{e}");
+    assert!(fake.posts().is_empty());
+    assert_eq!(
+        status(&db.state, &person("robert"), &b).await,
+        "ready_to_pay"
+    );
+
+    common::entitle(&db.state, ORG, false, true, 1)
+        .await
+        .unwrap();
+    assert_eq!(payment_worker::auto_pay(&db.state).await.unwrap(), 1);
+    assert_eq!(fake.posts().len(), 1);
+    db.drop().await;
+}
+
+#[tokio::test]
+async fn self_hosted_has_no_plans() {
+    let Some((db, fake)) = db().await else { return };
+    connect(&db, "direct").await;
+    let v = king_vendor(&db).await;
+    let b = bill(&db, &v).await;
+    let plan = commit(&db.state, &person("robert"), "org.get", json!({}))
+        .await
+        .unwrap()["result"]["plan"]
+        .clone();
+    assert_eq!(
+        plan,
+        json!({ "hosted": false, "reader": true, "payments": true })
+    );
+    release(&db, &b).await;
+    assert_eq!(fake.posts().len(), 1);
+    db.drop().await;
+}

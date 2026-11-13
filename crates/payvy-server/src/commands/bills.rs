@@ -1012,6 +1012,9 @@ pub async fn release(cx: &mut Cx<'_>, input: Release) -> Result<Value, CommandEr
     let connection = store::live_paying_connection(&mut cx.tx).await?;
     let pay = match (&connection, input.pay_elsewhere) {
         (Some(c), false) => {
+            // A new payment through the bank needs the plan; releasing to pay
+            // elsewhere doesn't.
+            cx.require(crate::entitlements::Need::Payments).await?;
             if c.provider == "ramp" {
                 return Err(CommandError::Conflict("Ramp payments are not enabled. Pay outside Payvy and use pay_elsewhere, or reconnect Mercury.".into()));
             }
@@ -1083,6 +1086,7 @@ pub async fn auto_pay(cx: &mut Cx<'_>, input: AutoPay) -> Result<Value, CommandE
             status_name(&progress)
         )));
     }
+    cx.require(crate::entitlements::Need::Payments).await?;
     // Checked here as well as at sending, so a preview says it too.
     payments::within_auto_pay_limit(cx, &bill).await?;
     ensure_no_pending_revision(cx, &bill).await?;

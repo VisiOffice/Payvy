@@ -1309,6 +1309,7 @@ pub async fn execute_job(
         bank: state.bank.as_deref(),
         auth: state.auth.as_deref(),
         ledger: state.ledger.as_deref(),
+        hosted: state.hosted,
     };
     let result = run_job(&mut cx, job).await;
     let Cx { tx, .. } = cx;

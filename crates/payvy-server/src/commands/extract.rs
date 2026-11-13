@@ -24,6 +24,9 @@ pub struct Extract {
 }
 
 pub async fn extract(cx: &mut Cx<'_>, input: Extract) -> Result<Value, CommandError> {
+    // Before anything else: on a plan without the built-in reader, Payvy
+    // makes no model calls for this company, retries and split parts included.
+    cx.require(crate::entitlements::Need::Reader).await?;
     let extractor = cx.extractor()?;
     let storage = cx.storage()?;
     store::lock_invoice_settings(&mut cx.tx, cx.org).await?;

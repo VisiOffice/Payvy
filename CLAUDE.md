@@ -155,6 +155,13 @@ Conventions follow Visirent (`~/Code/visirent`).
   and never replay unknown delivery. Only explicit rate limits get bounded retries. Preview
   never sends. Initial notices and capped approval reminders are unique by bill/step/person/
   ordinal. Sender response bodies must never enter history or events. See `docs/notifications.md`.
+- **Hosted plans are entitlements the core enforces** (`entitlements.rs`, `org_entitlements`,
+  docs/hosted.md). `PAYVY_HOSTED=true` (needs `PAYVY_OPERATOR_KEY`) gates `reader` before every
+  paid model call and `payments` before every new bank payment (`Cx::require`); no stored row
+  is provisional (both off). Only the operator's `entitlement.set` changes one, with a strictly
+  higher version. A lapse never stops reading, refresh/webhooks, a `submitting` resend,
+  `pay_elsewhere` + `bill.mark_paid`, or ledger posting. Self-hosted never checks. Prices and
+  Stripe live in the private management app, never here.
 - **People sign in with a link sent by email** (`auth.rs`, `people` table). No passwords. The
   token travels after `#` and is posted by the app, so mail scanners can't use it up; only
   hashes of link and session tokens are stored; asking for a link answers the same for unknown

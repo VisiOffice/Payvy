@@ -2,6 +2,7 @@ pub mod auth;
 pub mod bill_batch_worker;
 pub mod commands;
 pub mod confirm;
+pub mod entitlements;
 pub mod eval;
 pub mod extract_worker;
 pub mod inbound;
@@ -104,6 +105,10 @@ pub struct AppState {
     /// Cross-company service credential from PAYVY_OPERATOR_KEY. Never stored
     /// in `api_keys` and not tied to any company (`org_id`).
     pub operator_key: Option<Arc<str>>,
+    /// Hosted Payvy (`PAYVY_HOSTED=true`): each company's plan entitlement
+    /// gates the built-in reader and new payments (`entitlements.rs`).
+    /// Self-hosted (false) has no plans: everything is on.
+    pub hosted: bool,
     pub confirm: Arc<Confirmer>,
     pub clock: Clock,
     /// None when no object store is configured: document commands then say
@@ -172,6 +177,7 @@ impl AppState {
             store,
             admin_key: admin_key.into(),
             operator_key: None,
+            hosted: false,
             confirm: Arc::new(Confirmer::new(admin_key.as_bytes())),
             clock: Arc::new(Utc::now),
             storage: None,
@@ -235,6 +241,17 @@ impl AppState {
             "operator_key must differ from admin_key"
         );
         self.operator_key = Some(key.into());
+        self
+    }
+
+    /// Hosted mode: plan entitlements are enforced. Requires the operator
+    /// key, since only the operator can grant one.
+    pub fn hosted(mut self) -> Self {
+        assert!(
+            self.operator_key.is_some(),
+            "hosted mode needs the operator key (PAYVY_OPERATOR_KEY)"
+        );
+        self.hosted = true;
         self
     }
 

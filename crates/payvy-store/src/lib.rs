@@ -5,6 +5,8 @@
 pub use payvy_domain::permissions::Role;
 mod ai_usage;
 pub use ai_usage::*;
+mod entitlements;
+pub use entitlements::*;
 mod invoice_reviews;
 pub use invoice_reviews::*;
 mod ledger;

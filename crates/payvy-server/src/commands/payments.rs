@@ -78,6 +78,8 @@ pub(super) async fn submit(
     payee: &Payee,
     authority: Authority,
 ) -> Result<PaymentRow, CommandError> {
+    // Every new payment, however it was asked for, needs the plan.
+    cx.require(crate::entitlements::Need::Payments).await?;
     // The last word before the bank is asked: an automatic payment never
     // goes over the limit in force at this moment.
     if authority == Authority::Workflow {

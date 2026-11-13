@@ -161,6 +161,20 @@ async fn step(
         if state.extractor.is_none() {
             return needs("Needs you: no model is set up to read it");
         }
+        match crate::entitlements::company_allows(state, org, crate::entitlements::Need::Reader)
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) => {
+                return needs("Needs you: this plan reads invoices with your own agent");
+            }
+            Err(e) => {
+                return Outcome::Later {
+                    failed: true,
+                    why: e.to_string(),
+                };
+            }
+        }
         match commands::run(state, &reader, "document.extract", id, commit()).await {
             Ok(out) => reading = out["result"].clone(),
             // Being read right now (the background reader, or a person).
