@@ -63,6 +63,11 @@ env:
     # payvy.com is already verified (the legacy app sends from it too).
     PAYVY_MAIL_FROM: Payvy <noreply@payvy.com>
     PAYVY_SES_REGION: us-west-2
+    # Hosted plans (docs/hosted.md): entitlements enforced, set only by the
+    # management app at signup.payvy.com through /operator, which nginx refuses
+    # publicly. Entitle every company already in use before turning this on.
+    PAYVY_HOSTED: "true"
+    PAYVY_BILLING_URL: https://signup.payvy.com
   secret:
     - DATABASE_URL
     - PAYVY_API_KEY
@@ -74,6 +79,9 @@ env:
     - PAYVY_SECRETS_KEY
     - PAYVY_SES_ACCESS_KEY_ID
     - PAYVY_SES_SECRET_ACCESS_KEY
+    # The same values as the management app's (payvy-hosted).
+    - PAYVY_OPERATOR_KEY
+    - PAYVY_BILLING_KEY
 
 accessories:
   db:
