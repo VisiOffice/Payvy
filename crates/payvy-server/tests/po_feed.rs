@@ -198,6 +198,79 @@ async fn a_standing_authorization_activates_within_the_limit() {
     .unwrap();
     assert_eq!(over["result"]["outcome"], "created");
     assert_eq!(over["result"]["status"], "draft");
+    let over_id = over["result"]["id"].as_str().unwrap().to_owned();
+
+    let clerk_over = commit(
+        &db.state,
+        &clerk,
+        "po.upsert",
+        body(&v, "900-P2", "period_2", 90_000),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        clerk_over.to_string().contains("po_needs_person"),
+        "{clerk_over}"
+    );
+    let other_key = db
+        .state
+        .store
+        .insert_api_key(
+            payvy_store::DEFAULT_ORG,
+            "quarry",
+            ActorKind::Agent,
+            &payvy_server::hash_key("quarry-draft-other"),
+        )
+        .await
+        .unwrap();
+    let other_over = commit(
+        &db.state,
+        &agent("quarry").with_key(other_key),
+        "po.upsert",
+        body(&v, "900-P2", "period_2", 80_000),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        other_over.to_string().contains("po_needs_person"),
+        "{other_over}"
+    );
+    let still_over = commit(&db.state, &robert, "po.get", json!({ "po_id": over_id }))
+        .await
+        .unwrap();
+    assert_eq!(still_over["result"]["status"], "draft");
+    assert_eq!(still_over["result"]["amounts"]["authorized_cents"], 150_000);
+    let same_over = commit(
+        &db.state,
+        &clerk,
+        "po.upsert",
+        body(&v, "900-P2", "period_2", 150_000),
+    )
+    .await
+    .unwrap();
+    assert_eq!(same_over["result"]["outcome"], "unchanged");
+    assert_eq!(same_over["result"]["status"], "draft");
+    let still_high = commit(
+        &db.state,
+        &q,
+        "po.upsert",
+        body(&v, "900-P2", "period_2", 120_000),
+    )
+    .await
+    .unwrap();
+    assert_eq!(still_high["result"]["outcome"], "updated");
+    assert_eq!(still_high["result"]["status"], "draft");
+    assert_eq!(still_high["result"]["amounts"]["authorized_cents"], 120_000);
+    let brought_in = commit(
+        &db.state,
+        &q,
+        "po.upsert",
+        body(&v, "900-P2", "period_2", 90_000),
+    )
+    .await
+    .unwrap();
+    assert_eq!(brought_in["result"]["outcome"], "activated");
+    assert_eq!(brought_in["result"]["status"], "active");
 
     let stranger = commit(
         &db.state,
