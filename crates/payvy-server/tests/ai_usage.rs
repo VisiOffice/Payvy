@@ -73,7 +73,7 @@ async fn upload_pdf(db: &TestDb) -> Uuid {
         "document.upload",
         json!({
             "filename": "invoice.pdf",
-            "bytes_base64": base64::engine::general_purpose::STANDARD.encode(pdf),
+            "content_base64": base64::engine::general_purpose::STANDARD.encode(pdf),
         }),
     )
     .await
