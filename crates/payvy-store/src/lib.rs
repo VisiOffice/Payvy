@@ -2771,6 +2771,313 @@ impl Store {
     }
 }
 
+/// A company an email address can sign in to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Company {
+    pub id: Uuid,
+    pub name: String,
+}
+
+/// What opening an emailed sign-in link led to.
+#[derive(Debug, Clone)]
+pub enum OpenedLink {
+    /// One company (or the one the link was sent for): signed in.
+    SignedIn(SignedIn),
+    /// Several: the person picks one with the choice ticket.
+    Choose(Vec<Company>),
+    /// Unknown, used, expired, or the address belongs to no company now.
+    Invalid,
+}
+
+/// Why choosing or switching to a company didn't start a session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NotSignedIn {
+    /// The ticket or session is unknown, used, ended or expired.
+    Expired,
+    /// The address doesn't belong to that company (any more).
+    NotMember,
+}
+
+/// The active person with this email in this company, locked against
+/// removal until the transaction ends.
+async fn member(
+    tx: &mut Transaction<'static, Postgres>,
+    email: &str,
+    org_id: Uuid,
+) -> anyhow::Result<Option<SignedIn>> {
+    let row = sqlx::query(concat!(
+        "SELECT ",
+        person_cols!(),
+        ", o.name AS org_name FROM people p
+         JOIN organizations o ON o.id = p.org_id
+         WHERE p.email = $1 AND p.org_id = $2 AND p.removed_at IS NULL
+         FOR SHARE OF p"
+    ))
+    .bind(email)
+    .bind(org_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(row.map(|r| SignedIn {
+        person: person_from(&r),
+        org_name: r.get("org_name"),
+    }))
+}
+
+async fn insert_session(
+    tx: &mut Transaction<'static, Postgres>,
+    session_hash: &str,
+    person_id: Uuid,
+    at: DateTime<Utc>,
+    expires_at: DateTime<Utc>,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "INSERT INTO sessions (token_hash, person_id, created_at, expires_at) VALUES ($1, $2, $3, $4)",
+    )
+    .bind(session_hash)
+    .bind(person_id)
+    .bind(at)
+    .bind(expires_at)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// Hashes and lifetimes for opening a link.
+pub struct OpenLink<'a> {
+    pub link_hash: &'a str,
+    pub session_hash: &'a str,
+    pub choice_hash: &'a str,
+    pub at: DateTime<Utc>,
+    pub session_expires_at: DateTime<Utc>,
+    pub choice_expires_at: DateTime<Utc>,
+}
+
+impl Store {
+    /// The companies an email address belongs to now, by name.
+    pub async fn companies_for_email(&self, email: &str) -> anyhow::Result<Vec<Company>> {
+        let rows = sqlx::query(
+            "SELECT o.id, o.name FROM people p JOIN organizations o ON o.id = p.org_id
+             WHERE p.email = $1 AND p.removed_at IS NULL ORDER BY o.name, o.id",
+        )
+        .bind(email)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .iter()
+            .map(|r| Company {
+                id: r.get("id"),
+                name: r.get("name"),
+            })
+            .collect())
+    }
+
+    /// Sign-in links sent to this address since a time, used or not.
+    pub async fn recent_email_links(
+        &self,
+        email: &str,
+        since: DateTime<Utc>,
+    ) -> anyhow::Result<i64> {
+        Ok(sqlx::query_scalar(
+            "SELECT count(*) FROM email_proofs WHERE kind = 'link' AND email = $1 AND created_at >= $2",
+        )
+        .bind(email)
+        .bind(since)
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
+    /// Records an emailed link (only its hash), optionally for one company.
+    pub async fn insert_email_link(
+        &self,
+        token_hash: &str,
+        email: &str,
+        org_id: Option<Uuid>,
+        at: DateTime<Utc>,
+        expires_at: DateTime<Utc>,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO email_proofs (token_hash, kind, email, org_id, created_at, expires_at)
+             VALUES ($1, 'link', $2, $3, $4, $5)",
+        )
+        .bind(token_hash)
+        .bind(email)
+        .bind(org_id)
+        .bind(at)
+        .bind(expires_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Uses an emailed link, once. Signs in when the address belongs to one
+    /// company, or to the one the link was sent for; with several, records a
+    /// choice ticket. All in one transaction.
+    pub async fn open_email_link(&self, o: &OpenLink<'_>) -> anyhow::Result<OpenedLink> {
+        let mut tx = self.pool.begin().await?;
+        let row = sqlx::query(
+            "UPDATE email_proofs SET used_at = $2
+             WHERE token_hash = $1 AND kind = 'link' AND used_at IS NULL AND expires_at > $2
+             RETURNING email, org_id",
+        )
+        .bind(o.link_hash)
+        .bind(o.at)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(row) = row else {
+            return Ok(OpenedLink::Invalid);
+        };
+        let email: String = row.get("email");
+        let sent_for: Option<Uuid> = row.get("org_id");
+        let mut target = match sent_for {
+            Some(org) => member(&mut tx, &email, org).await?,
+            None => None,
+        };
+        if target.is_none() {
+            let companies: Vec<Uuid> = sqlx::query_scalar(
+                "SELECT org_id FROM people WHERE email = $1 AND removed_at IS NULL ORDER BY org_id",
+            )
+            .bind(&email)
+            .fetch_all(&mut *tx)
+            .await?;
+            match companies.as_slice() {
+                [] => {
+                    // Used up all the same, so it can't be tried again later.
+                    tx.commit().await?;
+                    return Ok(OpenedLink::Invalid);
+                }
+                [only] => target = member(&mut tx, &email, *only).await?,
+                _ => {}
+            }
+        }
+        if let Some(signed_in) = target {
+            insert_session(
+                &mut tx,
+                o.session_hash,
+                signed_in.person.id,
+                o.at,
+                o.session_expires_at,
+            )
+            .await?;
+            tx.commit().await?;
+            return Ok(OpenedLink::SignedIn(signed_in));
+        }
+        sqlx::query(
+            "INSERT INTO email_proofs (token_hash, kind, email, created_at, expires_at)
+             VALUES ($1, 'choice', $2, $3, $4)",
+        )
+        .bind(o.choice_hash)
+        .bind(&email)
+        .bind(o.at)
+        .bind(o.choice_expires_at)
+        .execute(&mut *tx)
+        .await?;
+        let rows = sqlx::query(
+            "SELECT o.id, o.name FROM people p JOIN organizations o ON o.id = p.org_id
+             WHERE p.email = $1 AND p.removed_at IS NULL ORDER BY o.name, o.id",
+        )
+        .bind(&email)
+        .fetch_all(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(OpenedLink::Choose(
+            rows.iter()
+                .map(|r| Company {
+                    id: r.get("id"),
+                    name: r.get("name"),
+                })
+                .collect(),
+        ))
+    }
+
+    /// Picks a company with a choice ticket. Membership is checked now; a
+    /// company the address no longer belongs to is refused and the ticket
+    /// stays usable for another.
+    pub async fn choose_company(
+        &self,
+        choice_hash: &str,
+        org_id: Uuid,
+        session_hash: &str,
+        at: DateTime<Utc>,
+        session_expires_at: DateTime<Utc>,
+    ) -> anyhow::Result<Result<SignedIn, NotSignedIn>> {
+        let mut tx = self.pool.begin().await?;
+        let email: Option<String> = sqlx::query_scalar(
+            "SELECT email FROM email_proofs
+             WHERE token_hash = $1 AND kind = 'choice' AND used_at IS NULL AND expires_at > $2
+             FOR UPDATE",
+        )
+        .bind(choice_hash)
+        .bind(at)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(email) = email else {
+            return Ok(Err(NotSignedIn::Expired));
+        };
+        let Some(signed_in) = member(&mut tx, &email, org_id).await? else {
+            return Ok(Err(NotSignedIn::NotMember));
+        };
+        sqlx::query("UPDATE email_proofs SET used_at = $2 WHERE token_hash = $1")
+            .bind(choice_hash)
+            .bind(at)
+            .execute(&mut *tx)
+            .await?;
+        insert_session(
+            &mut tx,
+            session_hash,
+            signed_in.person.id,
+            at,
+            session_expires_at,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(Ok(signed_in))
+    }
+
+    /// Moves a signed-in browser to another company its address belongs to:
+    /// ends this session and starts one there, checking membership now.
+    pub async fn switch_company(
+        &self,
+        session_hash: &str,
+        org_id: Uuid,
+        new_session_hash: &str,
+        at: DateTime<Utc>,
+        session_expires_at: DateTime<Utc>,
+    ) -> anyhow::Result<Result<SignedIn, NotSignedIn>> {
+        let mut tx = self.pool.begin().await?;
+        let email: Option<String> = sqlx::query_scalar(
+            "SELECT p.email FROM sessions s JOIN people p ON p.id = s.person_id
+             WHERE s.token_hash = $1 AND s.ended_at IS NULL AND s.expires_at > $2
+               AND p.removed_at IS NULL
+             FOR UPDATE OF s",
+        )
+        .bind(session_hash)
+        .bind(at)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(email) = email else {
+            return Ok(Err(NotSignedIn::Expired));
+        };
+        let Some(signed_in) = member(&mut tx, &email, org_id).await? else {
+            return Ok(Err(NotSignedIn::NotMember));
+        };
+        sqlx::query("UPDATE sessions SET ended_at = $2 WHERE token_hash = $1")
+            .bind(session_hash)
+            .bind(at)
+            .execute(&mut *tx)
+            .await?;
+        insert_session(
+            &mut tx,
+            new_session_hash,
+            signed_in.person.id,
+            at,
+            session_expires_at,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(Ok(signed_in))
+    }
+}
+
 /// Payee proposals waiting for a person, oldest first.
 pub async fn open_payee_proposals(tx: &mut Tx) -> anyhow::Result<Vec<Payee>> {
     let rows = sqlx::query(concat!(

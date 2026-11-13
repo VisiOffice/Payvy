@@ -11,6 +11,7 @@ import { TextInput } from '@astryxdesign/core/TextInput';
 import { useToast } from '@astryxdesign/core/Toast';
 import { Page } from '../Page';
 import { run } from '../api/client';
+import { useSession } from '../session';
 import type { Doc } from '../documents/types';
 import { InboxBoard, InboxSide, InboxTable, typing, useInboxView, type Row, type View } from '../documents/InboxViews';
 import { readWithin } from '../documents/Loading';
@@ -133,6 +134,7 @@ function useRoomy(): boolean {
 }
 
 export function Documents() {
+  const { plan } = useSession().me;
   const [view, setView] = useInboxView();
   const [status, setStatus] = useState<Status>('inbox');
   const show = (s: Status) => { setStatus(s); setSearch(''); };
@@ -252,6 +254,11 @@ export function Documents() {
     </div>
     {dragging && <div className="payvy-drop-overlay" role="status"><strong>Drop to add invoices</strong><p>PDFs, scans, or photos · up to 25 MB each</p></div>}
     {uploading && <div role="status" className="payvy-upload-progress"><Spinner size="sm" /><div><strong>{uploading.title}</strong><p>{uploading.detail}</p></div></div>}
+    {plan.hosted && !plan.reader && status === 'inbox' && <Banner
+      status="info"
+      title="Your own agent reads these invoices"
+      description="This plan doesn't include Payvy's built-in reader, so documents here wait until your agent reads them over MCP or the API and creates the bills. You can also enter a bill by hand from any document."
+    />}
     {error && <Banner status="error" title="Couldn't load documents" description={error} endContent={<Button label="Try again" variant="secondary" onClick={() => load()} />} />}
     {!docs && !error && <div className="payvy-document-list-loading" aria-busy="true"><div role="status" className="payvy-loading-message"><Spinner size="sm" />Loading documents</div><div aria-hidden="true">{[0, 1, 2].map(i => <div className="payvy-document-row-placeholder" key={i}><span className="payvy-file-glyph" /><span className="payvy-skeleton" /><span className="payvy-skeleton" /></div>)}</div></div>}
     {visible && board && <InboxBoard docs={visible} filed={filed} undoSplit={undoSplit} />}

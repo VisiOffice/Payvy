@@ -40,15 +40,37 @@ export interface Me {
   organization: { id: string; name: string };
   /** Features the company turned on. */
   features: { purchase_orders: boolean };
+  /** Every company this address can sign in to, this one included. */
+  companies: Company[];
+  /** What the company's plan includes. Self-hosted: everything. */
+  plan: { hosted: boolean; provisional?: boolean; reader: boolean; payments: boolean };
+}
+
+export interface Company {
+  id: string;
+  name: string;
+}
+
+/** Opening a link to an address in several companies: pick one with the ticket. */
+export interface Choice {
+  choose: Company[];
+  ticket: string;
+  expires_in_minutes: number;
 }
 
 export const auth = {
   requestLink: (email: string, return_to?: string) =>
     request<{ message: string }>('POST', '/auth/link', { email, return_to }),
-  redeem: (token: string) => request<Me>('POST', '/auth/session', { token }),
+  redeem: (token: string) => request<Me | Choice>('POST', '/auth/session', { token }),
+  choose: (ticket: string, org_id: string) => request<Me>('POST', '/auth/session/choose', { ticket, org_id }),
+  switchTo: (org_id: string) => request<Me>('POST', '/auth/session/switch', { org_id }),
   me: () => request<Me>('GET', '/auth/session'),
   signOut: () => request<null>('DELETE', '/auth/session'),
 };
+
+export function isChoice(r: Me | Choice): r is Choice {
+  return 'choose' in r;
+}
 
 export interface Committed<R> {
   command: string;

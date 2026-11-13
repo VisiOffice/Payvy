@@ -2,7 +2,7 @@ import { useCan, useAccessVersion } from './permissions';
 import type { CommandName } from './api/commands.gen';
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useLocation, useNavigate } from 'react-router';
-import { run } from './api/client';
+import { auth, run } from './api/client';
 import { AppShell } from '@astryxdesign/core/AppShell';
 import { Button } from '@astryxdesign/core/Button';
 import { SideNav, SideNavItem, SideNavSection } from '@astryxdesign/core/SideNav';
@@ -112,6 +112,16 @@ export function Shell({ children }: { children: ReactNode }) {
     window.addEventListener('payvy:changed', refresh);
     return () => { live = false; window.removeEventListener('payvy:changed', refresh); };
   }, [pathname, access]);
+  // Other companies this address belongs to. Switching starts a new session
+  // there (the server checks membership), then reloads into it.
+  const others = me.companies.filter(c => c.id !== me.organization.id);
+  const switchItems = others.length ? [
+    { type: 'divider' as const },
+    ...others.map(c => ({
+      label: `Switch to ${c.name}`,
+      onClick: () => { auth.switchTo(c.id).then(() => window.location.assign('/'), () => window.location.assign('/sign-in')); },
+    })),
+  ] : [];
   return (
     <AppShell
       contentPadding={0}
@@ -144,6 +154,7 @@ export function Shell({ children }: { children: ReactNode }) {
             items={[
               { label: 'Settings', href: '/settings', endContent: shortcut('g', 's') },
               { label: 'Invite and manage people', href: '/settings/people' },
+              ...switchItems,
               { type: 'divider' },
               { label: 'Sign out', onClick: signOut },
             ]}
