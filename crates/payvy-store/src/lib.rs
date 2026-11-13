@@ -1788,6 +1788,7 @@ pub async fn documents_to_extract(
     retry_after: chrono::Duration,
     max_failures: i64,
     limit: i64,
+    received_since: Option<DateTime<Utc>>,
 ) -> anyhow::Result<Vec<Uuid>> {
     let rows = sqlx::query(
         "SELECT d.id FROM documents d
@@ -1799,12 +1800,14 @@ pub async fn documents_to_extract(
          ) x ON true
          WHERE d.status = 'inbox' AND x.reads = 0 AND x.failures < $3
            AND (x.last IS NULL OR x.last < $1 - $2)
+           AND ($5::timestamptz IS NULL OR d.received_at >= $5)
          ORDER BY d.received_at, d.id LIMIT $4",
     )
     .bind(now)
     .bind(retry_after)
     .bind(max_failures)
     .bind(limit)
+    .bind(received_since)
     .fetch_all(&mut **tx)
     .await?;
     Ok(rows.iter().map(|r| r.get("id")).collect())

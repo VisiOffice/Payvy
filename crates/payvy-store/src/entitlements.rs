@@ -14,6 +14,8 @@ pub struct Entitlement {
     pub org_id: Uuid,
     pub reader: bool,
     pub payments: bool,
+    /// When the reader was last switched on; None while it is off.
+    pub reader_since: Option<DateTime<Utc>>,
     pub version: i64,
     pub updated_at: DateTime<Utc>,
     pub updated_by: String,
@@ -48,6 +50,7 @@ fn from_row(r: &sqlx::postgres::PgRow) -> Entitlement {
         org_id: r.get("org_id"),
         reader: r.get("reader"),
         payments: r.get("payments"),
+        reader_since: r.get("reader_since"),
         version: r.get("version"),
         updated_at: r.get("updated_at"),
         updated_by: r.get("updated_by"),
@@ -57,7 +60,7 @@ fn from_row(r: &sqlx::postgres::PgRow) -> Entitlement {
 /// The company's stored entitlement, read inside its own transaction.
 pub async fn entitlement(tx: &mut Tx, org_id: Uuid) -> anyhow::Result<Option<Entitlement>> {
     let row = sqlx::query(
-        "SELECT org_id, reader, payments, version, updated_at, updated_by \
+        "SELECT org_id, reader, payments, reader_since, version, updated_at, updated_by \
          FROM org_entitlements WHERE org_id = $1",
     )
     .bind(org_id)
@@ -100,15 +103,22 @@ impl Store {
                 SetEntitlementOutcome::Stale(b.clone())
             });
         }
+        // Kept while the reader stays on; set when it is switched on.
+        let reader_since = match (&before, input.reader) {
+            (_, false) => None,
+            (Some(b), true) if b.reader => b.reader_since,
+            (_, true) => Some(input.now),
+        };
         let row = sqlx::query(
             "INSERT INTO org_entitlements \
-             (org_id, reader, payments, version, updated_at, updated_by) \
-             VALUES ($1, $2, $3, $4, $5, $6) \
+             (org_id, reader, payments, reader_since, version, updated_at, updated_by) \
+             VALUES ($1, $2, $3, $7, $4, $5, $6) \
              ON CONFLICT (org_id) DO UPDATE SET \
              reader = EXCLUDED.reader, payments = EXCLUDED.payments, \
+             reader_since = EXCLUDED.reader_since, \
              version = EXCLUDED.version, updated_at = EXCLUDED.updated_at, \
              updated_by = EXCLUDED.updated_by \
-             RETURNING org_id, reader, payments, version, updated_at, updated_by",
+             RETURNING org_id, reader, payments, reader_since, version, updated_at, updated_by",
         )
         .bind(input.org_id)
         .bind(input.reader)
@@ -116,6 +126,7 @@ impl Store {
         .bind(input.version)
         .bind(input.now)
         .bind(input.actor)
+        .bind(reader_since)
         .fetch_one(&mut *tx)
         .await?;
         let after = from_row(&row);

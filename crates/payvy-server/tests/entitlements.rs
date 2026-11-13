@@ -192,3 +192,29 @@ async fn concurrent_sets_of_one_version_store_one() {
     assert_eq!(events.matches("entitlement.set").count(), 1, "{events}");
     db.drop().await;
 }
+
+#[tokio::test]
+async fn reader_since_marks_when_the_reader_was_switched_on() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let state = hosted(&db.state);
+    let org = payvy_store::DEFAULT_ORG;
+    let since = |v: &Value| v["result"]["entitlement"]["reader_since"].clone();
+
+    let off = entitle(&state, org, false, true, 1).await.unwrap();
+    assert!(since(&off).is_null());
+    db.advance(1);
+    let on = entitle(&state, org, true, true, 2).await.unwrap();
+    assert!(since(&on).is_string());
+    // Staying on keeps the time; a payments change doesn't reset it.
+    db.advance(1);
+    let still = entitle(&state, org, true, false, 3).await.unwrap();
+    assert_eq!(since(&still), since(&on));
+    // Off clears it; on again starts a new one.
+    entitle(&state, org, false, false, 4).await.unwrap();
+    db.advance(1);
+    let again = entitle(&state, org, true, true, 5).await.unwrap();
+    assert_ne!(since(&again), since(&on));
+    db.drop().await;
+}

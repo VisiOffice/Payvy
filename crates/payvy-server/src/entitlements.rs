@@ -59,6 +59,25 @@ pub async fn company_allows(state: &AppState, org: Uuid, need: Need) -> anyhow::
     Ok(allows(stored.as_ref(), need))
 }
 
+/// For the background reader: None to skip the company (no reader on its
+/// plan); otherwise the time documents must have arrived since to be read
+/// automatically (None: all of them, as when self-hosted).
+pub async fn auto_read_since(
+    state: &AppState,
+    org: Uuid,
+) -> anyhow::Result<Option<Option<chrono::DateTime<chrono::Utc>>>> {
+    if !state.hosted {
+        return Ok(Some(None));
+    }
+    let mut tx = state.store.begin(org).await?;
+    let stored = store::entitlement(&mut tx, org).await?;
+    tx.rollback().await?;
+    Ok(match stored {
+        Some(e) if e.reader => Some(e.reader_since),
+        _ => None,
+    })
+}
+
 /// What a company sees about its own plan (`org.get`).
 pub fn view(hosted: bool, stored: Option<&Entitlement>) -> serde_json::Value {
     if !hosted {
@@ -81,6 +100,7 @@ mod tests {
             org_id: Uuid::nil(),
             reader,
             payments,
+            reader_since: None,
             version: 1,
             updated_at: chrono::DateTime::from_timestamp(0, 0).unwrap(),
             updated_by: "operator".into(),

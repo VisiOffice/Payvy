@@ -44,6 +44,11 @@ An outage of the management app changes nothing: only an explicit `entitlement.s
 - Ledger posting.
 - Bring-your-own-agent work: upload, download, review, and `bill.create`.
 
+When the reader is switched on (`reader_since`), the background reader reads only documents
+received from then on. Documents left unread under a plan without it, the backlog, are read
+only when someone asks (`document.extract`), so an upgrade never reads a backlog at Payvy's cost
+unasked. Staying on keeps the time; switching off clears it.
+
 The plan is read inside each command's own transaction, so a confirmation token issued before a
 lapse is refused when it is committed after it. The payment worker skips a company without
 `payments`; its bills stay `ready_to_pay` and are never sent to a person for it. The background

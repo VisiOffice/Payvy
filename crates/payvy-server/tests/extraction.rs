@@ -966,16 +966,43 @@ async fn a_plan_without_the_reader_makes_no_model_calls() {
     .unwrap();
     assert!(made["result"]["bill"]["id"].is_string(), "{made:#}");
 
-    // Upgraded to the managed plan: the reader reads the next document.
+    // Left unread on the old plan: nobody handled it.
+    let backlog = upload(&db).await;
+    *db.clock.lock().unwrap() += chrono::Duration::minutes(1);
+
+    // Upgraded to the managed plan: the reader reads what arrives from now
+    // on, not the backlog, which is read only when someone asks.
     common::entitle(&db.state, org, true, true, 2)
         .await
         .unwrap();
-    upload(&db).await;
+    let fresh = upload(&db).await;
     fake.answer(StatusCode::OK, openai_says(&king_invoice()));
     assert_eq!(
         payvy_server::extract_worker::tick(&db.state).await.unwrap(),
         1
     );
-    assert_eq!(fake.requests().len(), 1);
+    assert_eq!(fake.requests().len(), 1, "only the new document was read");
+    let read = commit(
+        &db.state,
+        &person("robert"),
+        "document.get",
+        json!({ "document_id": fresh }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        read["result"]["extractions"][0]["extraction"]["status"],
+        "read"
+    );
+    fake.answer(StatusCode::OK, openai_says(&king_invoice()));
+    commit(
+        &db.state,
+        &agent("claude-ap"),
+        "document.extract",
+        json!({ "document_id": backlog }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(fake.requests().len(), 2);
     db.drop().await;
 }

@@ -7,6 +7,10 @@ CREATE TABLE org_entitlements (
     org_id uuid PRIMARY KEY REFERENCES organizations(id),
     reader boolean NOT NULL,
     payments boolean NOT NULL,
+    -- When the reader was last switched on. The background reader reads only
+    -- documents received since then, so an upgrade doesn't read a backlog at
+    -- Payvy's cost; older ones are read when someone asks (document.extract).
+    reader_since timestamptz CHECK (reader = (reader_since IS NOT NULL)),
     version bigint NOT NULL CHECK (version > 0),
     updated_at timestamptz NOT NULL,
     updated_by text NOT NULL
