@@ -435,12 +435,14 @@ async fn main() -> anyhow::Result<()> {
                     tracing::info!(%url, "web sign-in");
                     state = state.with_auth(payvy_server::auth::Auth::new(url, mailer));
                     tokio::spawn(payvy_server::notification_worker::run(state.clone()));
-                    tokio::spawn(payvy_server::ledger_worker::run(state.clone()));
                 }
                 None => {
                     tracing::warn!("PAYVY_PUBLIC_URL not set; nobody can sign in to the web app")
                 }
             }
+            // Queued ledger posts drain whether or not anyone can sign
+            // in; without this they would pile up silently.
+            tokio::spawn(payvy_server::ledger_worker::run(state.clone()));
             if let Some(dir) = &web.web_dir {
                 anyhow::ensure!(
                     dir.join("index.html").is_file(),

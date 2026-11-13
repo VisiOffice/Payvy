@@ -375,3 +375,153 @@ async fn payment_mode_posts_the_bill_at_an_outside_payment_and_records_the_unmap
     tx.rollback().await.unwrap();
     db.drop().await;
 }
+
+#[tokio::test]
+async fn crashed_claim_is_reclaimed_and_permanent_failures_stop() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let (state, fake) = with_fake(&db);
+    let vendor = connected(&db, &state, "payment").await;
+    common::set_workflow(
+        &state,
+        &person("ada"),
+        Some(&vendor.to_string()),
+        json!([
+            { "id": "one", "type": "approve", "approvers": ["ada"] },
+            { "id": "pay", "type": "pay", "release": "manual" }]),
+    )
+    .await;
+    let bill = invoice(&state, vendor, "LP-CRASH").await;
+    commit(
+        &state,
+        &person("ada"),
+        "bill.approve",
+        json!({ "bill_id": bill }),
+    )
+    .await
+    .unwrap();
+    confirm(
+        &state,
+        &person("ada"),
+        "bill.release",
+        json!({ "bill_id": bill }),
+    )
+    .await
+    .unwrap();
+    confirm(
+        &state,
+        &person("ada"),
+        "bill.mark_paid",
+        json!({ "bill_id": bill, "paid_on": "2027-01-20", "method": "ach", "reference": "ach-1" }),
+    )
+    .await
+    .unwrap();
+
+    // A worker claims the job and dies: the job stays `sending`.
+    let now = *db.clock.lock().unwrap();
+    let mut tx = state.store.begin(DEFAULT_ORG).await.unwrap();
+    let claimed = store::claim_ledger_jobs(&mut tx, now, 10).await.unwrap();
+    assert_eq!(claimed.len(), 2, "the bill post and its payment leg");
+    tx.commit().await.unwrap();
+    payvy_server::ledger_worker::tick(&state).await.unwrap();
+    assert!(
+        fake.calls().is_empty(),
+        "the lease is still held: {:?}",
+        fake.calls()
+    );
+
+    // The lease expires; the next tick reclaims and posts.
+    let mut tx = state.store.begin(DEFAULT_ORG).await.unwrap();
+    sqlx::query("UPDATE ledger_jobs SET lease_until = $1")
+        .bind(now - chrono::Duration::hours(1))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    payvy_server::ledger_worker::tick(&state).await.unwrap();
+    assert!(
+        fake.calls().iter().any(|c| c.starts_with("post_bill")),
+        "reclaimed and posted: {:?}",
+        fake.calls()
+    );
+
+    // A job that keeps failing stops after the cap and reads as dead.
+    let ghost = Uuid::new_v4();
+    let mut tx = state.store.begin(DEFAULT_ORG).await.unwrap();
+    store::enqueue_ledger_job(
+        &mut tx,
+        DEFAULT_ORG,
+        "bank_reference",
+        None,
+        Some(ghost),
+        &json!({}),
+        now,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    for hours in 1..=9 {
+        let at = now + chrono::Duration::hours(hours);
+        let mut tx = state.store.begin(DEFAULT_ORG).await.unwrap();
+        let jobs = store::claim_ledger_jobs(&mut tx, at, 10).await.unwrap();
+        for job in &jobs {
+            store::fail_ledger_job(&mut tx, job.id, "boom", at)
+                .await
+                .unwrap();
+        }
+        tx.commit().await.unwrap();
+    }
+    let mut tx = state.store.begin(DEFAULT_ORG).await.unwrap();
+    let status: String = sqlx::query_scalar("SELECT status FROM ledger_jobs WHERE payment_id = $1")
+        .bind(ghost)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(status, "dead");
+    db.drop().await;
+}
+
+#[tokio::test]
+async fn held_bill_posts_when_the_hold_releases() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let (state, fake) = with_fake(&db);
+    let vendor = connected(&db, &state, "approval").await;
+    common::set_workflow(
+        &state,
+        &person("ada"),
+        Some(&vendor.to_string()),
+        json!([
+            { "id": "one", "type": "approve", "approvers": ["ada"] },
+            { "id": "cool", "type": "hold", "days": 3 },
+            { "id": "pay", "type": "pay", "release": "manual" }]),
+    )
+    .await;
+    let bill = invoice(&state, vendor, "LP-HOLD").await;
+    commit(
+        &state,
+        &person("ada"),
+        "bill.approve",
+        json!({ "bill_id": bill }),
+    )
+    .await
+    .unwrap();
+    payvy_server::ledger_worker::tick(&state).await.unwrap();
+    payvy_server::ledger_worker::tick(&state).await.unwrap();
+    assert!(
+        !fake.calls().iter().any(|c| c.starts_with("post_bill")),
+        "held bills wait: {:?}",
+        fake.calls()
+    );
+    *db.clock.lock().unwrap() += chrono::Duration::days(4);
+    payvy_server::ledger_worker::tick(&state).await.unwrap();
+    assert!(
+        fake.calls().iter().any(|c| c.starts_with("post_bill")),
+        "posts once the hold releases: {:?}",
+        fake.calls()
+    );
+    db.drop().await;
+}

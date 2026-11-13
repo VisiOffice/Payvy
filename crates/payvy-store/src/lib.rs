@@ -690,6 +690,20 @@ pub async fn insert_bill(
 
 /// Locks the bill for the rest of the transaction, so two people acting on
 /// it at once are serialized.
+/// A bill read without locking its row: for work that must not hold
+/// locks across a network call (the ledger worker's posts).
+pub async fn get_bill_read(tx: &mut Tx, id: Uuid) -> anyhow::Result<Option<Bill>> {
+    let row = sqlx::query(concat!(
+        "SELECT ",
+        bill_cols!(),
+        " FROM bills b JOIN vendors v ON v.id = b.vendor_id WHERE b.id = $1"
+    ))
+    .bind(id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    row.as_ref().map(bill).transpose()
+}
+
 pub async fn get_bill(tx: &mut Tx, id: Uuid) -> anyhow::Result<Option<Bill>> {
     let row = sqlx::query(concat!(
         "SELECT ",

@@ -44,7 +44,13 @@ pub async fn tick(state: &AppState) -> anyhow::Result<usize> {
             let result = commands::execute_job(state, org, &job).await;
             let mut tx = state.store.begin(org).await?;
             match result {
-                Ok(()) => store::finish_ledger_job(&mut tx, job.id, (state.clock)()).await?,
+                Ok(commands::JobOutcome::Done) => {
+                    store::finish_ledger_job(&mut tx, job.id, (state.clock)()).await?
+                }
+                Ok(commands::JobOutcome::Defer) => {
+                    let when = (state.clock)() + chrono::Duration::minutes(15);
+                    store::defer_ledger_job(&mut tx, job.id, when, (state.clock)()).await?
+                }
                 Err(e) => {
                     let message = e.to_string();
                     let message: String = message.chars().take(300).collect();

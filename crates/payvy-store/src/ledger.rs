@@ -144,6 +144,19 @@ pub async fn insert_ledger_connection(
 /// The lock is held across the ledger call. That serializes every ledger
 /// action in the company, and it is what stops two first posts of the same
 /// bill from both reaching the books. Acceptable until a real adapter exists.
+/// The active connection without locking its row: reads that precede a
+/// network call (the worker's posts) must hold no locks across it.
+pub async fn ledger_connection_read(tx: &mut Tx) -> anyhow::Result<Option<LedgerConnection>> {
+    let row = sqlx::query(concat!(
+        "SELECT ",
+        connection_cols!(),
+        " FROM ledger_connections WHERE status = 'active'"
+    ))
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(row.as_ref().map(connection))
+}
+
 pub async fn active_ledger_connection(tx: &mut Tx) -> anyhow::Result<Option<LedgerConnection>> {
     let row = sqlx::query(concat!(
         "SELECT ",
@@ -331,6 +344,27 @@ fn link(row: &sqlx::postgres::PgRow) -> LedgerLink {
     }
 }
 
+/// The link as it stands, without locking it (worker reads that must
+/// not hold locks across a network call).
+pub async fn ledger_link_read(
+    tx: &mut Tx,
+    connection_id: Uuid,
+    entity: &str,
+    payvy_id: Uuid,
+) -> anyhow::Result<Option<LedgerLink>> {
+    let row = sqlx::query(concat!(
+        "SELECT ",
+        link_cols!(),
+        " FROM ledger_links WHERE connection_id = $1 AND entity = $2 AND payvy_id = $3"
+    ))
+    .bind(connection_id)
+    .bind(entity)
+    .bind(payvy_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(row.as_ref().map(link))
+}
+
 /// Locks the link when it exists.
 pub async fn ledger_link(
     tx: &mut Tx,
@@ -482,7 +516,8 @@ pub async fn claim_ledger_jobs(
 ) -> anyhow::Result<Vec<LedgerJob>> {
     let rows = sqlx::query(
         "SELECT id, kind, bill_id, payment_id, payload, attempts FROM ledger_jobs \
-         WHERE status IN ('pending', 'failed') AND next_attempt_at <= $1 \
+         WHERE (status IN ('pending', 'failed') AND next_attempt_at <= $1) \
+            OR (status = 'sending' AND lease_until < $1) \
          ORDER BY created_at LIMIT $2 FOR UPDATE SKIP LOCKED",
     )
     .bind(now)
@@ -492,7 +527,7 @@ pub async fn claim_ledger_jobs(
     let mut out = Vec::new();
     for r in &rows {
         let id: Uuid = r.get("id");
-        sqlx::query("UPDATE ledger_jobs SET status = 'sending', attempts = attempts + 1, updated_at = $2 WHERE id = $1")
+        sqlx::query("UPDATE ledger_jobs SET status = 'sending', attempts = attempts + 1, lease_until = $2 + interval '2 minutes', updated_at = $2 WHERE id = $1")
             .bind(id)
             .bind(now)
             .execute(&mut **tx)
@@ -534,12 +569,37 @@ pub async fn fail_ledger_job(
         .await?
         .get("attempts");
     let backoff = chrono::Duration::minutes(i64::from(attempts * attempts).min(60));
+    // A permanent refusal stops after 8 attempts: the job is dead, its
+    // error stays where a person can see it, and the by-hand commands
+    // remain the retry path.
+    let status = if attempts >= 8 { "dead" } else { "failed" };
     sqlx::query(
-        "UPDATE ledger_jobs SET status = 'failed', last_error = $2, next_attempt_at = $3, updated_at = $4 WHERE id = $1",
+        "UPDATE ledger_jobs SET status = $5, last_error = $2, next_attempt_at = $3, updated_at = $4 WHERE id = $1",
     )
     .bind(id)
     .bind(error)
     .bind(now + backoff)
+    .bind(now)
+    .bind(status)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// Put a claimed job back to pending without recording a failure —
+/// for work whose moment hasn't come yet (a held bill's post).
+pub async fn defer_ledger_job(
+    tx: &mut Tx,
+    id: Uuid,
+    when: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> anyhow::Result<()> {
+    // A deferral is not an attempt: give back the claim's increment.
+    sqlx::query(
+        "UPDATE ledger_jobs SET status = 'pending', attempts = GREATEST(attempts - 1, 0), lease_until = NULL, next_attempt_at = $2, updated_at = $3 WHERE id = $1",
+    )
+    .bind(id)
+    .bind(when)
     .bind(now)
     .execute(&mut **tx)
     .await?;

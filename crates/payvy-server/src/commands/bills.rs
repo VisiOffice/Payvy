@@ -898,15 +898,10 @@ pub async fn approve(cx: &mut Cx<'_>, input: Approve) -> Result<Value, CommandEr
     )
     .await?;
     let out = detail(cx, bill.id).await?;
-    // Approval complete and at the pay step (not held, not waiting on a
-    // signal): the ledger hook queues a post when the company posts at
-    // approval. The approval stands either way.
-    if matches!(
-        out["progress"]["status"].as_str(),
-        Some("awaiting_release" | "ready_to_pay")
-    ) {
-        super::ledger::on_bill_approved(cx, bill.id).await;
-    }
+    // Queue the ledger post (approval mode): the job itself waits
+    // until the bill reaches its pay step, so a held bill posts when
+    // its hold is released. The approval stands either way.
+    super::ledger::on_bill_approved(cx, bill.id).await?;
     Ok(out)
 }
 
@@ -1206,7 +1201,7 @@ pub async fn mark_paid(cx: &mut Cx<'_>, input: MarkPaid) -> Result<Value, Comman
         input.paid_on,
         reference.as_deref(),
     )
-    .await;
+    .await?;
     let mut out = detail(cx, bill.id).await?;
     out["po_warning"] = json!(po_warning);
     out["revision_warning"] = json!(revision_warning);

@@ -16,7 +16,7 @@ mod invoice_reviews;
 mod ledger;
 
 /// The ledger worker runs queued posting jobs (see `ledger_jobs`).
-pub(crate) use ledger::execute_job;
+pub(crate) use ledger::{JobOutcome, execute_job};
 mod notifications;
 mod org;
 mod payee_invites;

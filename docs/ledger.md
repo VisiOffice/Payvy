@@ -53,8 +53,15 @@ already has exactly this body: a replay returns the stored id, a changed
 body under the same key is a conflict, and a changed bill voids and
 reposts. A failure is written on the bill's ledger link (status, code,
 detail — the per-item sync log on the bill page) and on the job, which
-retries with backoff (attempts² minutes, capped at an hour). The manual
-commands remain the by-hand path and run at once: `ledger.post_bill`,
+retries with backoff (attempts² minutes, capped at an hour). A claimed
+job carries a two-minute lease: if the worker dies mid-post the job is
+reclaimed when the lease expires, which the post's idempotency key
+makes safe. After eight failed attempts the job is `dead` — it stops
+retrying, its last error stays on the job and on the bill's link, and a
+person retries by hand. A bill whose approval-mode post is queued
+before its pay step (still approving, or held) defers without spending
+an attempt and posts when it gets there. The manual commands remain
+the by-hand path and run at once: `ledger.post_bill`,
 `ledger.post_payment`, `ledger.void`.
 
 ## What is not posted yet
