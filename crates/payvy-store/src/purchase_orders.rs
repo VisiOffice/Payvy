@@ -5,6 +5,7 @@ use chrono::{DateTime, NaiveDate, Utc};
 use payvy_domain::Cents;
 use payvy_domain::purchase_orders::Amounts;
 use serde::Serialize;
+use serde_json::Value;
 use sqlx::Row;
 use sqlx::postgres::PgRow;
 use uuid::Uuid;
@@ -39,6 +40,15 @@ pub struct PurchaseOrder {
     pub service_address: Option<String>,
     pub period_start: Option<NaiveDate>,
     pub period_end: Option<NaiveDate>,
+    pub vendor_reference: Option<String>,
+    pub metadata: Value,
+    pub final_period: bool,
+    /// Last `po.upsert` body. A person editing the PO clears it.
+    #[serde(skip)]
+    pub body_hash: Option<String>,
+    /// A person edited this PO. A later sync that would change it is refused.
+    #[serde(skip)]
+    pub person_hold: bool,
     pub lifecycle_reason: Option<String>,
     pub created_by: String,
     pub created_at: DateTime<Utc>,
@@ -101,6 +111,11 @@ fn po(r: &PgRow) -> PurchaseOrder {
         service_address: r.get("service_address"),
         period_start: r.get("period_start"),
         period_end: r.get("period_end"),
+        vendor_reference: r.get("vendor_reference"),
+        metadata: r.get("metadata"),
+        final_period: r.get("final_period"),
+        body_hash: r.get("body_hash"),
+        person_hold: r.get("person_hold"),
         lifecycle_reason: r.get("lifecycle_reason"),
         created_by: r.get("created_by"),
         created_at: r.get("created_at"),
@@ -109,7 +124,7 @@ fn po(r: &PgRow) -> PurchaseOrder {
 }
 
 macro_rules! po_query {
-    ($tail:literal) => { concat!("SELECT p.id, p.vendor_id, v.name AS vendor_name, p.po_number, p.status, p.currency, p.owner, p.activated_by, p.external_source, p.external_id, p.service_address, p.period_start, p.period_end, p.lifecycle_reason, p.created_by, p.created_at, r.id AS rid, r.revision, r.authorized_cents, r.overage_cents_cap, r.overage_percent_bp, r.allowance_cents, r.reason AS rreason, r.created_by AS rcreated_by, r.created_at AS rcreated_at", " FROM purchase_orders p JOIN vendors v ON v.id = p.vendor_id LEFT JOIN LATERAL (SELECT * FROM po_revisions WHERE po_id = p.id ORDER BY revision DESC LIMIT 1) r ON true", $tail) };
+    ($tail:literal) => { concat!("SELECT p.id, p.vendor_id, v.name AS vendor_name, p.po_number, p.status, p.currency, p.owner, p.activated_by, p.external_source, p.external_id, p.service_address, p.period_start, p.period_end, p.vendor_reference, p.metadata, p.final_period, p.body_hash, p.person_hold, p.lifecycle_reason, p.created_by, p.created_at, r.id AS rid, r.revision, r.authorized_cents, r.overage_cents_cap, r.overage_percent_bp, r.allowance_cents, r.reason AS rreason, r.created_by AS rcreated_by, r.created_at AS rcreated_at", " FROM purchase_orders p JOIN vendors v ON v.id = p.vendor_id LEFT JOIN LATERAL (SELECT * FROM po_revisions WHERE po_id = p.id ORDER BY revision DESC LIMIT 1) r ON true", $tail) };
 }
 
 pub async fn get_po(tx: &mut Tx, id: Uuid) -> anyhow::Result<Option<PurchaseOrder>> {
@@ -178,6 +193,7 @@ pub async fn insert_po(
     Ok(id)
 }
 
+#[derive(Clone)]
 pub struct NewLine {
     pub description: String,
     pub quantity: Option<f64>,
@@ -742,4 +758,327 @@ pub async fn allocated_bill_lines(tx: &mut Tx, po_id: Uuid) -> anyhow::Result<Ve
         }
     }
     Ok(out)
+}
+
+/// Lock the PO with this external id, if it exists.
+pub async fn lock_po_by_external(
+    tx: &mut Tx,
+    source: &str,
+    ext_id: &str,
+) -> anyhow::Result<Option<PurchaseOrder>> {
+    let row = sqlx::query(
+        "SELECT id FROM purchase_orders WHERE external_source = $1 AND external_id = $2 FOR UPDATE",
+    )
+    .bind(source)
+    .bind(ext_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    match row {
+        Some(r) => get_po(tx, r.get("id")).await,
+        None => Ok(None),
+    }
+}
+
+pub struct FeedFields<'a> {
+    pub owner: Option<&'a str>,
+    pub service_address: Option<&'a str>,
+    pub period_start: Option<NaiveDate>,
+    pub period_end: Option<NaiveDate>,
+    pub vendor_reference: Option<&'a str>,
+    pub metadata: &'a Value,
+    pub final_period: bool,
+    pub body_hash: Option<&'a str>,
+}
+
+pub struct NewFeedPo<'a> {
+    pub vendor_id: Uuid,
+    pub po_number: &'a str,
+    pub external_source: &'a str,
+    pub external_id: &'a str,
+    pub created_by: &'a str,
+    pub feed: FeedFields<'a>,
+}
+
+/// Insert a PO. `None` means another transaction already holds this external id.
+pub async fn insert_feed_po(
+    tx: &mut Tx,
+    org: Uuid,
+    po: &NewFeedPo<'_>,
+    now: DateTime<Utc>,
+) -> anyhow::Result<Option<Uuid>> {
+    let id = Uuid::new_v4();
+    let row = sqlx::query(
+        "INSERT INTO purchase_orders (id, org_id, vendor_id, po_number, owner, external_source, external_id, service_address, period_start, period_end, vendor_reference, metadata, final_period, body_hash, created_by, created_at, updated_at) \
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$16) \
+         ON CONFLICT (org_id, external_source, external_id) WHERE external_source IS NOT NULL DO NOTHING \
+         RETURNING id",
+    )
+    .bind(id)
+    .bind(org)
+    .bind(po.vendor_id)
+    .bind(po.po_number)
+    .bind(po.feed.owner)
+    .bind(po.external_source)
+    .bind(po.external_id)
+    .bind(po.feed.service_address)
+    .bind(po.feed.period_start)
+    .bind(po.feed.period_end)
+    .bind(po.feed.vendor_reference)
+    .bind(po.feed.metadata)
+    .bind(po.feed.final_period)
+    .bind(po.feed.body_hash)
+    .bind(po.created_by)
+    .bind(now)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(row.map(|r| r.get("id")))
+}
+
+pub async fn update_feed(
+    tx: &mut Tx,
+    id: Uuid,
+    feed: &FeedFields<'_>,
+    now: DateTime<Utc>,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "UPDATE purchase_orders SET owner = $2, service_address = $3, period_start = $4, period_end = $5, vendor_reference = $6, metadata = $7, final_period = $8, body_hash = $9, updated_at = $10 WHERE id = $1",
+    )
+    .bind(id)
+    .bind(feed.owner)
+    .bind(feed.service_address)
+    .bind(feed.period_start)
+    .bind(feed.period_end)
+    .bind(feed.vendor_reference)
+    .bind(feed.metadata)
+    .bind(feed.final_period)
+    .bind(feed.body_hash)
+    .bind(now)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// A person's edit is no longer the last synced body, and a later sync cannot change it.
+pub async fn hold_for_person(tx: &mut Tx, id: Uuid, now: DateTime<Utc>) -> anyhow::Result<()> {
+    sqlx::query(
+        "UPDATE purchase_orders SET body_hash = NULL, person_hold = true, updated_at = $2 WHERE id = $1",
+    )
+    .bind(id)
+    .bind(now)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
+pub struct SourceAuth {
+    pub id: Uuid,
+    pub source: String,
+    pub agent: String,
+    pub max_cents: Cents,
+    pub owner: String,
+    pub authorized_by: String,
+    pub revoked_at: Option<DateTime<Utc>>,
+}
+
+fn source_auth_row(r: &PgRow) -> SourceAuth {
+    SourceAuth {
+        id: r.get("id"),
+        source: r.get("source"),
+        agent: r.get("agent"),
+        max_cents: r.get("max_cents"),
+        owner: r.get("owner"),
+        authorized_by: r.get("authorized_by"),
+        revoked_at: r.get("revoked_at"),
+    }
+}
+
+/// Active authorizations for this agent key and vendor. The caller picks the
+/// one whose stored source matches; the request does not look one up.
+pub async fn active_auths_for_agent(
+    tx: &mut Tx,
+    agent: &str,
+    vendor_id: Uuid,
+) -> anyhow::Result<Vec<SourceAuth>> {
+    let rows = sqlx::query(
+        "SELECT a.id, a.source, a.agent, a.max_cents, a.owner, a.authorized_by, a.revoked_at \
+         FROM po_source_authorizations a \
+         JOIN po_source_authorization_vendors v ON v.authorization_id = a.id \
+         WHERE a.revoked_at IS NULL AND a.agent = $1 AND v.vendor_id = $2",
+    )
+    .bind(agent)
+    .bind(vendor_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    Ok(rows.iter().map(source_auth_row).collect())
+}
+
+/// The key named on an active authorization for this source, whatever the vendor.
+pub async fn agent_source_active(tx: &mut Tx, agent: &str, source: &str) -> anyhow::Result<bool> {
+    let row = sqlx::query(
+        "SELECT 1 AS ok FROM po_source_authorizations \
+         WHERE revoked_at IS NULL AND agent = $1 AND source = $2 LIMIT 1",
+    )
+    .bind(agent)
+    .bind(source)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(row.is_some())
+}
+
+pub async fn source_auth(tx: &mut Tx, id: Uuid) -> anyhow::Result<Option<SourceAuth>> {
+    let row = sqlx::query(
+        "SELECT id, source, agent, max_cents, owner, authorized_by, revoked_at FROM po_source_authorizations WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(row.as_ref().map(source_auth_row))
+}
+
+pub async fn lock_vendors(tx: &mut Tx, vendor_ids: &[Uuid]) -> anyhow::Result<usize> {
+    let rows = sqlx::query("SELECT id FROM vendors WHERE id = ANY($1) ORDER BY id FOR UPDATE")
+        .bind(vendor_ids)
+        .fetch_all(&mut **tx)
+        .await?;
+    Ok(rows.len())
+}
+
+/// Vendors in `vendor_ids` that already have an active authorization for `source`.
+pub async fn vendors_already_authorized(
+    tx: &mut Tx,
+    source: &str,
+    vendor_ids: &[Uuid],
+) -> anyhow::Result<Vec<Uuid>> {
+    let rows = sqlx::query(
+        "SELECT v.vendor_id FROM po_source_authorizations a \
+         JOIN po_source_authorization_vendors v ON v.authorization_id = a.id \
+         WHERE a.revoked_at IS NULL AND a.source = $1 AND v.vendor_id = ANY($2) \
+         FOR UPDATE OF a",
+    )
+    .bind(source)
+    .bind(vendor_ids)
+    .fetch_all(&mut **tx)
+    .await?;
+    Ok(rows.iter().map(|r| r.get("vendor_id")).collect())
+}
+
+pub struct NewSourceAuth<'a> {
+    pub source: &'a str,
+    pub agent: &'a str,
+    pub max_cents: Cents,
+    pub owner: &'a str,
+    pub vendor_ids: &'a [Uuid],
+    pub by: &'a str,
+}
+
+pub async fn insert_source_auth(
+    tx: &mut Tx,
+    org: Uuid,
+    auth: &NewSourceAuth<'_>,
+    now: DateTime<Utc>,
+) -> anyhow::Result<Uuid> {
+    let id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO po_source_authorizations (id, org_id, source, agent, max_cents, owner, authorized_by, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+    )
+    .bind(id)
+    .bind(org)
+    .bind(auth.source)
+    .bind(auth.agent)
+    .bind(auth.max_cents)
+    .bind(auth.owner)
+    .bind(auth.by)
+    .bind(now)
+    .execute(&mut **tx)
+    .await?;
+    for vendor_id in auth.vendor_ids {
+        sqlx::query(
+            "INSERT INTO po_source_authorization_vendors (org_id, authorization_id, vendor_id) VALUES ($1,$2,$3)",
+        )
+        .bind(org)
+        .bind(id)
+        .bind(vendor_id)
+        .execute(&mut **tx)
+        .await?;
+    }
+    Ok(id)
+}
+
+/// `Ok(Some(true))` when this call revoked it. `Ok(Some(false))` when it was already revoked.
+/// `Ok(None)` when the id is unknown.
+pub async fn revoke_source_auth(
+    tx: &mut Tx,
+    id: Uuid,
+    by: &str,
+    now: DateTime<Utc>,
+) -> anyhow::Result<Option<bool>> {
+    let updated = sqlx::query(
+        "UPDATE po_source_authorizations SET revoked_at = $2, revoked_by = $3 WHERE id = $1 AND revoked_at IS NULL RETURNING id",
+    )
+    .bind(id)
+    .bind(now)
+    .bind(by)
+    .fetch_optional(&mut **tx)
+    .await?;
+    if updated.is_some() {
+        return Ok(Some(true));
+    }
+    Ok(source_auth(tx, id).await?.map(|_| false))
+}
+
+#[derive(Debug, Clone)]
+pub struct VendorLink {
+    pub vendor_id: Uuid,
+    pub source: String,
+    pub external_id: String,
+}
+
+pub async fn vendor_links_touching(
+    tx: &mut Tx,
+    source: &str,
+    vendor_id: Uuid,
+    external_id: &str,
+) -> anyhow::Result<Vec<VendorLink>> {
+    let rows = sqlx::query(
+        "SELECT vendor_id, source, external_id FROM vendor_external_ids \
+         WHERE source = $1 AND (vendor_id = $2 OR external_id = $3)",
+    )
+    .bind(source)
+    .bind(vendor_id)
+    .bind(external_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    Ok(rows
+        .iter()
+        .map(|r| VendorLink {
+            vendor_id: r.get("vendor_id"),
+            source: r.get("source"),
+            external_id: r.get("external_id"),
+        })
+        .collect())
+}
+
+pub async fn insert_vendor_link(
+    tx: &mut Tx,
+    org: Uuid,
+    vendor_id: Uuid,
+    source: &str,
+    external_id: &str,
+    by: &str,
+    now: DateTime<Utc>,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "INSERT INTO vendor_external_ids (id, org_id, vendor_id, source, external_id, linked_by, linked_at) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+    )
+    .bind(Uuid::new_v4())
+    .bind(org)
+    .bind(vendor_id)
+    .bind(source)
+    .bind(external_id)
+    .bind(by)
+    .bind(now)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
 }

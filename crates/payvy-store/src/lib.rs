@@ -115,6 +115,21 @@ impl Store {
     }
 }
 
+/// True when this organization has an unrevoked agent key for `actor`.
+/// `api_keys` has no row-level security, so the organization is an explicit predicate.
+pub async fn live_agent_key(tx: &mut Tx, org: Uuid, actor: &str) -> anyhow::Result<bool> {
+    let row = sqlx::query(
+        "SELECT 1 AS ok FROM api_keys \
+         WHERE org_id = $1 AND actor = $2 AND kind = 'agent' AND revoked_at IS NULL \
+         LIMIT 1",
+    )
+    .bind(org)
+    .bind(actor)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(row.is_some())
+}
+
 // ── Events and confirm tokens ───────────────────────────────────────────────
 
 pub async fn append_event(
