@@ -254,7 +254,7 @@ export function Documents() {
     </div>
     {dragging && <div className="payvy-drop-overlay" role="status"><strong>Drop to add invoices</strong><p>PDFs, scans, or photos · up to 25 MB each</p></div>}
     {uploading && <div role="status" className="payvy-upload-progress"><Spinner size="sm" /><div><strong>{uploading.title}</strong><p>{uploading.detail}</p></div></div>}
-    {plan.hosted && !plan.reader && status === 'inbox' && <Banner
+    {plan?.hosted && !plan.reader && status === 'inbox' && <Banner
       status="info"
       title="Your own agent reads these invoices"
       description="This plan doesn't include Payvy's built-in reader, so documents here wait until your agent reads them over MCP or the API and creates the bills. You can also enter a bill by hand from any document."

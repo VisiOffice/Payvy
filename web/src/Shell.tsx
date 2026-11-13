@@ -114,7 +114,7 @@ export function Shell({ children }: { children: ReactNode }) {
   }, [pathname, access]);
   // Other companies this address belongs to. Switching starts a new session
   // there (the server checks membership), then reloads into it.
-  const others = me.companies.filter(c => c.id !== me.organization.id);
+  const others = (me.companies ?? []).filter(c => c.id !== me.organization.id);
   const switchItems = others.length ? [
     { type: 'divider' as const },
     ...others.map(c => ({

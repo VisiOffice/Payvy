@@ -40,10 +40,12 @@ export interface Me {
   organization: { id: string; name: string };
   /** Features the company turned on. */
   features: { purchase_orders: boolean };
-  /** Every company this address can sign in to, this one included. */
-  companies: Company[];
-  /** What the company's plan includes. Self-hosted: everything. */
-  plan: { hosted: boolean; provisional?: boolean; reader: boolean; payments: boolean };
+  /** Every company this address can sign in to, this one included.
+   *  Optional: a server older than the app doesn't send it. */
+  companies?: Company[];
+  /** What the company's plan includes. Self-hosted: everything. Optional:
+   *  a server older than the app doesn't send it, which means everything on. */
+  plan?: { hosted: boolean; provisional?: boolean; reader: boolean; payments: boolean };
 }
 
 export interface Company {

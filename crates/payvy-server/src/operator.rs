@@ -282,15 +282,24 @@ async fn create_org(
         (true, true) => match &state.auth {
             None => json!("not_configured"),
             Some(auth) => {
-                let sent = auth::email_link(
+                // The company exists by now: a failure here must not turn the
+                // creation into an error. The person can ask for a link.
+                match auth::email_link(
                     state,
                     auth,
                     &provisioned.admin.email,
                     Some(provisioned.organization.id),
                     "",
                 )
-                .await?;
-                json!(if sent { "sent" } else { "not_sent" })
+                .await
+                {
+                    Ok(true) => json!("sent"),
+                    Ok(false) => json!("not_sent"),
+                    Err(error) => {
+                        tracing::warn!("signup sign-in link not queued: {error:#}");
+                        json!("failed")
+                    }
+                }
             }
         },
     };

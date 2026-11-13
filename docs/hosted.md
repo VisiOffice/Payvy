@@ -60,7 +60,13 @@ The management app's signup page calls the operator command `org.create` with
 `send_sign_in_link: true`. The core creates the company and its first Admin, then emails one
 sign-in link that opens in the new company. Opening it is what proves the address; the Rails app
 never signs anyone in. The link is sent only when the company is created, never on a replay
-(the result's `sign_in_link` is `sent`, `not_sent` or `not_configured`).
+(the result's `sign_in_link` is `sent`, `not_sent`, `not_configured` or `failed`). `sent` means
+queued, not delivered. On anything but `sent` the company still exists: the signup page tells the
+person to ask for a link on the sign-in page, and never creates the company again.
+
+Anyone can sign up with someone else's address. They get no access, but the owner of the address
+gets mail and an extra company in their chooser. The signup app rate-limits signups, and hides or
+removes companies whose link was never opened.
 
 A person whose address belongs to several companies gets one link. Opening it lists only those
 companies, and they pick one; the company menu switches between them later. Each choice and
