@@ -31,6 +31,25 @@ agent `extractor` within about 30 seconds. A failed read is recorded on the docu
 and tried again after 15 minutes. After three failures, it waits for a person. Agents can also call
 `document.extract` themselves; it refuses a document that was already read unless `again` is true.
 
+## Your own agent's reading
+
+A company can read with its own agent and model instead, as on the hosted plan without Payvy's
+reader. The agent:
+1. downloads the file (`document.get` has a link);
+2. fills in the same schema the models fill, as printed;
+3. submits it with `document.submit_reading` (`document_id`, `reading`, and optionally `model`,
+   the model it used).
+
+Payvy then does steps 2 to 4 exactly as above:
+- It runs the same checks, vendor matching, duplicate detection and multi-invoice split.
+- It keeps the result as an extraction with provider `agent`, the model named and the agent as
+  `created_by`. The review screen shows it like any other reading.
+- `bill.create` with its `extraction_id` records the corrections in the same way.
+
+Payvy makes no model call and records no AI usage for it, so no reader entitlement is needed. The
+command's input schema embeds the reader's schema, and a registry test fails if the two drift
+apart.
+
 ## Choosing a model
 
 Set `PAYVY_EXTRACT_PROVIDER` and its key. Two backends cover nearly everything:

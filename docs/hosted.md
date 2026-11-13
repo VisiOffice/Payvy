@@ -8,6 +8,10 @@ enforces both on the server for the browser, the API, MCP and the workers:
 | `reader` | Every paid model call: `document.extract` (direct, retried or a split part), the background reader, and the reads behind *Create N bills* | off | on |
 | `payments` | Every new payment through the bank: `bill.release` with a paying bank, `bill.auto_pay`, and `payments::submit` | on | on |
 
+On `byoa` the company's own agent reads instead and submits its reading with
+`document.submit_reading`, which Payvy checks like its own (docs/extraction.md). That makes no
+model call, so the `reader` entitlement doesn't gate it.
+
 Self-hosted Payvy has no plans: nothing is checked and everything is on.
 
 ## Mode

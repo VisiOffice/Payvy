@@ -15,6 +15,7 @@ mod extract;
 mod inbox;
 mod invoice_reviews;
 mod ledger;
+mod reading;
 
 /// The ledger worker runs queued posting jobs (see `ledger_jobs`).
 pub(crate) use ledger::{JobOutcome, execute_job};
@@ -374,6 +375,7 @@ async fn execute(cx: &mut Cx<'_>, name: &str, input: &Value) -> Result<Value, Co
         "document.get" => documents::get(cx, parse(input)?).await,
         "document.trash" => documents::trash(cx, parse(input)?).await,
         "document.extract" => extract::extract(cx, parse(input)?).await,
+        "document.submit_reading" => reading::submit(cx, parse(input)?).await,
         "document.arrange" => documents::arrange(cx, parse(input)?).await,
         "document.split" => documents::split(cx, parse(input)?).await,
         "document.create_bills" => bill_batches::create(cx, parse(input)?).await,
