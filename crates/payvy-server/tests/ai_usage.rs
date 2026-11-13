@@ -249,7 +249,8 @@ async fn records_success_refusal_truncation_invalid_retry_and_unknown_pricing() 
     assert_eq!(r["cache_write_tokens"], 200);
 
     // Non-admin person cannot read usage.summary
-    let err = commit(&db.state, &person("clerk"), "usage.summary", json!({}))
+    let clerk = payvy_server::Actor::person(store::DEFAULT_ORG, "clerk");
+    let err = commit(&db.state, &clerk, "usage.summary", json!({}))
         .await
         .unwrap_err();
     assert!(matches!(err, CommandError::Forbidden(_)));
