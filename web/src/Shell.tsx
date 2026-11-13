@@ -23,13 +23,14 @@ const NAV = [
 
 /** Settings, grouped the way people look for them. A page is listed only
  * to someone who can change it; a group with nothing left is hidden. */
-export const SETTINGS: { title: string; items: { href: string; label: string; command?: CommandName }[] }[] = [
+export const SETTINGS: { title: string; items: { href: string; label: string; command?: CommandName; hostedOnly?: boolean }[] }[] = [
   { title: 'Personal', items: [{ href: '/settings/preferences', label: 'Preferences' }] },
   {
     title: 'Company',
     items: [
       { href: '/settings/company', label: 'Company', command: 'org.update' },
       { href: '/settings/people', label: 'People' },
+      { href: '/settings/billing', label: 'Billing', command: 'billing.checkout', hostedOnly: true },
       { href: '/settings/notifications', label: 'Notifications', command: 'notification.configure' },
     ],
   },
@@ -95,7 +96,7 @@ export function Shell({ children }: { children: ReactNode }) {
   const openSettings = useCallback(() => navigate('/settings'), [navigate]);
   useGoToSettings(openSettings);
   const groups = SETTINGS
-    .map(g => ({ ...g, items: g.items.filter(i => !i.command || can(i.command)) }))
+    .map(g => ({ ...g, items: g.items.filter(i => (!i.command || can(i.command)) && (!i.hostedOnly || !!me.plan?.hosted)) }))
     .filter(g => g.items.length > 0);
   const [waiting, setWaiting] = useState<number | null>(null);
 
