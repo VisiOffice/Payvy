@@ -2,8 +2,8 @@
 //! lifecycle + amounts; matching UI and the payment gate are step 2).
 //! Matching here is preparation only: reserving or accepting an allocation
 //! never approves a bill. A person activates, closes or cancels a PO.
-//! `po.upsert` may also activate one, when the caller is the agent key named
-//! on a standing authorization a person granted with `po.source_authorize`.
+//! `po.upsert` may also activate one, when the caller is the agent key bound
+//! by id on a standing authorization a person granted with `po.source_authorize`.
 
 use std::collections::BTreeMap;
 
@@ -242,6 +242,11 @@ pub async fn create(cx: &mut Cx<'_>, input: Create) -> Result<Value, CommandErro
             "a purchase order {number} already exists"
         )));
     }
+    let external_source = text(input.external_source);
+    let external_id = text(input.external_id);
+    if let Some(source) = external_source.as_deref() {
+        ensure_can_create(cx, source, input.vendor_id, false).await?;
+    }
     let id = po_store::insert_po(
         &mut cx.tx,
         cx.org,
@@ -249,8 +254,8 @@ pub async fn create(cx: &mut Cx<'_>, input: Create) -> Result<Value, CommandErro
             vendor_id: input.vendor_id,
             po_number: &number,
             owner: text(input.owner).as_deref(),
-            external_source: text(input.external_source.clone()).as_deref(),
-            external_id: text(input.external_id).as_deref(),
+            external_source: external_source.as_deref(),
+            external_id: external_id.as_deref(),
             service_address: text(input.service_address).as_deref(),
             period_start: input.period_start,
             period_end: input.period_end,
@@ -368,6 +373,28 @@ pub async fn update(cx: &mut Cx<'_>, input: Update) -> Result<Value, CommandErro
     }
 }
 
+/// Lift the hold a person's edit placed on a PO. An unchanged sync does not do this.
+pub async fn release_hold(cx: &mut Cx<'_>, input: PoId) -> Result<Value, CommandError> {
+    ensure_enabled(cx).await?;
+    let po = must_po(cx, input.po_id).await?;
+    if !po.person_hold {
+        let mut fresh = view(cx, &po).await?;
+        fresh["outcome"] = json!("unchanged");
+        return Ok(fresh);
+    }
+    po_store::clear_person_hold(&mut cx.tx, po.id, cx.now).await?;
+    cx.emit(
+        "po.hold_cleared",
+        po.id,
+        json!({ "po_number": po.po_number }),
+    )
+    .await?;
+    let po = must_po(cx, po.id).await?;
+    let mut out = view(cx, &po).await?;
+    out["outcome"] = json!("cleared");
+    Ok(out)
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PoId {
@@ -440,9 +467,10 @@ pub struct Close {
 }
 
 /// `po.close` and `po.cancel`. A person passes `po_id`. The authorized agent
-/// key passes the external id, and only for its own source. That path is
-/// refused while allocations are reserved so a sync job leaves the PO for a
-/// person. A person's close still leaves reserved allocations standing.
+/// key passes the external id, and only for its own source and a vendor on
+/// that authorization. That path is refused while allocations are reserved
+/// so a sync job leaves the PO for a person. A person's close still leaves
+/// reserved allocations standing.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct End {
@@ -491,8 +519,12 @@ pub async fn close(
             .next()
             .ok_or(CommandError::NotFound("purchase order"))?;
         let source = po.external_source.as_deref().unwrap_or("");
-        let allowed = cx.actor.kind == store::ActorKind::Agent
-            && po_store::agent_source_active(&mut cx.tx, &cx.actor.name, source).await?;
+        let allowed = match cx.actor.key_id {
+            Some(key_id) if cx.actor.kind == store::ActorKind::Agent => {
+                po_store::key_can_end(&mut cx.tx, key_id, source, po.vendor_id).await?
+            }
+            _ => false,
+        };
         if !allowed {
             return Err(CommandError::Conflict(
                 "po_source: only the authorized key can close or cancel this source".into(),
@@ -1896,6 +1928,7 @@ impl PreparedUpsert {
     fn feed(&self) -> po_store::FeedFields<'_> {
         po_store::FeedFields {
             owner: self.owner.as_deref(),
+            write_owner: self.owner.is_some(),
             service_address: self.address.as_deref(),
             period_start: self.period_start,
             period_end: self.period_end,
@@ -1987,8 +2020,8 @@ async fn with_outcome(cx: &mut Cx<'_>, id: Uuid, outcome: &str) -> Result<Value,
     Ok(view)
 }
 
-/// The standing authorization for this caller, if they are its agent key and
-/// the request's source is the source stored on that authorization.
+/// The standing authorization for this caller, when they authenticated as
+/// its agent key and the request's source is the source stored on it.
 async fn standing_auth(
     cx: &mut Cx<'_>,
     vendor_id: Uuid,
@@ -1997,8 +2030,31 @@ async fn standing_auth(
     if cx.actor.kind != store::ActorKind::Agent {
         return Ok(None);
     }
-    let auths = po_store::active_auths_for_agent(&mut cx.tx, &cx.actor.name, vendor_id).await?;
+    let Some(key_id) = cx.actor.key_id else {
+        return Ok(None);
+    };
+    let auths = po_store::active_auths_for_key(&mut cx.tx, key_id, vendor_id).await?;
     Ok(auths.into_iter().find(|a| a.source == request_source))
+}
+
+/// A feed upsert creates a PO only for the authorized key. `po.create` and
+/// `po.import` stay open until a standing authorization covers the source;
+/// after that, only that key can take an external id on it.
+async fn ensure_can_create(
+    cx: &mut Cx<'_>,
+    source: &str,
+    vendor_id: Uuid,
+    feed: bool,
+) -> Result<(), CommandError> {
+    if standing_auth(cx, vendor_id, source).await?.is_some() {
+        return Ok(());
+    }
+    if feed || po_store::source_has_active_auth(&mut cx.tx, source).await? {
+        return Err(CommandError::Conflict(
+            "po_source: only the authorized key can create a purchase order for this source".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Activate a draft when this caller is the authorized key and the amount is
@@ -2153,7 +2209,9 @@ async fn apply_existing(
     }
     if same_body(cx, &po, prepared).await? {
         po_store::update_feed(&mut cx.tx, po.id, &prepared.feed(), cx.now).await?;
-        if po.status == "draft" && try_auto_activate(cx, po.id).await? {
+        // A hold stays until a person clears it. The same body does not lift it
+        // or activate the PO.
+        if po.status == "draft" && !po.person_hold && try_auto_activate(cx, po.id).await? {
             return with_outcome(cx, po.id, "activated").await;
         }
         return with_outcome(cx, po.id, "unchanged").await;
@@ -2165,6 +2223,12 @@ async fn apply_existing(
         )));
     }
     if po.status == "active" || po.status == "suspended" {
+        let Some(auth) = standing_auth(cx, po.vendor_id, &prepared.source).await? else {
+            return Err(CommandError::Conflict(format!(
+                "po_needs_person: only the authorized key can revise PO {}",
+                po.po_number
+            )));
+        };
         let current = po
             .revision
             .as_ref()
@@ -2173,12 +2237,11 @@ async fn apply_existing(
                 CommandError::Conflict("po_closed: the PO has no authorized amount".into())
             })?;
         let amounts = po_store::amounts(&mut cx.tx, &po).await?;
-        let auth = standing_auth(cx, po.vendor_id, &prepared.source).await?;
         amount_change(
             current,
             prepared.authorized,
             amounts.committed_cents(),
-            auth.map(|a| a.max_cents),
+            Some(auth.max_cents),
         )?;
         po_store::update_feed(&mut cx.tx, po.id, &prepared.feed(), cx.now).await?;
         let po = must_po(cx, po.id).await?;
@@ -2227,6 +2290,7 @@ pub async fn upsert(cx: &mut Cx<'_>, input: Upsert) -> Result<Value, CommandErro
     {
         return apply_existing(cx, po, &prepared).await;
     }
+    ensure_can_create(cx, &prepared.source, prepared.vendor_id, true).await?;
     let inserted = po_store::insert_feed_po(
         &mut cx.tx,
         cx.org,
@@ -2284,7 +2348,7 @@ pub async fn upsert(cx: &mut Cx<'_>, input: Upsert) -> Result<Value, CommandErro
 #[serde(deny_unknown_fields)]
 pub struct SourceAuthorize {
     source: String,
-    agent: String,
+    key_id: Uuid,
     vendor_ids: Vec<Uuid>,
     max_cents: Cents,
     owner: String,
@@ -2297,13 +2361,12 @@ pub async fn source_authorize(
     ensure_enabled(cx).await?;
     let source = text(Some(input.source))
         .ok_or_else(|| CommandError::Invalid("source is required".into()))?;
-    let agent =
-        text(Some(input.agent)).ok_or_else(|| CommandError::Invalid("agent is required".into()))?;
     let owner =
         text(Some(input.owner)).ok_or_else(|| CommandError::Invalid("owner is required".into()))?;
-    if !store::live_agent_key(&mut cx.tx, cx.org, &agent).await? {
+    if !store::live_agent_key(&mut cx.tx, cx.org, input.key_id).await? {
         return Err(CommandError::Invalid(format!(
-            "agent {agent:?} isn't an agent key in this company"
+            "key {} isn't an agent key in this company",
+            input.key_id
         )));
     }
     if input.max_cents <= 0 {
@@ -2336,7 +2399,7 @@ pub async fn source_authorize(
         cx.org,
         &po_store::NewSourceAuth {
             source: &source,
-            agent: &agent,
+            key_id: input.key_id,
             max_cents: input.max_cents,
             owner: &owner,
             vendor_ids: &vendor_ids,
@@ -2350,7 +2413,7 @@ pub async fn source_authorize(
         id,
         json!({
             "source": source,
-            "agent": agent,
+            "key_id": input.key_id,
             "vendor_ids": vendor_ids,
             "max_cents": input.max_cents,
             "owner": owner,
@@ -2361,7 +2424,7 @@ pub async fn source_authorize(
     Ok(json!({
         "id": id,
         "source": source,
-        "agent": agent,
+        "key_id": input.key_id,
         "vendor_ids": vendor_ids,
         "max_cents": input.max_cents,
         "owner": owner,

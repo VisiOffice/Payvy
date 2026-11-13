@@ -3,10 +3,21 @@
 
 use payvy_server::Actor;
 use payvy_server::commands::CommandError;
+use payvy_store::ActorKind;
 use serde_json::{Value, json};
+use uuid::Uuid;
 
 mod common;
 use common::{TestDb, agent, bill, commit, confirm, person, vendor};
+
+struct Grant {
+    auth_id: String,
+    key_id: Uuid,
+}
+
+fn quarry(key_id: Uuid) -> Actor {
+    agent("quarry").with_key(key_id)
+}
 
 async fn po_on(db: &TestDb) {
     commit(
@@ -49,14 +60,15 @@ fn body(vendor_id: &str, number: &str, ext: &str, cents: i64) -> Value {
     })
 }
 
-async fn authorize(db: &TestDb, vendor_id: &str, max_cents: i64) -> String {
+async fn authorize(db: &TestDb, vendor_id: &str, max_cents: i64) -> Grant {
     add_robert(db).await;
-    db.state
+    let key_id = db
+        .state
         .store
         .insert_api_key(
             payvy_store::DEFAULT_ORG,
             "quarry",
-            payvy_store::ActorKind::Agent,
+            ActorKind::Agent,
             &payvy_server::hash_key("quarry-feed-test"),
         )
         .await
@@ -67,7 +79,7 @@ async fn authorize(db: &TestDb, vendor_id: &str, max_cents: i64) -> String {
         "po.source_authorize",
         json!({
             "source": "quarry",
-            "agent": "quarry",
+            "key_id": key_id,
             "vendor_ids": [vendor_id],
             "max_cents": max_cents,
             "owner": "robert",
@@ -75,8 +87,23 @@ async fn authorize(db: &TestDb, vendor_id: &str, max_cents: i64) -> String {
     )
     .await
     .unwrap();
-    assert_eq!(granted["result"]["agent"], "quarry");
-    granted["result"]["id"].as_str().unwrap().to_owned()
+    assert_eq!(granted["result"]["key_id"], json!(key_id));
+    Grant {
+        auth_id: granted["result"]["id"].as_str().unwrap().to_owned(),
+        key_id,
+    }
+}
+
+async fn clerk(db: &TestDb) -> Actor {
+    commit(
+        &db.state,
+        &person("admin"),
+        "person.add",
+        json!({ "email": "clerk@example.com", "name": "Clerk", "actor": "clerk", "roles": ["ap_clerk"] }),
+    )
+    .await
+    .unwrap();
+    Actor::person(payvy_store::DEFAULT_ORG, "clerk")
 }
 
 #[tokio::test]
@@ -88,18 +115,15 @@ async fn a_standing_authorization_activates_within_the_limit() {
     let robert = person("robert");
     let v = vendor(&db.state, &robert, "Allied").await;
 
-    let draft = commit(
+    let early = commit(
         &db.state,
         &agent("quarry"),
         "po.upsert",
         body(&v, "900-P1", "period_1", 80_000),
     )
     .await
-    .unwrap();
-    assert_eq!(draft["result"]["outcome"], "created");
-    assert_eq!(draft["result"]["status"], "draft");
-    assert_eq!(draft["result"]["activated_by"], Value::Null);
-    let id = draft["result"]["id"].as_str().unwrap().to_owned();
+    .unwrap_err();
+    assert!(early.to_string().contains("po_source"), "{early}");
 
     let e = commit(
         &db.state,
@@ -111,17 +135,7 @@ async fn a_standing_authorization_activates_within_the_limit() {
     .unwrap_err();
     assert!(matches!(e, CommandError::PersonOnly(_)), "{e}");
 
-    let clerk = {
-        commit(
-            &db.state,
-            &person("admin"),
-            "person.add",
-            json!({ "email": "clerk@example.com", "name": "Clerk", "actor": "clerk", "roles": ["ap_clerk"] }),
-        )
-        .await
-        .unwrap();
-        Actor::person(payvy_store::DEFAULT_ORG, "clerk")
-    };
+    let clerk = clerk(&db).await;
     let e = commit(
         &db.state,
         &clerk,
@@ -132,10 +146,11 @@ async fn a_standing_authorization_activates_within_the_limit() {
     .unwrap_err();
     assert!(matches!(e, CommandError::Forbidden(_)), "{e}");
 
-    authorize(&db, &v, 100_000).await;
+    let grant = authorize(&db, &v, 100_000).await;
+    let q = quarry(grant.key_id);
     let active = commit(
         &db.state,
-        &agent("quarry"),
+        &q,
         "po.upsert",
         body(&v, "900-P1", "period_1", 80_000),
     )
@@ -146,11 +161,10 @@ async fn a_standing_authorization_activates_within_the_limit() {
     assert_eq!(active["result"]["activated_by"], "robert");
     assert_eq!(active["result"]["owner"], "robert");
     assert_eq!(active["result"]["vendor_reference"], "C-100");
-    assert_eq!(active["result"]["id"], id);
 
     let again = commit(
         &db.state,
-        &agent("quarry"),
+        &q,
         "po.upsert",
         body(&v, "900-P1", "period_1", 80_000),
     )
@@ -159,9 +173,24 @@ async fn a_standing_authorization_activates_within_the_limit() {
     assert_eq!(again["result"]["outcome"], "unchanged");
     assert_eq!(again["result"]["revision"]["revision"], 1);
 
+    let mut named = body(&v, "900-P4", "period_4", 50_000);
+    named["owner"] = json!("robert");
+    let named_po = commit(&db.state, &q, "po.upsert", named).await.unwrap();
+    assert_eq!(named_po["result"]["owner"], "robert");
+    let kept = commit(
+        &db.state,
+        &q,
+        "po.upsert",
+        body(&v, "900-P4", "period_4", 50_000),
+    )
+    .await
+    .unwrap();
+    assert_eq!(kept["result"]["outcome"], "unchanged");
+    assert_eq!(kept["result"]["owner"], "robert");
+
     let over = commit(
         &db.state,
-        &agent("quarry"),
+        &q,
         "po.upsert",
         body(&v, "900-P2", "period_2", 150_000),
     )
@@ -177,10 +206,8 @@ async fn a_standing_authorization_activates_within_the_limit() {
         body(&v, "900-P9", "period_9", 80_000),
     )
     .await
-    .unwrap();
-    assert_eq!(stranger["result"]["outcome"], "created");
-    assert_eq!(stranger["result"]["status"], "draft");
-    assert_eq!(stranger["result"]["activated_by"], Value::Null);
+    .unwrap_err();
+    assert!(stranger.to_string().contains("po_source"), "{stranger}");
     let clerk_draft = commit(
         &db.state,
         &clerk,
@@ -188,13 +215,46 @@ async fn a_standing_authorization_activates_within_the_limit() {
         body(&v, "900-P8", "period_8", 80_000),
     )
     .await
-    .unwrap();
-    assert_eq!(clerk_draft["result"]["status"], "draft");
+    .unwrap_err();
+    assert!(
+        clerk_draft.to_string().contains("po_source"),
+        "{clerk_draft}"
+    );
+    let squat = commit(
+        &db.state,
+        &robert,
+        "po.import",
+        json!({
+            "vendor_id": v,
+            "po_number": "900-S",
+            "external_source": "quarry",
+            "external_id": "squat",
+            "authorized_cents": 10_000,
+            "lines": [{ "description": "Base rent", "amount_cents": 10_000 }],
+        }),
+    )
+    .await
+    .unwrap_err();
+    assert!(squat.to_string().contains("po_source"), "{squat}");
+    let created = commit(
+        &db.state,
+        &clerk,
+        "po.create",
+        json!({
+            "vendor_id": v,
+            "po_number": "900-C",
+            "external_source": "quarry",
+            "external_id": "squat-create",
+        }),
+    )
+    .await
+    .unwrap_err();
+    assert!(created.to_string().contains("po_source"), "{created}");
 
     let b = bill(&db.state, &agent("claude-ap"), &v, "final-1", 40_000).await;
     let mut final_body = body(&v, "900-P3", "period_3", 80_000);
     final_body["final_period"] = json!(true);
-    let flagged = commit(&db.state, &agent("quarry"), "po.upsert", final_body)
+    let flagged = commit(&db.state, &q, "po.upsert", final_body)
         .await
         .unwrap();
     assert_eq!(flagged["result"]["final_period"], true);
@@ -268,16 +328,69 @@ async fn active_changes_keep_allocations_and_stop_at_the_limit() {
     po_on(&db).await;
     let robert = person("robert");
     let v = vendor(&db.state, &robert, "Allied").await;
-    authorize(&db, &v, 100_000).await;
+    let grant = authorize(&db, &v, 100_000).await;
+    let q = quarry(grant.key_id);
     let created = commit(
         &db.state,
-        &agent("quarry"),
+        &q,
         "po.upsert",
         body(&v, "900-P1", "period_1", 100_000),
     )
     .await
     .unwrap();
     let id = created["result"]["id"].as_str().unwrap();
+
+    let clerk = clerk(&db).await;
+    let clerk_edit = commit(
+        &db.state,
+        &clerk,
+        "po.upsert",
+        body(&v, "900-P1", "period_1", 80_000),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        clerk_edit.to_string().contains("po_needs_person"),
+        "{clerk_edit}"
+    );
+    let mut inbox_body = body(&v, "900-P1", "period_1", 100_000);
+    inbox_body["period_end"] = json!("2027-03-01");
+    let inbox_edit = commit(&db.state, &agent("inbox"), "po.upsert", inbox_body)
+        .await
+        .unwrap_err();
+    assert!(
+        inbox_edit.to_string().contains("po_needs_person"),
+        "{inbox_edit}"
+    );
+    let twin = db
+        .state
+        .store
+        .insert_api_key(
+            payvy_store::DEFAULT_ORG,
+            "quarry",
+            ActorKind::Agent,
+            &payvy_server::hash_key("quarry-other-key"),
+        )
+        .await
+        .unwrap();
+    let twin_edit = commit(
+        &db.state,
+        &agent("quarry").with_key(twin),
+        "po.upsert",
+        body(&v, "900-P1", "period_1", 80_000),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        twin_edit.to_string().contains("po_needs_person"),
+        "{twin_edit}"
+    );
+    let untouched = commit(&db.state, &robert, "po.get", json!({ "po_id": id }))
+        .await
+        .unwrap();
+    assert_eq!(untouched["result"]["amounts"]["authorized_cents"], 100_000);
+    assert_eq!(untouched["result"]["period_end"], "2027-01-28");
+
     let b = bill(&db.state, &agent("claude-ap"), &v, "inv-1", 60_000).await;
     confirm(
         &db.state,
@@ -290,7 +403,7 @@ async fn active_changes_keep_allocations_and_stop_at_the_limit() {
 
     let down = commit(
         &db.state,
-        &agent("quarry"),
+        &q,
         "po.upsert",
         body(&v, "900-P1", "period_1", 70_000),
     )
@@ -303,7 +416,7 @@ async fn active_changes_keep_allocations_and_stop_at_the_limit() {
 
     let too_low = commit(
         &db.state,
-        &agent("quarry"),
+        &q,
         "po.upsert",
         body(&v, "900-P1", "period_1", 50_000),
     )
@@ -318,7 +431,7 @@ async fn active_changes_keep_allocations_and_stop_at_the_limit() {
 
     let up = commit(
         &db.state,
-        &agent("quarry"),
+        &q,
         "po.upsert",
         body(&v, "900-P1", "period_1", 90_000),
     )
@@ -329,7 +442,7 @@ async fn active_changes_keep_allocations_and_stop_at_the_limit() {
 
     let over = commit(
         &db.state,
-        &agent("quarry"),
+        &q,
         "po.upsert",
         body(&v, "900-P1", "period_1", 120_000),
     )
@@ -340,26 +453,25 @@ async fn active_changes_keep_allocations_and_stop_at_the_limit() {
     let mut moved = body(&v, "900-P1", "period_1", 90_000);
     moved["period_end"] = json!("2027-02-04");
     moved["service_address"] = json!("2 Quarry Rd");
-    let revised = commit(&db.state, &agent("quarry"), "po.upsert", moved)
-        .await
-        .unwrap();
+    let revised = commit(&db.state, &q, "po.upsert", moved).await.unwrap();
     assert_eq!(revised["result"]["outcome"], "revised");
     assert_eq!(revised["result"]["period_end"], "2027-02-04");
     assert_eq!(revised["result"]["service_address"], "2 Quarry Rd");
+    assert_eq!(revised["result"]["owner"], "robert");
     assert_eq!(revised["result"]["amounts"]["reserved_cents"], 60_000);
 
     let other = vendor(&db.state, &robert, "Other").await;
     let mut switched = body(&other, "900-P1", "period_1", 90_000);
     switched["period_end"] = json!("2027-02-04");
     switched["service_address"] = json!("2 Quarry Rd");
-    let e = commit(&db.state, &agent("quarry"), "po.upsert", switched)
+    let e = commit(&db.state, &q, "po.upsert", switched)
         .await
         .unwrap_err();
     assert!(e.to_string().contains("po_identity"), "{e}");
 
     let e = commit(
         &db.state,
-        &agent("quarry"),
+        &q,
         "po.cancel",
         json!({ "po_id": id, "reason": "voided in quarry" }),
     )
@@ -368,7 +480,7 @@ async fn active_changes_keep_allocations_and_stop_at_the_limit() {
     assert!(matches!(e, CommandError::PersonOnly(_)), "{e}");
     let e = commit(
         &db.state,
-        &agent("quarry"),
+        &q,
         "po.cancel",
         json!({ "external_source": "quarry", "external_id": "period_1", "reason": "voided in quarry" }),
     )
@@ -392,10 +504,55 @@ async fn revoke_stops_later_activation_and_a_repeat_cancel_returns() {
     po_on(&db).await;
     let robert = person("robert");
     let v = vendor(&db.state, &robert, "Allied").await;
-    let auth = authorize(&db, &v, 100_000).await;
+    let other = vendor(&db.state, &robert, "Other").await;
+    let foreign = commit(
+        &db.state,
+        &robert,
+        "po.import",
+        json!({
+            "vendor_id": other,
+            "po_number": "900-X",
+            "external_source": "quarry",
+            "external_id": "other_1",
+            "authorized_cents": 40_000,
+            "lines": [{ "description": "Base rent", "amount_cents": 40_000 }],
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(foreign["result"]["status"], "draft");
+    let foreign_id = foreign["result"]["id"].as_str().unwrap().to_owned();
+
+    let grant = authorize(&db, &v, 100_000).await;
+    let q = quarry(grant.key_id);
+    let e = commit(
+        &db.state,
+        &q,
+        "po.cancel",
+        json!({ "external_source": "quarry", "external_id": "other_1", "reason": "wrong vendor" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(e.to_string().contains("po_source"), "{e}");
+    assert_eq!(
+        commit(&db.state, &robert, "po.get", json!({ "po_id": foreign_id }))
+            .await
+            .unwrap()["result"]["status"],
+        "draft"
+    );
+    let e = commit(
+        &db.state,
+        &q,
+        "po.upsert",
+        body(&other, "900-O", "other_2", 40_000),
+    )
+    .await
+    .unwrap_err();
+    assert!(e.to_string().contains("po_source"), "{e}");
+
     let first = commit(
         &db.state,
-        &agent("quarry"),
+        &q,
         "po.upsert",
         body(&v, "900-P1", "period_1", 40_000),
     )
@@ -405,7 +562,7 @@ async fn revoke_stops_later_activation_and_a_repeat_cancel_returns() {
 
     let open = commit(
         &db.state,
-        &agent("quarry"),
+        &q,
         "po.upsert",
         body(&v, "900-P2", "period_2", 40_000),
     )
@@ -414,7 +571,7 @@ async fn revoke_stops_later_activation_and_a_repeat_cancel_returns() {
     assert_eq!(open["result"]["status"], "active");
     let canceled = commit(
         &db.state,
-        &agent("quarry"),
+        &q,
         "po.cancel",
         json!({ "external_source": "quarry", "external_id": "period_2", "reason": "order voided" }),
     )
@@ -423,7 +580,7 @@ async fn revoke_stops_later_activation_and_a_repeat_cancel_returns() {
     assert_eq!(canceled["result"]["status"], "canceled");
     let repeat = commit(
         &db.state,
-        &agent("quarry"),
+        &q,
         "po.cancel",
         json!({ "external_source": "quarry", "external_id": "period_2", "reason": "order voided" }),
     )
@@ -433,7 +590,7 @@ async fn revoke_stops_later_activation_and_a_repeat_cancel_returns() {
     assert_eq!(repeat["result"]["status"], "canceled");
     let closed = commit(
         &db.state,
-        &agent("quarry"),
+        &q,
         "po.upsert",
         body(&v, "900-P2", "period_2", 40_000),
     )
@@ -450,27 +607,44 @@ async fn revoke_stops_later_activation_and_a_repeat_cancel_returns() {
     .await
     .unwrap_err();
     assert!(e.to_string().contains("po_source"), "{e}");
-    let mut legacy = body(&v, "900-L", "legacy_1", 40_000);
-    legacy["external_source"] = json!("legacy");
-    let imported = commit(&db.state, &agent("quarry"), "po.upsert", legacy)
-        .await
-        .unwrap();
+    let imported = commit(
+        &db.state,
+        &robert,
+        "po.import",
+        json!({
+            "vendor_id": v,
+            "po_number": "900-L",
+            "external_source": "legacy",
+            "external_id": "legacy_1",
+            "authorized_cents": 40_000,
+            "lines": [{ "description": "Base rent", "amount_cents": 40_000 }],
+        }),
+    )
+    .await
+    .unwrap();
     assert_eq!(imported["result"]["status"], "draft");
+    let legacy_id = imported["result"]["id"].as_str().unwrap().to_owned();
     let e = commit(
         &db.state,
-        &agent("quarry"),
+        &q,
         "po.cancel",
         json!({ "external_source": "legacy", "external_id": "legacy_1", "reason": "wrong source" }),
     )
     .await
     .unwrap_err();
     assert!(e.to_string().contains("po_source"), "{e}");
+    assert_eq!(
+        commit(&db.state, &robert, "po.get", json!({ "po_id": legacy_id }))
+            .await
+            .unwrap()["result"]["status"],
+        "draft"
+    );
 
     let revoked = commit(
         &db.state,
         &robert,
         "po.source_revoke",
-        json!({ "authorization_id": auth }),
+        json!({ "authorization_id": grant.auth_id }),
     )
     .await
     .unwrap();
@@ -479,7 +653,7 @@ async fn revoke_stops_later_activation_and_a_repeat_cancel_returns() {
         &db.state,
         &robert,
         "po.source_revoke",
-        json!({ "authorization_id": auth }),
+        json!({ "authorization_id": grant.auth_id }),
     )
     .await
     .unwrap();
@@ -487,13 +661,13 @@ async fn revoke_stops_later_activation_and_a_repeat_cancel_returns() {
 
     let later = commit(
         &db.state,
-        &agent("quarry"),
+        &q,
         "po.upsert",
         body(&v, "900-P3", "period_3", 40_000),
     )
     .await
-    .unwrap();
-    assert_eq!(later["result"]["status"], "draft");
+    .unwrap_err();
+    assert!(later.to_string().contains("po_source"), "{later}");
     assert_eq!(
         commit(
             &db.state,
@@ -508,9 +682,9 @@ async fn revoke_stops_later_activation_and_a_repeat_cancel_returns() {
 
     let e = commit(
         &db.state,
-        &agent("quarry"),
+        &q,
         "po.cancel",
-        json!({ "external_source": "quarry", "external_id": "period_3", "reason": "revoked" }),
+        json!({ "external_source": "quarry", "external_id": "period_1", "reason": "revoked" }),
     )
     .await
     .unwrap_err();
@@ -520,11 +694,11 @@ async fn revoke_stops_later_activation_and_a_repeat_cancel_returns() {
             &db.state,
             &robert,
             "po.get",
-            json!({ "po_id": later["result"]["id"] })
+            json!({ "po_id": first["result"]["id"] })
         )
         .await
         .unwrap()["result"]["status"],
-        "draft"
+        "active"
     );
     db.drop().await;
 }
@@ -537,10 +711,11 @@ async fn a_person_edit_is_not_undone_by_the_sync() {
     po_on(&db).await;
     let robert = person("robert");
     let v = vendor(&db.state, &robert, "Allied").await;
-    authorize(&db, &v, 100_000).await;
+    let grant = authorize(&db, &v, 100_000).await;
+    let q = quarry(grant.key_id);
     let created = commit(
         &db.state,
-        &agent("quarry"),
+        &q,
         "po.upsert",
         body(&v, "900-P1", "period_1", 80_000),
     )
@@ -548,6 +723,15 @@ async fn a_person_edit_is_not_undone_by_the_sync() {
     .unwrap();
     assert_eq!(created["result"]["status"], "active");
     let id = created["result"]["id"].as_str().unwrap();
+    let open = commit(
+        &db.state,
+        &robert,
+        "po.release_hold",
+        json!({ "po_id": id }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(open["result"]["outcome"], "unchanged");
     commit(
         &db.state,
         &robert,
@@ -564,7 +748,7 @@ async fn a_person_edit_is_not_undone_by_the_sync() {
 
     let undone = commit(
         &db.state,
-        &agent("quarry"),
+        &q,
         "po.upsert",
         body(&v, "900-P1", "period_1", 80_000),
     )
@@ -579,7 +763,7 @@ async fn a_person_edit_is_not_undone_by_the_sync() {
 
     let caught_up = commit(
         &db.state,
-        &agent("quarry"),
+        &q,
         "po.upsert",
         body(&v, "900-P1", "period_1", 60_000),
     )
@@ -590,9 +774,7 @@ async fn a_person_edit_is_not_undone_by_the_sync() {
 
     let mut moved = body(&v, "900-P1", "period_1", 60_000);
     moved["period_end"] = json!("2027-02-04");
-    let still_held = commit(&db.state, &agent("quarry"), "po.upsert", moved)
-        .await
-        .unwrap_err();
+    let still_held = commit(&db.state, &q, "po.upsert", moved).await.unwrap_err();
     assert!(
         still_held.to_string().contains("po_needs_person"),
         "{still_held}"
@@ -603,6 +785,35 @@ async fn a_person_edit_is_not_undone_by_the_sync() {
             .unwrap()["result"]["period_end"],
         "2027-01-28"
     );
+
+    let e = commit(&db.state, &q, "po.release_hold", json!({ "po_id": id }))
+        .await
+        .unwrap_err();
+    assert!(matches!(e, CommandError::PersonOnly(_)), "{e}");
+    let cleared = commit(
+        &db.state,
+        &robert,
+        "po.release_hold",
+        json!({ "po_id": id }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(cleared["result"]["outcome"], "cleared");
+    let again = commit(
+        &db.state,
+        &robert,
+        "po.release_hold",
+        json!({ "po_id": id }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(again["result"]["outcome"], "unchanged");
+    let mut released = body(&v, "900-P1", "period_1", 60_000);
+    released["period_end"] = json!("2027-02-04");
+    let revised = commit(&db.state, &q, "po.upsert", released).await.unwrap();
+    assert_eq!(revised["result"]["outcome"], "revised");
+    assert_eq!(revised["result"]["period_end"], "2027-02-04");
+    assert_eq!(revised["result"]["owner"], "robert");
     db.drop().await;
 }
 
@@ -615,16 +826,20 @@ async fn two_upserts_racing_create_one_po_and_a_vendor_links_once() {
     let robert = person("robert");
     let v = vendor(&db.state, &robert, "Allied").await;
     let other = vendor(&db.state, &robert, "Other").await;
+    let grant = authorize(&db, &v, 100_000).await;
+    let q = quarry(grant.key_id);
     let run = {
         let state = &db.state;
         let v = v.clone();
+        let q = q.clone();
         move || {
             let state = state;
             let v = v.clone();
+            let q = q.clone();
             async move {
                 commit(
                     state,
-                    &agent("quarry"),
+                    &q,
                     "po.upsert",
                     body(&v, "900-P1", "period_1", 10_000),
                 )

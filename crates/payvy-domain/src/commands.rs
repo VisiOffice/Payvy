@@ -411,7 +411,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "po.create",
-        summary: "Create a draft purchase order for a vendor. Nothing matches against it until a person activates it with po.activate.",
+        summary: "Create a draft purchase order for a vendor. Nothing matches against it until a person activates it with po.activate. Once a source has a standing authorization, only that key can create a purchase order under it.",
         tier: RiskTier::Routine,
         person_only: false,
         permission: Permission::Prepare,
@@ -419,11 +419,19 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "po.update",
-        summary: "Change a purchase order (person only). Editing a draft sets it up; editing an active PO creates a new revision and never releases existing allocations. Vendor, number and currency cannot change. A later sync cannot change a PO a person has edited.",
+        summary: "Change a purchase order (person only). Editing a draft sets it up; editing an active PO creates a new revision and never releases existing allocations. Vendor, number and currency cannot change. A later sync cannot change a PO a person has edited until po.release_hold.",
         tier: RiskTier::Routine,
         person_only: true,
         permission: Permission::Admin,
         input_schema: r#"{"type":"object","required":["po_id"],"properties":{"po_id":{"type":"string","format":"uuid"},"owner":{"type":["string","null"]},"authorized_cents":{"type":"integer","minimum":1},"reason":{"type":"string"},"service_address":{"type":["string","null"]},"period_start":{"type":["string","null"],"format":"date"},"period_end":{"type":["string","null"],"format":"date"},"lines":{"type":"array","items":{"type":"object","required":["description","amount_cents"],"properties":{"description":{"type":"string"},"quantity":{"type":"number"},"unit":{"type":"string"},"unit_price_cents":{"type":"integer"},"amount_cents":{"type":"integer","minimum":1},"account":{"type":"string"}}}}}}"#,
+    },
+    CommandSpec {
+        name: "po.release_hold",
+        summary: "Clear the hold a person's edit placed on a purchase order (person only), so a later sync can change it. A PO that is not on hold is unchanged. The sync does not clear the hold, and an unchanged body stays unchanged.",
+        tier: RiskTier::Routine,
+        person_only: true,
+        permission: Permission::Admin,
+        input_schema: r#"{"type":"object","required":["po_id"],"properties":{"po_id":{"type":"string","format":"uuid"}}}"#,
     },
     CommandSpec {
         name: "po.activate",
@@ -435,7 +443,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "po.close",
-        summary: "Close an active purchase order, with a reason: fulfilled, expired, settled outside Payvy, or superseded. A person passes po_id; an agent cannot. The agent key named on the standing authorization passes external_source and external_id, and only for that authorization's source. That path is refused while allocations are reserved so a sync leaves the PO for a person. A person's close leaves allocations standing; nothing is released implicitly.",
+        summary: "Close an active purchase order, with a reason: fulfilled, expired, settled outside Payvy, or superseded. A person passes po_id; an agent cannot. The agent key on the standing authorization passes external_source and external_id, and only for that authorization's source and one of its vendors. That path is refused while allocations are reserved so a sync leaves the PO for a person. A person's close leaves allocations standing; nothing is released implicitly.",
         tier: RiskTier::Routine,
         person_only: false,
         permission: Permission::Admin,
@@ -443,7 +451,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "po.cancel",
-        summary: "Cancel a draft or active purchase order, with a reason. A person passes po_id; an agent cannot. The agent key named on the standing authorization passes external_source and external_id, and only for that authorization's source. That path is refused while allocations are reserved so a sync leaves the PO for a person. A person's cancel leaves allocations standing; nothing is released implicitly.",
+        summary: "Cancel a draft or active purchase order, with a reason. A person passes po_id; an agent cannot. The agent key on the standing authorization passes external_source and external_id, and only for that authorization's source and one of its vendors. That path is refused while allocations are reserved so a sync leaves the PO for a person. A person's cancel leaves allocations standing; nothing is released implicitly.",
         tier: RiskTier::Routine,
         person_only: false,
         permission: Permission::Admin,
@@ -483,7 +491,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "po.upsert",
-        summary: "Create or update a purchase order by external source/id. An unknown id is created. A draft is updated. An active PO is revised when the change is a decrease that still covers reserved and consumed amounts, a period or address change, or an increase within a standing authorization. A decrease under amounts already reserved or consumed, an increase above the limit, or any change after a person has edited the PO, is refused and left for a person. Vendor, number and currency cannot change. A closed or cancelled PO is refused. The same body changes nothing. A standing authorization activates a new or draft PO within its per-PO limit only when the caller is the named agent key and the source is the one on the authorization; activated_by is the person who granted it. Any other caller leaves a draft.",
+        summary: "Create or update a purchase order by external source/id. Only the key on the standing authorization can create a PO for that source, and only for a vendor on it. An active or suspended PO is revised only by that key: a decrease that still covers reserved and consumed amounts, a period or address change, or an increase within the limit. Anyone else's change is left for a person. A decrease under amounts already reserved or consumed, an increase above the limit, or any change after a person has edited the PO, is refused. Vendor, number and currency cannot change. A closed or cancelled PO is refused. The same body changes nothing, including while a person hold is set, and an omitted owner leaves the stored owner. The authorization activates a new or draft PO within its per-PO limit; activated_by is the person who granted it. Over the limit, the PO stays a draft.",
         tier: RiskTier::Routine,
         person_only: false,
         permission: Permission::Prepare,
@@ -491,11 +499,11 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "po.source_authorize",
-        summary: "Authorize one agent key to activate its purchase orders, once, up to a per-PO amount. The source is stored here; an upsert activates only when that key is the caller and its source matches. The owner is the person recorded on those POs when the sync names none, and activated_by is the admin who grants this. Over the limit, or from any other caller, a PO stays a draft. Revoke with po.source_revoke. An operator key cannot grant it.",
+        summary: "Authorize one agent key, by its key id, to create, revise, activate, and externally close or cancel purchase orders for one source and named vendors, up to a per-PO amount. The source is stored here. The owner is the person recorded on those POs when the sync names none, and activated_by is the admin who grants this. Over the limit, a PO stays a draft. Another key with the same actor name is not this grant. Revoke with po.source_revoke. An operator key cannot grant it.",
         tier: RiskTier::Routine,
         person_only: true,
         permission: Permission::Admin,
-        input_schema: r#"{"type":"object","required":["source","agent","vendor_ids","max_cents","owner"],"properties":{"source":{"type":"string"},"agent":{"type":"string","description":"Actor name of the agent key"},"vendor_ids":{"type":"array","minItems":1,"items":{"type":"string","format":"uuid"}},"max_cents":{"type":"integer","minimum":1},"owner":{"type":"string"}}}"#,
+        input_schema: r#"{"type":"object","required":["source","key_id","vendor_ids","max_cents","owner"],"properties":{"source":{"type":"string"},"key_id":{"type":"string","format":"uuid","description":"id of the agent key"},"vendor_ids":{"type":"array","minItems":1,"items":{"type":"string","format":"uuid"}},"max_cents":{"type":"integer","minimum":1},"owner":{"type":"string"}}}"#,
     },
     CommandSpec {
         name: "po.source_revoke",
@@ -507,7 +515,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "po.import",
-        summary: "Import a purchase order from another system by external source/id (idempotent). Always lands as a draft: a person activates it with po.activate. opening_consumed_cents records amounts already billed in the source system and is not counted twice on a re-import.",
+        summary: "Import a purchase order from another system by external source/id (idempotent). Always lands as a draft: a person activates it with po.activate. opening_consumed_cents records amounts already billed in the source system and is not counted twice on a re-import. Once a source has a standing authorization, only that key can import an id under it.",
         tier: RiskTier::Routine,
         person_only: false,
         permission: Permission::Prepare,

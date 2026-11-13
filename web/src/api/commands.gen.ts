@@ -620,6 +620,10 @@ export interface PoUpdateInput {
   }[];
 }
 
+export interface PoReleaseHoldInput {
+  po_id: string;
+}
+
 export interface PoActivateInput {
   po_id: string;
 }
@@ -681,9 +685,9 @@ export interface PoUpsertInput {
 export interface PoSourceAuthorizeInput {
   source: string;
   /**
-   * Actor name of the agent key
+   * id of the agent key
    */
-  agent: string;
+  key_id: string;
   /**
    * @minItems 1
    */
@@ -1150,6 +1154,7 @@ export interface CommandInputs {
   "po.configure": PoConfigureInput;
   "po.create": PoCreateInput;
   "po.update": PoUpdateInput;
+  "po.release_hold": PoReleaseHoldInput;
   "po.activate": PoActivateInput;
   "po.close": PoCloseInput;
   "po.cancel": PoCancelInput;
@@ -1263,19 +1268,20 @@ export const COMMANDS: Record<CommandName, { tier: Tier; personOnly: boolean; su
   "auto_pay.raise_limit": { tier: "confirmed", personOnly: true, summary: "Raise the company's auto-pay limit (vendors with their own limit keep it), or with vendor_id set a vendor's own limit above what applies to it now (it may be above the company's), or remove a vendor's own limit when the company's is higher (limit_cents null). Only a person may change a limit. The preview lists the bills that would start paying automatically; commit with the returned token." },
   "po.settings": { tier: "read", personOnly: false, summary: "Whether purchase orders are on for this company. Off (the default) refuses every po.* write and never blocks a payment; reads still work." },
   "po.configure": { tier: "routine", personOnly: true, summary: "Turn purchase orders on or off for the company (person only). When on, each vendor's settings decide whether its bills require a PO, applying at once to bills in flight. Turning them off lifts the payment gate; allocations stay on record." },
-  "po.create": { tier: "routine", personOnly: false, summary: "Create a draft purchase order for a vendor. Nothing matches against it until a person activates it with po.activate." },
-  "po.update": { tier: "routine", personOnly: true, summary: "Change a purchase order (person only). Editing a draft sets it up; editing an active PO creates a new revision and never releases existing allocations. Vendor, number and currency cannot change. A later sync cannot change a PO a person has edited." },
+  "po.create": { tier: "routine", personOnly: false, summary: "Create a draft purchase order for a vendor. Nothing matches against it until a person activates it with po.activate. Once a source has a standing authorization, only that key can create a purchase order under it." },
+  "po.update": { tier: "routine", personOnly: true, summary: "Change a purchase order (person only). Editing a draft sets it up; editing an active PO creates a new revision and never releases existing allocations. Vendor, number and currency cannot change. A later sync cannot change a PO a person has edited until po.release_hold." },
+  "po.release_hold": { tier: "routine", personOnly: true, summary: "Clear the hold a person's edit placed on a purchase order (person only), so a later sync can change it. A PO that is not on hold is unchanged. The sync does not clear the hold, and an unchanged body stays unchanged." },
   "po.activate": { tier: "routine", personOnly: true, summary: "Activate a draft purchase order (person only). Requires an owner and an authorized amount. Imported POs arrive as drafts and are activated this way; an import never activates." },
-  "po.close": { tier: "routine", personOnly: false, summary: "Close an active purchase order, with a reason: fulfilled, expired, settled outside Payvy, or superseded. A person passes po_id; an agent cannot. The agent key named on the standing authorization passes external_source and external_id, and only for that authorization's source. That path is refused while allocations are reserved so a sync leaves the PO for a person. A person's close leaves allocations standing; nothing is released implicitly." },
-  "po.cancel": { tier: "routine", personOnly: false, summary: "Cancel a draft or active purchase order, with a reason. A person passes po_id; an agent cannot. The agent key named on the standing authorization passes external_source and external_id, and only for that authorization's source. That path is refused while allocations are reserved so a sync leaves the PO for a person. A person's cancel leaves allocations standing; nothing is released implicitly." },
+  "po.close": { tier: "routine", personOnly: false, summary: "Close an active purchase order, with a reason: fulfilled, expired, settled outside Payvy, or superseded. A person passes po_id; an agent cannot. The agent key on the standing authorization passes external_source and external_id, and only for that authorization's source and one of its vendors. That path is refused while allocations are reserved so a sync leaves the PO for a person. A person's close leaves allocations standing; nothing is released implicitly." },
+  "po.cancel": { tier: "routine", personOnly: false, summary: "Cancel a draft or active purchase order, with a reason. A person passes po_id; an agent cannot. The agent key on the standing authorization passes external_source and external_id, and only for that authorization's source and one of its vendors. That path is refused while allocations are reserved so a sync leaves the PO for a person. A person's cancel leaves allocations standing; nothing is released implicitly." },
   "po.suspend": { tier: "routine", personOnly: true, summary: "Suspend an active purchase order (person only), with a reason: allocations already made stand, new ones are refused, and its bills wait (suspended_po) until po.reactivate or a scoped po.override." },
   "po.reactivate": { tier: "routine", personOnly: true, summary: "Reactivate a suspended purchase order (person only): it takes allocations again and its bills stop waiting on the suspension." },
   "po.get": { tier: "read", personOnly: false, summary: "A purchase order: lifecycle, billing progress, authorized/reserved/consumed/available, its current lines, revisions and allocation history." },
   "po.list": { tier: "read", personOnly: false, summary: "Purchase orders, optionally for one vendor, each with authorized/reserved/consumed/available (none on a closed or canceled PO) and billing progress." },
-  "po.upsert": { tier: "routine", personOnly: false, summary: "Create or update a purchase order by external source/id. An unknown id is created. A draft is updated. An active PO is revised when the change is a decrease that still covers reserved and consumed amounts, a period or address change, or an increase within a standing authorization. A decrease under amounts already reserved or consumed, an increase above the limit, or any change after a person has edited the PO, is refused and left for a person. Vendor, number and currency cannot change. A closed or cancelled PO is refused. The same body changes nothing. A standing authorization activates a new or draft PO within its per-PO limit only when the caller is the named agent key and the source is the one on the authorization; activated_by is the person who granted it. Any other caller leaves a draft." },
-  "po.source_authorize": { tier: "routine", personOnly: true, summary: "Authorize one agent key to activate its purchase orders, once, up to a per-PO amount. The source is stored here; an upsert activates only when that key is the caller and its source matches. The owner is the person recorded on those POs when the sync names none, and activated_by is the admin who grants this. Over the limit, or from any other caller, a PO stays a draft. Revoke with po.source_revoke. An operator key cannot grant it." },
+  "po.upsert": { tier: "routine", personOnly: false, summary: "Create or update a purchase order by external source/id. Only the key on the standing authorization can create a PO for that source, and only for a vendor on it. An active or suspended PO is revised only by that key: a decrease that still covers reserved and consumed amounts, a period or address change, or an increase within the limit. Anyone else's change is left for a person. A decrease under amounts already reserved or consumed, an increase above the limit, or any change after a person has edited the PO, is refused. Vendor, number and currency cannot change. A closed or cancelled PO is refused. The same body changes nothing, including while a person hold is set, and an omitted owner leaves the stored owner. The authorization activates a new or draft PO within its per-PO limit; activated_by is the person who granted it. Over the limit, the PO stays a draft." },
+  "po.source_authorize": { tier: "routine", personOnly: true, summary: "Authorize one agent key, by its key id, to create, revise, activate, and externally close or cancel purchase orders for one source and named vendors, up to a per-PO amount. The source is stored here. The owner is the person recorded on those POs when the sync names none, and activated_by is the admin who grants this. Over the limit, a PO stays a draft. Another key with the same actor name is not this grant. Revoke with po.source_revoke. An operator key cannot grant it." },
   "po.source_revoke": { tier: "routine", personOnly: true, summary: "Revoke a standing purchase-order authorization. Later syncs stop activating POs under it. POs already activated stay as they are." },
-  "po.import": { tier: "routine", personOnly: false, summary: "Import a purchase order from another system by external source/id (idempotent). Always lands as a draft: a person activates it with po.activate. opening_consumed_cents records amounts already billed in the source system and is not counted twice on a re-import." },
+  "po.import": { tier: "routine", personOnly: false, summary: "Import a purchase order from another system by external source/id (idempotent). Always lands as a draft: a person activates it with po.activate. opening_consumed_cents records amounts already billed in the source system and is not counted twice on a re-import. Once a source has a standing authorization, only that key can import an id under it." },
   "po.vendor_settings": { tier: "read", personOnly: false, summary: "A vendor's purchase-order settings: whether its bills require a PO, and its overage caps (dollar and/or percentage in basis points). Caps are pinned onto each PO revision when it is made." },
   "po.set_vendor_settings": { tier: "routine", personOnly: true, summary: "Set a vendor's purchase-order settings (person only): whether its bills require a PO, and overage caps. Zero overage is the default; an absent cap is not configured, a cap of 0 is zero. Existing PO revisions keep the allowance pinned on them." },
   "po.policy_get": { tier: "read", personOnly: false, summary: "A vendor's PO policies in force (the enumerated registry): over_period (flag_only or require_full_cover), quantity_matching (flag_only or enforce), and the version. Version 0 is the defaults: flag; do not silently match." },

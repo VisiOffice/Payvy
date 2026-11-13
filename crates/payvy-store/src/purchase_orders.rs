@@ -781,6 +781,10 @@ pub async fn lock_po_by_external(
 
 pub struct FeedFields<'a> {
     pub owner: Option<&'a str>,
+    /// When false, an update leaves the stored owner alone. An omitted
+    /// owner and an owner sent as empty both arrive as `None`, so the
+    /// caller says which one this request was.
+    pub write_owner: bool,
     pub service_address: Option<&'a str>,
     pub period_start: Option<NaiveDate>,
     pub period_end: Option<NaiveDate>,
@@ -841,9 +845,10 @@ pub async fn update_feed(
     now: DateTime<Utc>,
 ) -> anyhow::Result<()> {
     sqlx::query(
-        "UPDATE purchase_orders SET owner = $2, service_address = $3, period_start = $4, period_end = $5, vendor_reference = $6, metadata = $7, final_period = $8, body_hash = $9, updated_at = $10 WHERE id = $1",
+        "UPDATE purchase_orders SET owner = CASE WHEN $2 THEN $3 ELSE owner END, service_address = $4, period_start = $5, period_end = $6, vendor_reference = $7, metadata = $8, final_period = $9, body_hash = $10, updated_at = $11 WHERE id = $1",
     )
     .bind(id)
+    .bind(feed.write_owner)
     .bind(feed.owner)
     .bind(feed.service_address)
     .bind(feed.period_start)
@@ -870,11 +875,21 @@ pub async fn hold_for_person(tx: &mut Tx, id: Uuid, now: DateTime<Utc>) -> anyho
     Ok(())
 }
 
+/// A person lifted the hold. The stored body hash stays unset until the next sync.
+pub async fn clear_person_hold(tx: &mut Tx, id: Uuid, now: DateTime<Utc>) -> anyhow::Result<()> {
+    sqlx::query("UPDATE purchase_orders SET person_hold = false, updated_at = $2 WHERE id = $1")
+        .bind(id)
+        .bind(now)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 pub struct SourceAuth {
     pub id: Uuid,
     pub source: String,
-    pub agent: String,
+    pub key_id: Uuid,
     pub max_cents: Cents,
     pub owner: String,
     pub authorized_by: String,
@@ -885,7 +900,7 @@ fn source_auth_row(r: &PgRow) -> SourceAuth {
     SourceAuth {
         id: r.get("id"),
         source: r.get("source"),
-        agent: r.get("agent"),
+        key_id: r.get("key_id"),
         max_cents: r.get("max_cents"),
         owner: r.get("owner"),
         authorized_by: r.get("authorized_by"),
@@ -893,33 +908,55 @@ fn source_auth_row(r: &PgRow) -> SourceAuth {
     }
 }
 
-/// Active authorizations for this agent key and vendor. The caller picks the
-/// one whose stored source matches; the request does not look one up.
-pub async fn active_auths_for_agent(
+/// Active authorizations for this key and vendor. The caller picks the
+/// one whose stored source matches. A revoked key matches nothing.
+pub async fn active_auths_for_key(
     tx: &mut Tx,
-    agent: &str,
+    key_id: Uuid,
     vendor_id: Uuid,
 ) -> anyhow::Result<Vec<SourceAuth>> {
     let rows = sqlx::query(
-        "SELECT a.id, a.source, a.agent, a.max_cents, a.owner, a.authorized_by, a.revoked_at \
+        "SELECT a.id, a.source, a.key_id, a.max_cents, a.owner, a.authorized_by, a.revoked_at \
          FROM po_source_authorizations a \
          JOIN po_source_authorization_vendors v ON v.authorization_id = a.id \
-         WHERE a.revoked_at IS NULL AND a.agent = $1 AND v.vendor_id = $2",
+         JOIN api_keys k ON k.id = a.key_id AND k.revoked_at IS NULL \
+         WHERE a.revoked_at IS NULL AND a.key_id = $1 AND v.vendor_id = $2",
     )
-    .bind(agent)
+    .bind(key_id)
     .bind(vendor_id)
     .fetch_all(&mut **tx)
     .await?;
     Ok(rows.iter().map(source_auth_row).collect())
 }
 
-/// The key named on an active authorization for this source, whatever the vendor.
-pub async fn agent_source_active(tx: &mut Tx, agent: &str, source: &str) -> anyhow::Result<bool> {
+/// This key may close or cancel a PO of this source and vendor.
+pub async fn key_can_end(
+    tx: &mut Tx,
+    key_id: Uuid,
+    source: &str,
+    vendor_id: Uuid,
+) -> anyhow::Result<bool> {
+    let row = sqlx::query(
+        "SELECT 1 AS ok FROM po_source_authorizations a \
+         JOIN po_source_authorization_vendors v ON v.authorization_id = a.id \
+         JOIN api_keys k ON k.id = a.key_id AND k.revoked_at IS NULL \
+         WHERE a.revoked_at IS NULL AND a.key_id = $1 AND a.source = $2 AND v.vendor_id = $3 \
+         LIMIT 1",
+    )
+    .bind(key_id)
+    .bind(source)
+    .bind(vendor_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(row.is_some())
+}
+
+/// Some unrevoked authorization already covers this source.
+pub async fn source_has_active_auth(tx: &mut Tx, source: &str) -> anyhow::Result<bool> {
     let row = sqlx::query(
         "SELECT 1 AS ok FROM po_source_authorizations \
-         WHERE revoked_at IS NULL AND agent = $1 AND source = $2 LIMIT 1",
+         WHERE revoked_at IS NULL AND source = $1 LIMIT 1",
     )
-    .bind(agent)
     .bind(source)
     .fetch_optional(&mut **tx)
     .await?;
@@ -928,7 +965,7 @@ pub async fn agent_source_active(tx: &mut Tx, agent: &str, source: &str) -> anyh
 
 pub async fn source_auth(tx: &mut Tx, id: Uuid) -> anyhow::Result<Option<SourceAuth>> {
     let row = sqlx::query(
-        "SELECT id, source, agent, max_cents, owner, authorized_by, revoked_at FROM po_source_authorizations WHERE id = $1",
+        "SELECT id, source, key_id, max_cents, owner, authorized_by, revoked_at FROM po_source_authorizations WHERE id = $1",
     )
     .bind(id)
     .fetch_optional(&mut **tx)
@@ -965,7 +1002,7 @@ pub async fn vendors_already_authorized(
 
 pub struct NewSourceAuth<'a> {
     pub source: &'a str,
-    pub agent: &'a str,
+    pub key_id: Uuid,
     pub max_cents: Cents,
     pub owner: &'a str,
     pub vendor_ids: &'a [Uuid],
@@ -980,12 +1017,12 @@ pub async fn insert_source_auth(
 ) -> anyhow::Result<Uuid> {
     let id = Uuid::new_v4();
     sqlx::query(
-        "INSERT INTO po_source_authorizations (id, org_id, source, agent, max_cents, owner, authorized_by, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+        "INSERT INTO po_source_authorizations (id, org_id, source, key_id, max_cents, owner, authorized_by, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
     )
     .bind(id)
     .bind(org)
     .bind(auth.source)
-    .bind(auth.agent)
+    .bind(auth.key_id)
     .bind(auth.max_cents)
     .bind(auth.owner)
     .bind(auth.by)

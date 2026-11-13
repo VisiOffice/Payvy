@@ -358,6 +358,7 @@ async fn execute(cx: &mut Cx<'_>, name: &str, input: &Value) -> Result<Value, Co
         "po.configure" => purchase_orders::configure(cx, parse(input)?).await,
         "po.create" => purchase_orders::create(cx, parse(input)?).await,
         "po.update" => purchase_orders::update(cx, parse(input)?).await,
+        "po.release_hold" => purchase_orders::release_hold(cx, parse(input)?).await,
         "po.activate" => purchase_orders::activate(cx, parse(input)?).await,
         "po.close" => purchase_orders::close(cx, parse(input)?, "closed").await,
         "po.cancel" => purchase_orders::close(cx, parse(input)?, "canceled").await,
