@@ -22,6 +22,11 @@ enum Command {
         /// confirm tokens. At least 32 characters.
         #[arg(long, env = "PAYVY_API_KEY", hide_env_values = true)]
         api_key: String,
+        /// Cross-company service credential for `/operator/*` (provisioning
+        /// and usage summaries). Never tied to a company or stored in `api_keys`.
+        /// At least 32 characters and distinct from PAYVY_API_KEY.
+        #[arg(long, env = "PAYVY_OPERATOR_KEY", hide_env_values = true)]
+        operator_key: Option<String>,
         #[command(flatten)]
         storage: StorageArgs,
         #[command(flatten)]
@@ -64,14 +69,25 @@ enum Command {
     /// Print every command with its input schema as JSON. The web app's
     /// typed client is generated from this (web/scripts/gen-api.mjs).
     Commands,
+    /// Provision and list organizations across this install.
+    Org {
+        #[command(subcommand)]
+        command: OrgCommand,
+    },
     /// Let someone sign in to the web app (the same as person.add, run as
     /// admin). For the first person; after that, people add each other.
     Person {
+        /// Organization UUID (defaults to the initial single-company org).
+        #[arg(long, global = true, default_value_t = payvy_store::DEFAULT_ORG)]
+        org: uuid::Uuid,
         #[command(subcommand)]
         command: PersonCommand,
     },
     /// Manage API keys for people and agents.
     Key {
+        /// Organization UUID (defaults to the initial single-company org).
+        #[arg(long, global = true, default_value_t = payvy_store::DEFAULT_ORG)]
+        org: uuid::Uuid,
         #[command(subcommand)]
         command: KeyCommand,
     },
@@ -259,6 +275,30 @@ impl WebArgs {
 }
 
 #[derive(Subcommand)]
+enum OrgCommand {
+    /// Create a company, its first Admin person, and built-in defaults in one transaction.
+    Create {
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        admin_email: String,
+        #[arg(long)]
+        admin_name: String,
+        /// Defaults to the normalized part of admin_email before @.
+        #[arg(long)]
+        admin_actor: Option<String>,
+        /// Caller-supplied idempotency key; defaults to a fresh UUID v4.
+        #[arg(long)]
+        idempotency_key: Option<String>,
+    },
+    /// List organizations across this install.
+    List {
+        #[arg(long, default_value_t = 500)]
+        limit: i64,
+    },
+}
+
+#[derive(Subcommand)]
 enum PersonCommand {
     Add {
         #[arg(long)]
@@ -298,6 +338,7 @@ enum Kind {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
@@ -322,6 +363,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Serve {
             bind,
             ref api_key,
+            ref operator_key,
             storage,
             inbound,
             extract,
@@ -337,9 +379,23 @@ async fn main() -> anyhow::Result<()> {
                 api_key.len() >= 32,
                 "PAYVY_API_KEY must be at least 32 characters"
             );
+            if let Some(op_key) = operator_key {
+                anyhow::ensure!(
+                    op_key.len() >= 32,
+                    "PAYVY_OPERATOR_KEY must be at least 32 characters"
+                );
+                anyhow::ensure!(
+                    !payvy_server::secret_eq(op_key, &api_key),
+                    "PAYVY_OPERATOR_KEY must differ from PAYVY_API_KEY"
+                );
+            }
             // Settings mistakes fail now, before anything connects.
             let mailer = web.mailer()?;
             let mut state = payvy_server::AppState::connect(&database_url()?, &api_key).await?;
+            if let Some(op_key) = operator_key {
+                tracing::info!("operator API enabled");
+                state = state.with_operator_key(op_key);
+            }
             let create_bucket = storage.s3_create_bucket;
             match storage.config() {
                 Some(config) => {
@@ -468,7 +524,45 @@ async fn main() -> anyhow::Result<()> {
                 }))?
             );
         }
+        Command::Org { command } => {
+            let store = payvy_store::Store::connect(&database_url()?).await?;
+            let (unused, _) = payvy_server::new_api_key()?;
+            let state = payvy_server::AppState::new(store, &unused);
+            let (name, input) = match command {
+                OrgCommand::Create {
+                    name,
+                    admin_email,
+                    admin_name,
+                    admin_actor,
+                    idempotency_key,
+                } => {
+                    let key = idempotency_key.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                    (
+                        "org.create",
+                        serde_json::json!({
+                            "idempotency_key": key,
+                            "name": name,
+                            "admin_email": admin_email,
+                            "admin_name": admin_name,
+                            "admin_actor": admin_actor,
+                        }),
+                    )
+                }
+                OrgCommand::List { limit } => ("org.list", serde_json::json!({ "limit": limit })),
+            };
+            let out = payvy_server::operator::run(
+                &state,
+                name,
+                input,
+                payvy_server::commands::Mode::Commit {
+                    confirm_token: None,
+                },
+            )
+            .await?;
+            println!("{}", serde_json::to_string_pretty(&out["result"])?);
+        }
         Command::Person {
+            org,
             command:
                 PersonCommand::Add {
                     email,
@@ -478,11 +572,19 @@ async fn main() -> anyhow::Result<()> {
                 },
         } => {
             let store = payvy_store::Store::connect(&database_url()?).await?;
+            {
+                let mut tx = store.begin(org).await?;
+                anyhow::ensure!(
+                    payvy_store::organization(&mut tx, org).await?.is_some(),
+                    "organization {org} not found"
+                );
+                tx.rollback().await?;
+            }
             let (unused, _) = payvy_server::new_api_key()?;
             let state = payvy_server::AppState::new(store, &unused);
             let out = payvy_server::commands::run(
                 &state,
-                &payvy_server::Actor::administrator(payvy_store::DEFAULT_ORG, "admin"),
+                &payvy_server::Actor::administrator(org, "admin"),
                 "person.add",
                 serde_json::json!({ "email": email, "name": name, "actor": actor, "roles": roles }),
                 payvy_server::commands::Mode::Commit {
@@ -493,6 +595,7 @@ async fn main() -> anyhow::Result<()> {
             println!("{}", serde_json::to_string_pretty(&out["result"])?);
         }
         Command::Key {
+            org,
             command: KeyCommand::Create { actor, kind },
         } => {
             let actor = actor.trim();
@@ -503,21 +606,26 @@ async fn main() -> anyhow::Result<()> {
                 Kind::Person => ActorKind::Person,
                 Kind::Agent => ActorKind::Agent,
             };
-            if kind == ActorKind::Person {
-                let mut tx = store.begin(payvy_store::DEFAULT_ORG).await?;
+            {
+                let mut tx = store.begin(org).await?;
                 anyhow::ensure!(
-                    !payvy_store::actor_roles(&mut tx, payvy_store::DEFAULT_ORG, actor)
-                        .await?
-                        .is_empty(),
-                    "this person has no company roles; add them with person add first"
+                    payvy_store::organization(&mut tx, org).await?.is_some(),
+                    "organization {org} not found"
                 );
+                if kind == ActorKind::Person {
+                    anyhow::ensure!(
+                        !payvy_store::actor_roles(&mut tx, org, actor)
+                            .await?
+                            .is_empty(),
+                        "this person has no company roles in organization {org}; add them with person add --org {org} first"
+                    );
+                }
+                tx.rollback().await?;
             }
-            store
-                .insert_api_key(payvy_store::DEFAULT_ORG, actor, kind, &hash)
-                .await?;
+            store.insert_api_key(org, actor, kind, &hash).await?;
             println!("{key}");
             eprintln!(
-                "Key for {} {actor}. Shown once; store it now.",
+                "Key for {} {actor} in organization {org}. Shown once; store it now.",
                 kind.as_str()
             );
         }

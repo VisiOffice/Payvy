@@ -27,7 +27,7 @@ pub struct Add {
     roles: Option<Vec<Role>>,
 }
 
-fn valid_actor(a: &str) -> bool {
+pub(crate) fn valid_actor(a: &str) -> bool {
     let mut chars = a.chars();
     a.len() <= 64
         && chars

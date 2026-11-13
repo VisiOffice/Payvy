@@ -17,6 +17,8 @@ mod ledger;
 
 /// The ledger worker runs queued posting jobs (see `ledger_jobs`).
 pub(crate) use ledger::{JobOutcome, execute_job};
+pub(crate) use org::valid_name as valid_org_name;
+pub(crate) use people::valid_actor;
 mod notifications;
 mod org;
 mod payee_invites;
@@ -133,7 +135,14 @@ pub async fn run(
     input: Value,
     mode: Mode,
 ) -> Result<Value, CommandError> {
-    let spec = commands::find(name).ok_or_else(|| CommandError::Unknown(name.to_owned()))?;
+    let Some(spec) = commands::find(name) else {
+        if commands::find_operator(name).is_some() {
+            return Err(CommandError::Forbidden(format!(
+                "{name} requires the operator credential"
+            )));
+        }
+        return Err(CommandError::Unknown(name.to_owned()));
+    };
     if spec.person_only && actor.kind != ActorKind::Person {
         return Err(CommandError::PersonOnly(spec.name));
     }
@@ -167,7 +176,7 @@ pub async fn run(
         ) => {
             state
                 .confirm
-                .check(t, spec.name, &input)
+                .check(t, actor.org_id, spec.name, &input)
                 .map_err(CommandError::BadToken)?;
         }
         _ => {}
@@ -248,7 +257,7 @@ pub async fn run(
         "events": events,
     });
     if preview && spec.tier == RiskTier::Confirmed {
-        out["confirm_token"] = json!(state.confirm.issue(spec.name, &input));
+        out["confirm_token"] = json!(state.confirm.issue(actor.org_id, spec.name, &input));
     }
     Ok(out)
 }

@@ -10,6 +10,7 @@ pub mod mailer;
 pub mod mcp;
 pub mod mercury_webhook;
 pub mod notification_worker;
+pub mod operator;
 pub mod page_count;
 pub mod payment_worker;
 pub mod secrets;
@@ -100,6 +101,9 @@ pub struct AppState {
     /// `admin` in the default organization and signs confirm tokens. Keys
     /// for named people and agents live in `api_keys`.
     pub admin_key: Arc<str>,
+    /// Cross-company service credential from PAYVY_OPERATOR_KEY. Never stored
+    /// in `api_keys` and not tied to any company (`org_id`).
+    pub operator_key: Option<Arc<str>>,
     pub confirm: Arc<Confirmer>,
     pub clock: Clock,
     /// None when no object store is configured: document commands then say
@@ -167,6 +171,7 @@ impl AppState {
         Self {
             store,
             admin_key: admin_key.into(),
+            operator_key: None,
             confirm: Arc::new(Confirmer::new(admin_key.as_bytes())),
             clock: Arc::new(Utc::now),
             storage: None,
@@ -219,6 +224,29 @@ impl AppState {
         self.ledger = Some(Arc::new(ledger));
         self
     }
+
+    pub fn with_operator_key(mut self, key: &str) -> Self {
+        assert!(
+            key.len() >= 32,
+            "operator_key must be at least 32 characters"
+        );
+        assert!(
+            !secret_eq(key, &self.admin_key),
+            "operator_key must differ from admin_key"
+        );
+        self.operator_key = Some(key.into());
+        self
+    }
+
+    pub(crate) fn is_admin_key(&self, given: &str) -> bool {
+        !self.admin_key.is_empty() && secret_eq(given, &self.admin_key)
+    }
+
+    pub(crate) fn is_operator_key(&self, given: &str) -> bool {
+        self.operator_key
+            .as_deref()
+            .is_some_and(|op| !op.is_empty() && secret_eq(given, op))
+    }
 }
 
 /// A new random API key and the hash that gets stored. The key is shown once.
@@ -255,9 +283,11 @@ pub fn router(state: AppState) -> Router {
             email::MAX_RAW_BYTES + 1024,
         ));
     let web_dir = state.web_dir.clone();
+    let operator_routes = operator::routes(state.clone());
     let api = Router::new()
         .route("/health", get(health))
         .merge(authed)
+        .merge(operator_routes)
         .merge(webhooks)
         .merge(auth::routes())
         .with_state(state);
@@ -292,8 +322,22 @@ async fn authenticate(State(state): State<AppState>, mut req: Request, next: Nex
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .map(str::to_owned);
+    if let Some(ref k) = given
+        && state.is_operator_key(k)
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": {
+                    "code": "forbidden",
+                    "message": "operator credential cannot be used on company endpoints"
+                }
+            })),
+        )
+            .into_response();
+    }
     let actor = match given {
-        Some(k) if constant_time_eq(k.as_bytes(), state.admin_key.as_bytes()) => {
+        Some(k) if state.is_admin_key(&k) => {
             Some(Actor::administrator(payvy_store::DEFAULT_ORG, "admin"))
         }
         Some(k) => match state.store.actor_for_key_hash(&hash_key(&k)).await {
@@ -342,8 +386,15 @@ async fn authenticate(State(state): State<AppState>, mut req: Request, next: Nex
     }
 }
 
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+/// Constant-time comparison over fixed-size SHA-256 digests so neither secret
+/// contents nor secret lengths leak via timing.
+pub fn secret_eq(a: &str, b: &str) -> bool {
+    let ha = Sha256::digest(a.as_bytes());
+    let hb = Sha256::digest(b.as_bytes());
+    ha.iter()
+        .zip(hb.iter())
+        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+        == 0
 }
 
 /// The commands this caller may run: an agent doesn't see person-only ones.

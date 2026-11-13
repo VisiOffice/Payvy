@@ -122,6 +122,9 @@ and uses no repository secrets.
 - **API traffic:** Cloudflare DNS (`dev.payvy.com`, DNS-only A record) → host nginx, TLS from
   certbot (`deploy/nginx-payvy-beta.conf`) → kamal-proxy on `127.0.0.1:8090` → the app on
   7430. kamal-proxy is shared: its `proxy.run` settings must match the other apps on the box.
+  Host nginx blocks `/operator` (`location ^~ /operator { return 404; }`), and Kamal does **not**
+  deploy `/etc/nginx/sites-available/payvy` — always apply and reload `deploy/nginx-payvy-beta.conf`
+  via `deploy/setup-host.sh` on `thatch-api-prod` **before** setting `PAYVY_OPERATOR_KEY` in Kamal.
 - **Documents:** R2 bucket `payvy-documents` in the Robert@payvy.com Cloudflare account.
 - **Inbound email:** `in.payvy.com` on the payvy.com Email Routing. The zone's catch-all still
   belongs to the legacy app's `payvy-email-worker`, which hands `@in.payvy.com` mail to
