@@ -218,13 +218,16 @@ async fn me(state: &AppState, s: &SignedIn) -> anyhow::Result<Value> {
     tx.rollback().await?;
     // The other companies this address can switch to.
     let companies = state.store.companies_for_email(&s.person.email).await?;
+    let mut plan = crate::entitlements::view(state.hosted, stored.as_ref());
+    // Whether Settings > Billing can work here (hosted, with the settings).
+    plan["billing"] = json!(state.hosted && state.billing.is_some());
     Ok(json!({
         "roles": roles, "commands": commands,
         "person": { "actor": s.person.actor, "name": s.person.name, "email": s.person.email },
         "organization": { "id": s.person.org_id, "name": s.org_name },
         "companies": companies,
         "features": { "purchase_orders": purchase_orders },
-        "plan": crate::entitlements::view(state.hosted, stored.as_ref()),
+        "plan": plan,
     }))
 }
 

@@ -96,7 +96,7 @@ export function Shell({ children }: { children: ReactNode }) {
   const openSettings = useCallback(() => navigate('/settings'), [navigate]);
   useGoToSettings(openSettings);
   const groups = SETTINGS
-    .map(g => ({ ...g, items: g.items.filter(i => (!i.command || can(i.command)) && (!i.hostedOnly || !!me.plan?.hosted)) }))
+    .map(g => ({ ...g, items: g.items.filter(i => (!i.command || can(i.command)) && (!i.hostedOnly || !!me.plan?.billing)) }))
     .filter(g => g.items.length > 0);
   const [waiting, setWaiting] = useState<number | null>(null);
 
