@@ -72,6 +72,26 @@ A person whose address belongs to several companies gets one link. Opening it li
 companies, and they pick one; the company menu switches between them later. Each choice and
 switch checks membership at that moment, and a session belongs to one company.
 
+## Billing (Settings > Billing)
+
+Plans are paid through Stripe, which the private management app owns: prices, Checkout, the
+customer portal, webhooks and the plan policy. The core keeps no Stripe state. It asks the
+management app, server to server, with `PAYVY_BILLING_URL` and `PAYVY_BILLING_KEY`:
+
+- `billing.get` shows the subscription as the management app last saw it, and the plan in force.
+- `billing.checkout {plan: byoa|managed}` returns a Checkout link. A company that already
+  subscribes gets the portal instead, never a second subscription.
+- `billing.portal` returns the portal link, to change plan or card, see invoices or cancel.
+
+`billing.get` is a shared read, open to agents too: it carries no links. The other two are
+person-only and need Admin. The company id comes from the session and the
+email from the person asking; the return URL is `PAYVY_PUBLIC_URL/settings/billing`. Opening a
+link appends `billing.checkout_opened` or `billing.portal_opened`, without the link, which is a
+bearer URL for the company's billing. Nothing here changes what a company may do: the plan
+changes only when Stripe confirms and the management app calls `entitlement.set`. Preview asks
+nothing. Self-hosted Payvy, or a hosted install without the two settings, answers
+`not_configured`; a refusal or an outage of the management app is `billing_error` (502).
+
 ## Turning hosted mode on (rollout)
 
 Before setting `PAYVY_HOSTED=true` on an install with companies already in use, give each of

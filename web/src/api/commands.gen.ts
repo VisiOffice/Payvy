@@ -860,6 +860,14 @@ export interface PersonRemoveInput {
 
 export interface OrgGetInput {}
 
+export interface BillingGetInput {}
+
+export interface BillingCheckoutInput {
+  plan: "byoa" | "managed";
+}
+
+export interface BillingPortalInput {}
+
 export interface OrgUpdateInput {
   name: string;
 }
@@ -1206,6 +1214,9 @@ export interface CommandInputs {
   "person.set_roles": PersonSetRolesInput;
   "person.remove": PersonRemoveInput;
   "org.get": OrgGetInput;
+  "billing.get": BillingGetInput;
+  "billing.checkout": BillingCheckoutInput;
+  "billing.portal": BillingPortalInput;
   "org.update": OrgUpdateInput;
   "bank.authorize": BankAuthorizeInput;
   "bank.complete_authorization": BankCompleteAuthorizationInput;
@@ -1326,6 +1337,9 @@ export const COMMANDS: Record<CommandName, { tier: Tier; personOnly: boolean; su
   "person.set_roles": { tier: "routine", personOnly: true, summary: "Set a person's company roles. Admin only; roles combine. Cannot remove the last sign-in admin. Changes take effect on their next command, including an existing session or person API key. Audit records old and new roles." },
   "person.remove": { tier: "routine", personOnly: true, summary: "Stop someone signing in, and sign them out everywhere. Their past actions stay on the record. Refused for yourself (someone else removes you) and for the last person who can sign in." },
   "org.get": { tier: "read", personOnly: false, summary: "This organization: its id, its name as people see it in the app and sign-in emails, and when it was created." },
+  "billing.get": { tier: "read", personOnly: false, summary: "Hosted Payvy only: this company's subscription (plan, status, trial and period end) as the billing service last saw it, and what its plan allows now. No links: opening Checkout or the portal is billing.checkout or billing.portal, for an Admin." },
+  "billing.checkout": { tier: "routine", personOnly: true, summary: "Hosted Payvy only: a Stripe Checkout link to subscribe this company to a plan (byoa: bring your own agent, reader off; managed: Payvy reads invoices). A company that already subscribes gets the billing portal instead. The plan changes only when Stripe confirms the payment, never by opening the link. Admin." },
+  "billing.portal": { tier: "routine", personOnly: true, summary: "Hosted Payvy only: a link to the Stripe billing portal, to change plan or card, see invoices or cancel. Admin." },
   "org.update": { tier: "routine", personOnly: true, summary: "Rename the organization. The name is trimmed, 1 to 100 characters, and must differ from the current one. Bills, vendors and events are unchanged." },
   "bank.authorize": { tier: "routine", personOnly: true, summary: "Begin Ramp OAuth with read scopes. Returns a consent URL; the current bank remains active. Authorization expires after ten minutes." },
   "bank.complete_authorization": { tier: "routine", personOnly: true, summary: "Complete Ramp OAuth for the same person and company. Seals credentials but does not activate a connection. Never retry an unclear code exchange; start authorization again." },

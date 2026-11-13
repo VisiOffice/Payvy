@@ -6,6 +6,7 @@ mod approval_rules;
 mod auto_pay;
 mod bank;
 mod bill_batches;
+mod billing;
 mod bills;
 mod documents;
 mod email;
@@ -69,6 +70,9 @@ pub enum CommandError {
     /// The customer's bank refused or didn't answer.
     #[error("{0}")]
     Bank(String),
+    /// The hosted management app refused or didn't answer (`billing.*`).
+    #[error("{0}")]
+    Billing(String),
     /// A ledger refusal with the stable code a person acts on. The link row
     /// is kept: `run` commits this error instead of rolling it back.
     #[error("{detail}")]
@@ -91,6 +95,7 @@ impl CommandError {
             CommandError::NotConfigured(_) => "not_configured",
             CommandError::NotEntitled(_) => "not_entitled",
             CommandError::Bank(_) => "bank_error",
+            CommandError::Billing(_) => "billing_error",
             CommandError::Ledger { code, .. } => code,
             CommandError::Internal(_) => "internal",
         }
@@ -112,7 +117,7 @@ impl CommandError {
             | CommandError::Forbidden(_)
             | CommandError::NotEntitled(_) => StatusCode::FORBIDDEN,
             CommandError::NotConfigured(_) => StatusCode::SERVICE_UNAVAILABLE,
-            CommandError::Bank(_) => StatusCode::BAD_GATEWAY,
+            CommandError::Bank(_) | CommandError::Billing(_) => StatusCode::BAD_GATEWAY,
             CommandError::Ledger { code, .. } => match *code {
                 "conflict" => StatusCode::CONFLICT,
                 "needs_auth" | "concurrency" | "timeout" => StatusCode::SERVICE_UNAVAILABLE,
@@ -216,6 +221,7 @@ pub async fn run(
         auth: state.auth.as_deref(),
         ledger: state.ledger.as_deref(),
         hosted: state.hosted,
+        billing: state.billing.as_deref(),
     };
     let result = execute(&mut cx, spec.name, &input).await;
     let Cx {
@@ -327,6 +333,9 @@ async fn execute(cx: &mut Cx<'_>, name: &str, input: &Value) -> Result<Value, Co
         "person.remove" => people::remove(cx, parse(input)?).await,
         "org.get" => org::get(cx).await,
         "org.update" => org::update(cx, parse(input)?).await,
+        "billing.get" => billing::get(cx).await,
+        "billing.checkout" => billing::checkout(cx, parse(input)?).await,
+        "billing.portal" => billing::portal(cx, parse(input)?).await,
         "bank.authorize" => {
             let _: bank::Accounts = parse(input)?;
             ramp::authorize(cx).await
@@ -435,6 +444,7 @@ pub(crate) struct Cx<'a> {
     auth: Option<&'a crate::auth::Auth>,
     ledger: Option<&'a (dyn payvy_ledger::Ledger + Send + Sync)>,
     hosted: bool,
+    billing: Option<&'a crate::billing::Billing>,
 }
 
 impl<'a> Cx<'a> {

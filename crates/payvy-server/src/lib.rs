@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod bill_batch_worker;
+pub mod billing;
 pub mod commands;
 pub mod confirm;
 pub mod entitlements;
@@ -135,6 +136,10 @@ pub struct AppState {
     /// None until a ledger adapter is configured. Posting then says so.
     /// Tests pass a fake. Production does not talk to a ledger yet.
     pub ledger: Option<Arc<dyn payvy_ledger::Ledger + Send + Sync>>,
+    /// Hosted only: the management app's billing API (PAYVY_BILLING_URL and
+    /// PAYVY_BILLING_KEY), behind Settings > Billing. None: billing.* say
+    /// billing isn't available here.
+    pub billing: Option<Arc<billing::Billing>>,
 }
 
 /// Paying through the customer's bank: the key bank tokens are sealed with,
@@ -188,6 +193,7 @@ impl AppState {
             bill_batches: Arc::new(tokio::sync::Notify::new()),
             web_dir: None,
             ledger: None,
+            billing: None,
         }
     }
 
@@ -228,6 +234,11 @@ impl AppState {
 
     pub fn with_ledger(mut self, ledger: impl payvy_ledger::Ledger + 'static) -> Self {
         self.ledger = Some(Arc::new(ledger));
+        self
+    }
+
+    pub fn with_billing(mut self, billing: billing::Billing) -> Self {
+        self.billing = Some(Arc::new(billing));
         self
     }
 

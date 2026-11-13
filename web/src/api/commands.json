@@ -609,6 +609,30 @@
       "tier": "read"
     },
     {
+      "input_schema": "{\"type\":\"object\",\"additionalProperties\":false,\"properties\":{}}",
+      "name": "billing.get",
+      "permission": "read",
+      "person_only": false,
+      "summary": "Hosted Payvy only: this company's subscription (plan, status, trial and period end) as the billing service last saw it, and what its plan allows now. No links: opening Checkout or the portal is billing.checkout or billing.portal, for an Admin.",
+      "tier": "read"
+    },
+    {
+      "input_schema": "{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"plan\"],\"properties\":{\"plan\":{\"type\":\"string\",\"enum\":[\"byoa\",\"managed\"]}}}",
+      "name": "billing.checkout",
+      "permission": "admin",
+      "person_only": true,
+      "summary": "Hosted Payvy only: a Stripe Checkout link to subscribe this company to a plan (byoa: bring your own agent, reader off; managed: Payvy reads invoices). A company that already subscribes gets the billing portal instead. The plan changes only when Stripe confirms the payment, never by opening the link. Admin.",
+      "tier": "routine"
+    },
+    {
+      "input_schema": "{\"type\":\"object\",\"additionalProperties\":false,\"properties\":{}}",
+      "name": "billing.portal",
+      "permission": "admin",
+      "person_only": true,
+      "summary": "Hosted Payvy only: a link to the Stripe billing portal, to change plan or card, see invoices or cancel. Admin.",
+      "tier": "routine"
+    },
+    {
       "input_schema": "{\"type\":\"object\",\"required\":[\"name\"],\"properties\":{\"name\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":100}}}",
       "name": "org.update",
       "permission": "admin",

@@ -28,6 +28,7 @@ const Bank = lazy(() => import('./pages/Bank').then((m) => ({ default: m.Bank })
 const EmailSettings = lazy(() => import('./pages/EmailSettings').then((m) => ({ default: m.EmailSettings })));
 const PeopleSettings = lazy(() => import('./pages/PeopleSettings').then((m) => ({ default: m.PeopleSettings })));
 const CompanySettings = lazy(() => import('./pages/CompanySettings').then((m) => ({ default: m.CompanySettings })));
+const BillingSettings = lazy(() => import('./pages/BillingSettings').then((m) => ({ default: m.BillingSettings })));
 const AutoPaySettings = lazy(() => import('./pages/AutoPaySettings').then((m) => ({ default: m.AutoPaySettings })));
 const NotificationSettings = lazy(() => import('./pages/NotificationSettings').then(m => ({ default: m.NotificationSettings })));
 const ApprovalSettings = lazy(() => import('./pages/ApprovalSettings').then((m) => ({ default: m.ApprovalSettings })));
@@ -174,6 +175,7 @@ export function App() {
             }
           />
           <Route path="/settings/people" element={<Suspense fallback={<Spinner label="Loading" />}><PeopleSettings /></Suspense>} />
+          <Route path="/settings/billing" element={<Suspense fallback={<Spinner label="Loading" />}><Access command="billing.checkout"><BillingSettings /></Access></Suspense>} />
           <Route path="/settings/company" element={<Suspense fallback={<Spinner label="Loading" />}><Access command="org.update"><CompanySettings /></Access></Suspense>} />
           <Route path="/settings/auto-pay" element={<Suspense fallback={<Spinner label="Loading" />}><Access command="auto_pay.raise_limit"><AutoPaySettings /></Access></Suspense>} />
           <Route path="/settings/notifications" element={<Suspense fallback={<Spinner label="Loading" />}><Access command="notification.configure"><NotificationSettings /></Access></Suspense>} />

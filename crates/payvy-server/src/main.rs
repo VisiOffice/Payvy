@@ -33,6 +33,14 @@ enum Command {
         /// it off: no plans, everything on.
         #[arg(long, env = "PAYVY_HOSTED", default_value_t = false, action = clap::ArgAction::Set)]
         hosted: bool,
+        /// Hosted only: the management app behind Settings > Billing
+        /// (Stripe Checkout and the portal). Set with PAYVY_BILLING_KEY.
+        #[arg(long, env = "PAYVY_BILLING_URL")]
+        billing_url: Option<String>,
+        /// The management app's key for its billing API, at least 32
+        /// characters. Sent only to PAYVY_BILLING_URL.
+        #[arg(long, env = "PAYVY_BILLING_KEY", hide_env_values = true)]
+        billing_key: Option<String>,
         #[command(flatten)]
         storage: StorageArgs,
         #[command(flatten)]
@@ -390,6 +398,8 @@ async fn main() -> anyhow::Result<()> {
             ref api_key,
             ref operator_key,
             hosted,
+            ref billing_url,
+            ref billing_key,
             storage,
             inbound,
             extract,
@@ -429,6 +439,18 @@ async fn main() -> anyhow::Result<()> {
                 );
                 tracing::info!("hosted mode: plan entitlements are enforced");
                 state = state.hosted();
+            }
+            match (billing_url, billing_key) {
+                (Some(url), Some(key)) => {
+                    anyhow::ensure!(
+                        hosted,
+                        "PAYVY_BILLING_URL is for hosted Payvy: set PAYVY_HOSTED=true or leave it unset"
+                    );
+                    state = state.with_billing(payvy_server::billing::Billing::new(url, key)?);
+                    tracing::info!(%url, "billing: Settings > Billing asks the management app");
+                }
+                (None, None) => {}
+                _ => anyhow::bail!("set both PAYVY_BILLING_URL and PAYVY_BILLING_KEY, or neither"),
             }
             let create_bucket = storage.s3_create_bucket;
             match storage.config() {
