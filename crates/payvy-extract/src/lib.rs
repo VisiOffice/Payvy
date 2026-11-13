@@ -16,6 +16,7 @@
 use std::time::Duration;
 
 use base64::Engine;
+use payvy_domain::ai_usage::TokenUsage;
 use payvy_domain::documents::Kind;
 use payvy_domain::extraction::{self, Read};
 use serde_json::{Value, json};
@@ -24,6 +25,9 @@ use serde_json::{Value, json};
 const ANTHROPIC_VERSION: &str = "2026-10-21";
 /// The default Claude model.
 pub const DEFAULT_CLAUDE_MODEL: &str = "claude-opus-5-5";
+/// Timeout for a single model HTTP request, also used to treat stale pending
+/// usage attempts as unknown in `usage.summary`.
+pub const REQUEST_TIMEOUT_SECS: i64 = 300;
 /// Claude's limit is 32 MB per request; base64 adds a third.
 const MAX_ENCODED: usize = 30 * 1024 * 1024;
 const PROMPT: &str = "Read this document.";
@@ -106,6 +110,59 @@ pub enum ExtractError {
     Failed(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttemptOutcome {
+    Succeeded,
+    Refused,
+    Truncated,
+    InvalidOutput,
+    ProviderError,
+    Timeout,
+    Unsupported,
+}
+
+impl AttemptOutcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Succeeded => "succeeded",
+            Self::Refused => "refused",
+            Self::Truncated => "truncated",
+            Self::InvalidOutput => "invalid_output",
+            Self::ProviderError => "provider_error",
+            Self::Timeout => "timeout",
+            Self::Unsupported => "unsupported",
+        }
+    }
+
+    /// Short fixed error label safe to store in `ai_usage_attempts.error`
+    /// without echoing raw provider bodies or invoice content.
+    pub fn fixed_error_message(self) -> Option<&'static str> {
+        match self {
+            Self::Succeeded => None,
+            Self::Refused => Some("model refused"),
+            Self::Truncated => Some("response truncated"),
+            Self::InvalidOutput => Some("invalid model output"),
+            Self::ProviderError => Some("provider error"),
+            Self::Timeout => Some("request timed out"),
+            Self::Unsupported => Some("unsupported document"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AttemptTelemetry {
+    pub actual_model: Option<String>,
+    pub provider_request_id: Option<String>,
+    pub usage: TokenUsage,
+}
+
+#[derive(Debug)]
+pub struct ExtractAttempt {
+    pub result: Result<Output, ExtractError>,
+    pub outcome: AttemptOutcome,
+    pub telemetry: AttemptTelemetry,
+}
+
 #[derive(Debug, Clone)]
 pub struct Output {
     pub read: Read,
@@ -123,10 +180,12 @@ pub struct Extractor {
 
 impl Extractor {
     pub fn new(config: Config) -> anyhow::Result<Self> {
+        Self::with_timeout(config, Duration::from_secs(REQUEST_TIMEOUT_SECS as u64))
+    }
+
+    pub fn with_timeout(config: Config, timeout: Duration) -> anyhow::Result<Self> {
         anyhow::ensure!(!config.model.trim().is_empty(), "no extraction model set");
-        let http = reqwest::Client::builder()
-            .timeout(Duration::from_secs(300))
-            .build()?;
+        let http = reqwest::Client::builder().timeout(timeout).build()?;
         Ok(Self { config, http })
     }
 
@@ -161,6 +220,15 @@ impl Extractor {
         kind: Kind,
         pages: Option<&[u32]>,
     ) -> Result<Output, ExtractError> {
+        self.read_pages_tracked(bytes, kind, pages).await.result
+    }
+
+    pub async fn read_pages_tracked(
+        &self,
+        bytes: &[u8],
+        kind: Kind,
+        pages: Option<&[u32]>,
+    ) -> ExtractAttempt {
         self.read_mode(bytes, kind, pages, false).await
     }
 
@@ -170,10 +238,23 @@ impl Extractor {
         kind: Kind,
         pages: &[u32],
     ) -> Result<Output, ExtractError> {
+        self.read_pages_v2_tracked(bytes, kind, pages).await.result
+    }
+
+    pub async fn read_pages_v2_tracked(
+        &self,
+        bytes: &[u8],
+        kind: Kind,
+        pages: &[u32],
+    ) -> ExtractAttempt {
         if pages.is_empty() || pages.len() > 24 {
-            return Err(ExtractError::Unsupported(
-                "Extraction v2 supports 1–24 selected pages. Split only at verified invoice boundaries; a single longer invoice needs manual review until page batching is available.".into(),
-            ));
+            return ExtractAttempt {
+                result: Err(ExtractError::Unsupported(
+                    "Extraction v2 supports 1–24 selected pages. Split only at verified invoice boundaries; a single longer invoice needs manual review until page batching is available.".into(),
+                )),
+                outcome: AttemptOutcome::Unsupported,
+                telemetry: AttemptTelemetry::default(),
+            };
         }
         self.read_mode(bytes, kind, Some(pages), true).await
     }
@@ -184,8 +265,17 @@ impl Extractor {
         kind: Kind,
         pages: Option<&[u32]>,
         v2: bool,
-    ) -> Result<Output, ExtractError> {
-        let mut body = request_pages(&self.config, bytes, kind, pages)?;
+    ) -> ExtractAttempt {
+        let mut body = match request_pages(&self.config, bytes, kind, pages) {
+            Ok(body) => body,
+            Err(err) => {
+                return ExtractAttempt {
+                    result: Err(err),
+                    outcome: AttemptOutcome::Unsupported,
+                    telemetry: AttemptTelemetry::default(),
+                };
+            }
+        };
         if v2 {
             match self.config.provider {
                 Provider::Anthropic => {
@@ -222,52 +312,133 @@ impl Extractor {
                 }
             }
         };
-        let mut res = req
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| ExtractError::Failed(format!("couldn't reach the model: {e}")))?;
-        let status = res.status();
-        let mut bytes = Vec::new();
-        while let Some(chunk) = res
-            .chunk()
-            .await
-            .map_err(|_| ExtractError::Failed("The model response was cut off".into()))?
-        {
-            if bytes.len() + chunk.len() > 4 * 1024 * 1024 {
-                return Err(ExtractError::Failed(
-                    "The model response exceeded the 4 MiB limit".into(),
-                ));
+        let mut res = match req.json(&body).send().await {
+            Ok(res) => res,
+            Err(e) => {
+                let outcome = if e.is_timeout() {
+                    AttemptOutcome::Timeout
+                } else {
+                    AttemptOutcome::ProviderError
+                };
+                return ExtractAttempt {
+                    result: Err(ExtractError::Failed(format!(
+                        "couldn't reach the model: {e}"
+                    ))),
+                    outcome,
+                    telemetry: AttemptTelemetry::default(),
+                };
             }
-            bytes.extend_from_slice(&chunk);
+        };
+        let status = res.status();
+        let header_request_id = res
+            .headers()
+            .get("request-id")
+            .or_else(|| res.headers().get("x-request-id"))
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
+        let mut bytes = Vec::new();
+        loop {
+            match res.chunk().await {
+                Ok(Some(chunk)) => {
+                    if bytes.len() + chunk.len() > 4 * 1024 * 1024 {
+                        return ExtractAttempt {
+                            result: Err(ExtractError::Failed(
+                                "The model response exceeded the 4 MiB limit".into(),
+                            )),
+                            outcome: AttemptOutcome::ProviderError,
+                            telemetry: AttemptTelemetry {
+                                provider_request_id: header_request_id,
+                                ..Default::default()
+                            },
+                        };
+                    }
+                    bytes.extend_from_slice(&chunk);
+                }
+                Ok(None) => break,
+                Err(e) => {
+                    let outcome = if e.is_timeout() {
+                        AttemptOutcome::Timeout
+                    } else {
+                        AttemptOutcome::ProviderError
+                    };
+                    return ExtractAttempt {
+                        result: Err(ExtractError::Failed(
+                            "The model response was cut off".into(),
+                        )),
+                        outcome,
+                        telemetry: AttemptTelemetry {
+                            provider_request_id: header_request_id,
+                            ..Default::default()
+                        },
+                    };
+                }
+            }
         }
-        let text = String::from_utf8(bytes)
-            .map_err(|_| ExtractError::Failed("The model response was not UTF-8".into()))?;
+        let text = match String::from_utf8(bytes) {
+            Ok(text) => text,
+            Err(_) => {
+                return ExtractAttempt {
+                    result: Err(ExtractError::Failed(
+                        "The model response was not UTF-8".into(),
+                    )),
+                    outcome: AttemptOutcome::InvalidOutput,
+                    telemetry: AttemptTelemetry {
+                        provider_request_id: header_request_id,
+                        ..Default::default()
+                    },
+                };
+            }
+        };
         let value: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
-        if !status.is_success() {
-            return Err(ExtractError::Failed(format!(
-                "the model's API answered {status}"
-            )));
+        let mut telemetry = telemetry_from_value(self.config.provider, &value);
+        if telemetry.provider_request_id.is_none() {
+            telemetry.provider_request_id = header_request_id;
         }
-        let out = match self.config.provider {
+        if !status.is_success() {
+            return ExtractAttempt {
+                result: Err(ExtractError::Failed(format!(
+                    "the model's API answered {status}"
+                ))),
+                outcome: AttemptOutcome::ProviderError,
+                telemetry,
+            };
+        }
+        let parsed = match self.config.provider {
             Provider::Anthropic => parse_anthropic(&value, &self.config.model),
             Provider::OpenAiCompatible => parse_openai(&value, &self.config.model),
-        }?;
-        if v2
-            && (out.read.coverage.is_none()
-                || out.read.lines.len() > 1000
-                || out.read.lines.iter().any(|l| {
-                    l.details.as_ref().is_none_or(|d| {
-                        !d.bounded()
-                            || payvy_domain::invoice_evidence::FIELDS
-                                .iter()
-                                .any(|f| !d.states.contains_key(*f))
-                    })
-                }))
-        {
-            return Err(ExtractError::Failed("The model omitted v2 coverage/field states or exceeded row/evidence limits; review and read again".into()));
+        };
+        match parsed {
+            Err((err, outcome)) => ExtractAttempt {
+                result: Err(err),
+                outcome,
+                telemetry,
+            },
+            Ok(out) => {
+                if v2
+                    && (out.read.coverage.is_none()
+                        || out.read.lines.len() > 1000
+                        || out.read.lines.iter().any(|l| {
+                            l.details.as_ref().is_none_or(|d| {
+                                !d.bounded()
+                                    || payvy_domain::invoice_evidence::FIELDS
+                                        .iter()
+                                        .any(|f| !d.states.contains_key(*f))
+                            })
+                        }))
+                {
+                    return ExtractAttempt {
+                        result: Err(ExtractError::Failed("The model omitted v2 coverage/field states or exceeded row/evidence limits; review and read again".into())),
+                        outcome: AttemptOutcome::InvalidOutput,
+                        telemetry,
+                    };
+                }
+                ExtractAttempt {
+                    result: Ok(out),
+                    outcome: AttemptOutcome::Succeeded,
+                    telemetry,
+                }
+            }
         }
-        Ok(out)
     }
 }
 
@@ -345,18 +516,58 @@ pub fn request_pages(
     })
 }
 
-fn parse_anthropic(v: &Value, asked: &str) -> Result<Output, ExtractError> {
+fn telemetry_from_value(provider: Provider, v: &Value) -> AttemptTelemetry {
+    let actual_model = v["model"].as_str().map(str::to_owned);
+    let provider_request_id = v["id"].as_str().map(str::to_owned);
+    let u = &v["usage"];
+    let usage = if u.is_object() {
+        match provider {
+            Provider::Anthropic => TokenUsage {
+                // Anthropic's input_tokens excludes cache_read and cache_creation.
+                input_tokens: u["input_tokens"].as_i64(),
+                output_tokens: u["output_tokens"].as_i64(),
+                cache_read_tokens: u["cache_read_input_tokens"].as_i64(),
+                cache_write_tokens: u["cache_creation_input_tokens"].as_i64(),
+            },
+            Provider::OpenAiCompatible => {
+                let cache_read = u["prompt_tokens_details"]["cached_tokens"].as_i64();
+                let cache_write = u["prompt_tokens_details"]["cache_write_tokens"].as_i64();
+                // OpenAI's prompt_tokens includes cached_tokens; subtract so cache
+                // reads aren't double-counted.
+                let input = u["prompt_tokens"]
+                    .as_i64()
+                    .map(|p| p.saturating_sub(cache_read.unwrap_or(0)));
+                TokenUsage {
+                    input_tokens: input,
+                    output_tokens: u["completion_tokens"].as_i64(),
+                    cache_read_tokens: cache_read,
+                    cache_write_tokens: cache_write,
+                }
+            }
+        }
+    } else {
+        TokenUsage::default()
+    };
+    AttemptTelemetry {
+        actual_model,
+        provider_request_id,
+        usage,
+    }
+}
+
+fn parse_anthropic(v: &Value, asked: &str) -> Result<Output, (ExtractError, AttemptOutcome)> {
     match v["stop_reason"].as_str() {
         Some("refusal") => {
             let why = v["stop_details"]["explanation"]
                 .as_str()
                 .or_else(|| v["stop_details"]["category"].as_str())
                 .unwrap_or("no reason given");
-            return Err(ExtractError::Refused(why.into()));
+            return Err((ExtractError::Refused(why.into()), AttemptOutcome::Refused));
         }
         Some("max_tokens") => {
-            return Err(ExtractError::Failed(
-                "the model ran out of room before finishing".into(),
+            return Err((
+                ExtractError::Failed("the model ran out of room before finishing".into()),
+                AttemptOutcome::Truncated,
             ));
         }
         _ => {}
@@ -369,24 +580,35 @@ fn parse_anthropic(v: &Value, asked: &str) -> Result<Output, ExtractError> {
                 .find(|b| b["type"] == "text")
                 .and_then(|b| b["text"].as_str())
         })
-        .ok_or_else(|| ExtractError::Failed("the model's answer had no text".into()))?;
+        .ok_or_else(|| {
+            (
+                ExtractError::Failed("the model's answer had no text".into()),
+                AttemptOutcome::InvalidOutput,
+            )
+        })?;
     output(text, v["model"].as_str().unwrap_or(asked))
+        .map_err(|e| (e, AttemptOutcome::InvalidOutput))
 }
 
-fn parse_openai(v: &Value, asked: &str) -> Result<Output, ExtractError> {
+fn parse_openai(v: &Value, asked: &str) -> Result<Output, (ExtractError, AttemptOutcome)> {
     let choice = &v["choices"][0];
     if let Some(r) = choice["message"]["refusal"].as_str() {
-        return Err(ExtractError::Refused(r.into()));
+        return Err((ExtractError::Refused(r.into()), AttemptOutcome::Refused));
     }
     if choice["finish_reason"] == "length" {
-        return Err(ExtractError::Failed(
-            "the model ran out of room before finishing".into(),
+        return Err((
+            ExtractError::Failed("the model ran out of room before finishing".into()),
+            AttemptOutcome::Truncated,
         ));
     }
-    let text = choice["message"]["content"]
-        .as_str()
-        .ok_or_else(|| ExtractError::Failed("the model's answer had no text".into()))?;
+    let text = choice["message"]["content"].as_str().ok_or_else(|| {
+        (
+            ExtractError::Failed("the model's answer had no text".into()),
+            AttemptOutcome::InvalidOutput,
+        )
+    })?;
     output(text, v["model"].as_str().unwrap_or(asked))
+        .map_err(|e| (e, AttemptOutcome::InvalidOutput))
 }
 
 /// Parses the answer. Providers without strict schemas sometimes wrap the
@@ -538,18 +760,69 @@ mod tests {
         let refused = json!({ "stop_reason": "refusal", "stop_details": { "category": "cyber" }, "content": [] });
         assert_eq!(
             parse_anthropic(&refused, "x").unwrap_err(),
-            ExtractError::Refused("cyber".into())
+            (
+                ExtractError::Refused("cyber".into()),
+                AttemptOutcome::Refused
+            )
         );
         let cut =
             json!({ "choices": [{ "finish_reason": "length", "message": { "content": "{" } }] });
         assert!(matches!(
             parse_openai(&cut, "x"),
-            Err(ExtractError::Failed(_))
+            Err((ExtractError::Failed(_), AttemptOutcome::Truncated))
         ));
         let wrong = json!({ "choices": [{ "message": { "content": "{\"kind\":\"banana\"}" } }] });
         assert!(matches!(
             parse_openai(&wrong, "x"),
-            Err(ExtractError::Failed(_))
+            Err((ExtractError::Failed(_), AttemptOutcome::InvalidOutput))
         ));
+    }
+
+    #[test]
+    fn usage_normalization_avoids_double_counting_cache_tokens() {
+        let claude = json!({
+            "id": "msg_123",
+            "model": "claude-sonnet-5-5",
+            "usage": {
+                "input_tokens": 200,
+                "output_tokens": 50,
+                "cache_read_input_tokens": 1000,
+                "cache_creation_input_tokens": 300
+            }
+        });
+        let t = telemetry_from_value(Provider::Anthropic, &claude);
+        assert_eq!(t.provider_request_id.as_deref(), Some("msg_123"));
+        assert_eq!(t.actual_model.as_deref(), Some("claude-sonnet-5-5"));
+        assert_eq!(
+            t.usage,
+            TokenUsage {
+                input_tokens: Some(200),
+                output_tokens: Some(50),
+                cache_read_tokens: Some(1000),
+                cache_write_tokens: Some(300),
+            }
+        );
+
+        let openai = json!({
+            "id": "chatcmpl-456",
+            "model": "gpt-5",
+            "usage": {
+                "prompt_tokens": 1200,
+                "completion_tokens": 80,
+                "prompt_tokens_details": { "cached_tokens": 1000 }
+            }
+        });
+        let t = telemetry_from_value(Provider::OpenAiCompatible, &openai);
+        assert_eq!(t.provider_request_id.as_deref(), Some("chatcmpl-456"));
+        assert_eq!(t.actual_model.as_deref(), Some("gpt-5"));
+        assert_eq!(
+            t.usage,
+            TokenUsage {
+                input_tokens: Some(200),
+                output_tokens: Some(80),
+                cache_read_tokens: Some(1000),
+                cache_write_tokens: None,
+            }
+        );
     }
 }

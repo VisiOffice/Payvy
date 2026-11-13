@@ -85,30 +85,98 @@ pub async fn extract(cx: &mut Cx<'_>, input: Extract) -> Result<Value, CommandEr
     let previous = std::mem::replace(&mut cx.tx, next);
     previous.commit().await.map_err(anyhow::Error::from)?;
     let mut source_pages = Vec::new();
+    let actor_kind = cx.actor.kind;
     let read = async {
         let bytes = storage
             .get(&doc.storage_key)
             .await
             .map_err(|e| format!("couldn't fetch the file: {e:#}"))?;
         let kind = doc_rules::check(&bytes).map_err(|e| e.to_string())?;
-        if v2 {
-            if doc_pages.is_empty() || doc_pages.len() > 24 {
-                return Err(
-                    "Extraction v2 supports at most 24 selected pages. Split only at verified invoice boundaries; keep a single longer invoice intact for manual review. Automatic page batching is not available yet.".into(),
-                );
-            }
-            let (read, pages) = tokio::join!(
-                extractor.read_pages_v2(&bytes, kind, &doc_pages),
+        if v2 && (doc_pages.is_empty() || doc_pages.len() > 24) {
+            return Err(
+                "Extraction v2 supports at most 24 selected pages. Split only at verified invoice boundaries; keep a single longer invoice intact for manual review. Automatic page batching is not available yet.".into(),
+            );
+        }
+
+        // Write a durable attempt row before calling the provider so usage and
+        // cost survive parse/validation failures or downstream DB failures.
+        let attempt_id = {
+            let mut utx = cx
+                .store
+                .begin(cx.org)
+                .await
+                .map_err(|e| format!("couldn't record usage attempt: {e:#}"))?;
+            let id = store::start_ai_usage_attempt(
+                &mut utx,
+                cx.org,
+                &store::NewAiUsageAttempt {
+                    document_id: doc.id,
+                    actor_kind,
+                    actor_name: &cx.actor.name,
+                    provider: &provider,
+                    requested_model: extractor.model(),
+                    started_at: (cx.clock)(),
+                },
+            )
+            .await
+            .map_err(|e| format!("couldn't record usage attempt: {e:#}"))?;
+            utx.commit()
+                .await
+                .map_err(|e| format!("couldn't record usage attempt: {e:#}"))?;
+            id
+        };
+
+        let attempt = if v2 {
+            let (attempt, pages) = tokio::join!(
+                extractor.read_pages_v2_tracked(&bytes, kind, &doc_pages),
                 crate::source_text::read(&bytes, kind, &doc_pages)
             );
             source_pages = pages;
-            read.map_err(|e| e.to_string())
+            attempt
         } else {
             extractor
-                .read_pages(&bytes, kind, hint.as_deref())
+                .read_pages_tracked(&bytes, kind, hint.as_deref())
                 .await
-                .map_err(|e| e.to_string())
+        };
+
+        let err_msg = attempt.outcome.fixed_error_message();
+        let priced_model = attempt
+            .telemetry
+            .actual_model
+            .as_deref()
+            .unwrap_or_else(|| extractor.model());
+        let priced = payvy_domain::ai_usage::compute_cost_microcents(
+            priced_model,
+            &attempt.telemetry.usage,
+        );
+        let (pricing_version, cost_microcents) = match priced {
+            Some((v, c)) => (Some(v), Some(c)),
+            None => (None, None),
+        };
+        if let Ok(mut utx) = cx.store.begin(cx.org).await {
+            if let Err(e) = store::complete_ai_usage_attempt(
+                &mut utx,
+                attempt_id,
+                &store::CompleteAiUsageAttempt {
+                    outcome: attempt.outcome.as_str(),
+                    actual_model: attempt.telemetry.actual_model.as_deref(),
+                    provider_request_id: attempt.telemetry.provider_request_id.as_deref(),
+                    error: err_msg,
+                    usage: attempt.telemetry.usage,
+                    pricing_version,
+                    cost_microcents,
+                    completed_at: (cx.clock)(),
+                },
+            )
+            .await
+            {
+                tracing::warn!(attempt = %attempt_id, "couldn't complete usage attempt: {e:#}");
+            } else if let Err(e) = utx.commit().await {
+                tracing::warn!(attempt = %attempt_id, "couldn't commit usage attempt: {e:#}");
+            }
         }
+
+        attempt.result.map_err(|e| e.to_string())
     }
     .await;
 
