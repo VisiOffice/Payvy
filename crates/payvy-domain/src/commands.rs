@@ -840,6 +840,14 @@ pub const COMMANDS: &[CommandSpec] = &[
         input_schema: r#"{"type":"object","required":["document_id"],"properties":{"document_id":{"type":"string","format":"uuid"},"again":{"type":"boolean","description":"Read it again even though it was already read, e.g. after adding the vendor"}}}"#,
     },
     CommandSpec {
+        name: "document.submit_reading",
+        summary: "Submit your own agent's reading of an inbox document, for companies that read invoices with their own agent and model (Payvy makes no model call, so no reader plan is needed). Read the file yourself (document.get has a download link) and report only what is printed, in the same schema Payvy's reader fills: every field, null when not printed, amounts and dates exactly as printed, as strings. Payvy converts and checks it exactly like its own reading (arithmetic, dates, vendor on file, duplicates, several invoices in one file) and keeps it as an extraction with provider agent: same answer as document.extract, with the checks, whether it is ready, and bill_input for bill.create. A file with several invoices is split as with document.extract. Refused if the document was already read, unless again is true. Nothing becomes a bill until bill.create.",
+        tier: RiskTier::Routine,
+        person_only: false,
+        permission: Permission::Prepare,
+        input_schema: r#"{"type":"object","required":["document_id","reading"],"properties":{"document_id":{"type":"string","format":"uuid"},"reading":{"additionalProperties":false,"properties":{"account_number":{"anyOf":[{"type":"string"},{"type":"null"}],"description":"Your customer or account number with this vendor"},"currency":{"anyOf":[{"type":"string"},{"type":"null"}],"description":"ISO 4217 code, e.g. USD"},"due_date":{"anyOf":[{"type":"string"},{"type":"null"}],"description":"YYYY-MM-DD, if printed"},"invoice_date":{"anyOf":[{"type":"string"},{"type":"null"}],"description":"YYYY-MM-DD"},"invoice_number":{"anyOf":[{"type":"string"},{"type":"null"}],"description":"The invoice or document number"},"invoices":{"description":"Only when the file holds more than one invoice: each one, with its pages. Empty otherwise","items":{"additionalProperties":false,"properties":{"invoice_number":{"anyOf":[{"type":"string"},{"type":"null"}]},"pages":{"description":"Page numbers of the file, the first page is 1","items":{"type":"integer"},"type":"array"},"total":{"anyOf":[{"type":"string"},{"type":"null"}],"description":"Exactly as printed"}},"required":["pages","invoice_number","total"],"type":"object"},"type":"array"},"kind":{"enum":["invoice","statement","credit_memo","receipt","quote","other"],"type":"string"},"lines":{"description":"Line items as printed, without tax","items":{"additionalProperties":false,"properties":{"amount":{"description":"The line's total, exactly as printed; negative for a discount","type":"string"},"description":{"type":"string"}},"required":["description","amount"],"type":"object"},"type":"array"},"notes":{"anyOf":[{"type":"string"},{"type":"null"}],"description":"Anything a careful bookkeeper should know before paying, or null"},"po_number":{"anyOf":[{"type":"string"},{"type":"null"}],"description":"Purchase order number, if printed"},"subtotal":{"anyOf":[{"type":"string"},{"type":"null"}],"description":"Amount before tax, exactly as printed"},"tax":{"anyOf":[{"type":"string"},{"type":"null"}],"description":"Total tax, exactly as printed"},"terms":{"anyOf":[{"type":"string"},{"type":"null"}],"description":"Payment terms as printed, e.g. Net 30"},"total":{"anyOf":[{"type":"string"},{"type":"null"}],"description":"The amount the document says is owed, exactly as printed"},"vendor_address":{"anyOf":[{"type":"string"},{"type":"null"}],"description":"The vendor's address, one line"},"vendor_email":{"anyOf":[{"type":"string"},{"type":"null"}],"description":"The vendor's email address, if printed"},"vendor_name":{"anyOf":[{"type":"string"},{"type":"null"}],"description":"The business the document is from"}},"required":["account_number","currency","due_date","invoice_date","invoice_number","invoices","kind","lines","notes","po_number","subtotal","tax","terms","total","vendor_address","vendor_email","vendor_name"],"type":"object"},"model":{"type":"string","description":"The model your agent read it with, for the record, e.g. gpt-5.1"},"again":{"type":"boolean","description":"Submit another reading even though the document was already read"}}}"#,
+    },
+    CommandSpec {
         name: "document.arrange",
         summary: "Set a document's page order, rotation and hidden pages in one change, as a new version of its arrangement; the original file never changes. List every page of this document once, by its page number in the original file, in the order to show them; at least one must stay visible. expected_version is the version from document.get: if someone changed the pages since, it is refused and you get the document again. Refused for a document set aside as not a bill, and once its bill has an approval or is no longer open (pages lock after approval). A bill still waiting for its first approval moves to the new version, and its history says so.",
         tier: RiskTier::Routine,
@@ -1078,6 +1086,20 @@ mod tests {
                 serde_json::from_str(a.input_schema).unwrap_or_else(|e| panic!("{}: {e}", a.name));
             assert_eq!(v["type"], "object", "{}", a.name);
         }
+    }
+
+    #[test]
+    fn an_agents_reading_is_asked_for_in_the_readers_own_schema() {
+        let spec = COMMANDS
+            .iter()
+            .find(|c| c.name == "document.submit_reading")
+            .unwrap();
+        let input: serde_json::Value = serde_json::from_str(spec.input_schema).unwrap();
+        assert_eq!(
+            input["properties"]["reading"],
+            crate::extraction::schema(),
+            "document.submit_reading must ask for exactly what Payvy's reader fills: copy extraction::schema() into its input_schema"
+        );
     }
 
     #[test]

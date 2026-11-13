@@ -230,9 +230,9 @@ pub async fn extract(cx: &mut Cx<'_>, input: Extract) -> Result<Value, CommandEr
             row
         }
         Ok(out) => {
-            let (draft, mut checks) = rules::interpret(&out.read);
+            let mut extra = Vec::new();
             if stale {
-                checks.push(Check{check:"stale_review".into(),ok:false,detail:"Pages or document status changed while reading; this result is history only. Read the current pages again.".into()});
+                extra.push(Check{check:"stale_review".into(),ok:false,detail:"Pages or document status changed while reading; this result is history only. Read the current pages again.".into()});
             }
             if v2 {
                 let coverage_ok = out.read.coverage.as_ref().is_some_and(|c| {
@@ -242,7 +242,7 @@ pub async fn extract(cx: &mut Cx<'_>, input: Extract) -> Result<Value, CommandEr
                     expected.sort_unstable();
                     c.complete && actual == expected
                 });
-                checks.push(Check {
+                extra.push(Check {
                     check: "page_coverage_incomplete".into(),
                     ok: coverage_ok,
                     detail: if coverage_ok {
@@ -279,29 +279,13 @@ pub async fn extract(cx: &mut Cx<'_>, input: Extract) -> Result<Value, CommandEr
                 analysis["source_pages"] = json!(source_pages);
                 analysis["rows"] = json!(rows);
             }
-            let sender = match doc.email_id {
-                Some(id) => store::get_email(&mut cx.tx, id)
-                    .await?
-                    .and_then(|e| e.from_address),
-                None => None,
-            };
-            let candidates = store::vendor_candidates(&mut cx.tx).await?;
-            let matched = rules::match_vendor(&draft, sender.as_deref(), &candidates);
-            vendor_checks(cx, &draft, &matched, &mut checks).await?;
-            // Several invoices in one file: where each is, if the pages
-            // the reader named are this document's, distinct and real.
-            let invoices = if doc_pages.is_empty() {
-                match out.read.invoices.as_deref() {
-                    Some(list) if list.len() > 1 => {
-                        Err("this file can't be read page by page".to_owned())
-                    }
-                    _ => Ok(Vec::new()),
-                }
-            } else {
-                rules::invoices(&out.read, &doc_pages)
-            };
-            checks.extend(rules::invoices_check(&invoices));
-            found = invoices.unwrap_or_default();
+            let Checked {
+                draft,
+                checks,
+                matched,
+                invoices,
+            } = check_reading(cx, &doc, &out.read, &doc_pages, extra).await?;
+            found = invoices;
             let invoices_json = (!found.is_empty()).then(|| json!(found));
             let row = store::insert_extraction(
                 &mut cx.tx,
@@ -346,6 +330,78 @@ pub async fn extract(cx: &mut Cx<'_>, input: Extract) -> Result<Value, CommandEr
     // file claiming hundreds of invoices would become hundreds of documents,
     // each read again at a model call apiece. Past MAX_AUTO_SPLIT it stays
     // a suggestion for a person.
+    auto_split(cx, &doc, arrangement_version, &found, stale, &mut out).await?;
+    Ok(out)
+}
+
+/// The most documents an agent's reading splits a file into on its own.
+pub const MAX_AUTO_SPLIT: usize = 20;
+
+/// Payvy's checks on a reading, whoever made it (the configured model, or an
+/// outside agent through `document.submit_reading`): the reading's own
+/// arithmetic and dates, `extra` (checks only the caller knows), the vendor
+/// on file and duplicates, and where each invoice is when the file has
+/// several.
+pub(super) struct Checked {
+    pub draft: Draft,
+    pub checks: Vec<Check>,
+    pub matched: VendorMatch<Uuid>,
+    pub invoices: Vec<rules::Suggested>,
+}
+
+pub(super) async fn check_reading(
+    cx: &mut Cx<'_>,
+    doc: &store::Document,
+    read: &rules::Read,
+    doc_pages: &[u32],
+    extra: Vec<Check>,
+) -> Result<Checked, CommandError> {
+    let (draft, mut checks) = rules::interpret(read);
+    checks.extend(extra);
+    let sender = match doc.email_id {
+        Some(id) => store::get_email(&mut cx.tx, id)
+            .await?
+            .and_then(|e| e.from_address),
+        None => None,
+    };
+    let candidates = store::vendor_candidates(&mut cx.tx).await?;
+    let matched = rules::match_vendor(&draft, sender.as_deref(), &candidates);
+    vendor_checks(cx, &draft, &matched, &mut checks).await?;
+    // Several invoices in one file: where each is, if the pages the reader
+    // named are this document's, distinct and real.
+    let invoices = if doc_pages.is_empty() {
+        match read.invoices.as_deref() {
+            Some(list) if list.len() > 1 => Err("this file can't be read page by page".to_owned()),
+            _ => Ok(Vec::new()),
+        }
+    } else {
+        rules::invoices(read, doc_pages)
+    };
+    checks.extend(rules::invoices_check(&invoices));
+    Ok(Checked {
+        draft,
+        checks,
+        matched,
+        invoices: invoices.unwrap_or_default(),
+    })
+}
+
+/// An agent's reading (the background reader's too) splits a file of
+/// several invoices straight away, one document per invoice, under the
+/// agent's name; it can be undone. A person on the page gets the suggestion
+/// instead. Only a file that arrived is split this way: a document already
+/// split from one never is, so this can't loop. The groups come from the
+/// reader, and an emailed file is untrusted: a file claiming hundreds of
+/// invoices would become hundreds of documents, each read again. Past
+/// MAX_AUTO_SPLIT it stays a suggestion for a person.
+pub(super) async fn auto_split(
+    cx: &mut Cx<'_>,
+    doc: &store::Document,
+    arrangement_version: i32,
+    found: &[rules::Suggested],
+    stale: bool,
+    out: &mut Value,
+) -> Result<(), CommandError> {
     let automatic = !stale && cx.actor.kind != ActorKind::Person && doc.derived_from.is_none();
     if found.len() > MAX_AUTO_SPLIT && automatic {
         out["split"] = json!({ "error": format!(
@@ -356,12 +412,12 @@ pub async fn extract(cx: &mut Cx<'_>, input: Extract) -> Result<Value, CommandEr
         let groups: Vec<Vec<u32>> = found.iter().map(|f| f.pages.clone()).collect();
         // The split checks everything before it writes, so a refusal
         // leaves the reading as it is, with the reason.
-        match super::documents::split_pages(cx, &doc, Some(arrangement_version), &groups).await {
+        match super::documents::split_pages(cx, doc, Some(arrangement_version), &groups).await {
             Ok(parts) => {
                 let ids: Vec<Uuid> = parts.iter().map(|d| d.id).collect();
                 out["split"] = json!({
                     "documents": parts,
-                    "note": "Each new document is read on its own: the background reader picks them up, or call document.extract on each.",
+                    "note": "Each new document is read on its own: the background reader picks them up, or call document.extract (or document.submit_reading) on each.",
                     "to_read": ids,
                 });
             }
@@ -371,11 +427,8 @@ pub async fn extract(cx: &mut Cx<'_>, input: Extract) -> Result<Value, CommandEr
             Err(e) => return Err(e),
         }
     }
-    Ok(out)
+    Ok(())
 }
-
-/// The most documents an agent's reading splits a file into on its own.
-pub const MAX_AUTO_SPLIT: usize = 20;
 
 /// Adds the vendor and duplicate checks, which need the database.
 async fn vendor_checks(

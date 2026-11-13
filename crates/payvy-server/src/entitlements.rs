@@ -30,7 +30,7 @@ impl Need {
     pub fn refusal(self) -> &'static str {
         match self {
             Need::Reader => {
-                "this plan reads invoices with your own agent: upload the document, read it with your agent, and create the bill with bill.create"
+                "this plan reads invoices with your own agent: read the document with your agent, submit what it read with document.submit_reading (Payvy checks it like its own reading), then create the bill with bill.create"
             }
             Need::Payments => {
                 "this company's plan doesn't include payments right now: an Admin can check Settings > Billing. You can still pay outside Payvy and record it with bill.mark_paid"

@@ -102,8 +102,11 @@ export interface ExtractionSummary {
   extraction: {
     id: string;
     status: 'read' | 'failed';
+    /** "agent" for a reading an outside agent submitted (document.submit_reading). */
     provider: string;
     model: string;
+    /** The actor that read it: the background reader, or the agent that submitted it. */
+    created_by: string;
     answer: Read | null;
     draft: Draft | null;
     checks: Check[] | null;

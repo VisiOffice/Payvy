@@ -982,6 +982,101 @@ export interface DocumentExtractInput {
   again?: boolean;
 }
 
+export interface DocumentSubmitReadingInput {
+  document_id: string;
+  reading: {
+    /**
+     * Your customer or account number with this vendor
+     */
+    account_number: string | null;
+    /**
+     * ISO 4217 code, e.g. USD
+     */
+    currency: string | null;
+    /**
+     * YYYY-MM-DD, if printed
+     */
+    due_date: string | null;
+    /**
+     * YYYY-MM-DD
+     */
+    invoice_date: string | null;
+    /**
+     * The invoice or document number
+     */
+    invoice_number: string | null;
+    /**
+     * Only when the file holds more than one invoice: each one, with its pages. Empty otherwise
+     */
+    invoices: {
+      invoice_number: string | null;
+      /**
+       * Page numbers of the file, the first page is 1
+       */
+      pages: number[];
+      /**
+       * Exactly as printed
+       */
+      total: string | null;
+    }[];
+    kind: "invoice" | "statement" | "credit_memo" | "receipt" | "quote" | "other";
+    /**
+     * Line items as printed, without tax
+     */
+    lines: {
+      /**
+       * The line's total, exactly as printed; negative for a discount
+       */
+      amount: string;
+      description: string;
+    }[];
+    /**
+     * Anything a careful bookkeeper should know before paying, or null
+     */
+    notes: string | null;
+    /**
+     * Purchase order number, if printed
+     */
+    po_number: string | null;
+    /**
+     * Amount before tax, exactly as printed
+     */
+    subtotal: string | null;
+    /**
+     * Total tax, exactly as printed
+     */
+    tax: string | null;
+    /**
+     * Payment terms as printed, e.g. Net 30
+     */
+    terms: string | null;
+    /**
+     * The amount the document says is owed, exactly as printed
+     */
+    total: string | null;
+    /**
+     * The vendor's address, one line
+     */
+    vendor_address: string | null;
+    /**
+     * The vendor's email address, if printed
+     */
+    vendor_email: string | null;
+    /**
+     * The business the document is from
+     */
+    vendor_name: string | null;
+  };
+  /**
+   * The model your agent read it with, for the record, e.g. gpt-5.1
+   */
+  model?: string;
+  /**
+   * Submit another reading even though the document was already read
+   */
+  again?: boolean;
+}
+
 export interface DocumentArrangeInput {
   document_id: string;
   /**
@@ -1236,6 +1331,7 @@ export interface CommandInputs {
   "document.list": DocumentListInput;
   "document.get": DocumentGetInput;
   "document.extract": DocumentExtractInput;
+  "document.submit_reading": DocumentSubmitReadingInput;
   "document.arrange": DocumentArrangeInput;
   "document.split": DocumentSplitInput;
   "document.create_bills": DocumentCreateBillsInput;
@@ -1359,6 +1455,7 @@ export const COMMANDS: Record<CommandName, { tier: Tier; personOnly: boolean; su
   "document.list": { tier: "read", personOnly: false, summary: "Documents in the inbox (default), oldest first; or filed or trashed ones, or split ones (every page moved to other documents). A document split from another has split_from: its id and filename. Each says what its latest reading found (reading: vendor and how it matched, invoice_count, invoice_numbers, total_cents, dates, failed_checks, ready; null until read) and its cover: the first page shown, for a thumbnail." },
   "document.get": { tier: "read", personOnly: false, summary: "A document's details, every time a model read it (newest first, with checks, the suggested bill_input, and out_of_date when its pages were rearranged since), its pages (page count of the original file, the current arrangement and version, every earlier version, and whether they are locked and why), split_from (the document it was split from) and split_into (documents split from it, with their pages), its history, and a download link to the original file valid for 15 minutes. A reading of a file with several invoices has invoices: the pages, invoice number and total of each." },
   "document.extract": { tier: "routine", personOnly: false, summary: "Read an inbox document with the configured model: vendor, invoice number, dates, lines and total, checked against each other and matched to a vendor on file. Returns the checks, whether it is ready, and bill_input: the bill.create input it suggests, to enter as is or corrected. Nothing becomes a bill until bill.create. New documents are read automatically when the server's reader is on. Refused if the document was already read, unless again is true. The model gets the original file and, when the document is only some of its pages (split from it, or with pages hidden), is told which pages to read. When it finds several invoices in the file, the reading lists them (invoices) and fails the one_invoice check; an agent's reading then splits the file straight away into one document per invoice (split.to_read: read each next), which document.unsplit undoes. A person's reading only suggests. A document already split from another is never split again this way." },
+  "document.submit_reading": { tier: "routine", personOnly: false, summary: "Submit your own agent's reading of an inbox document, for companies that read invoices with their own agent and model (Payvy makes no model call, so no reader plan is needed). Read the file yourself (document.get has a download link) and report only what is printed, in the same schema Payvy's reader fills: every field, null when not printed, amounts and dates exactly as printed, as strings. Payvy converts and checks it exactly like its own reading (arithmetic, dates, vendor on file, duplicates, several invoices in one file) and keeps it as an extraction with provider agent: same answer as document.extract, with the checks, whether it is ready, and bill_input for bill.create. A file with several invoices is split as with document.extract. Refused if the document was already read, unless again is true. Nothing becomes a bill until bill.create." },
   "document.arrange": { tier: "routine", personOnly: false, summary: "Set a document's page order, rotation and hidden pages in one change, as a new version of its arrangement; the original file never changes. List every page of this document once, by its page number in the original file, in the order to show them; at least one must stay visible. expected_version is the version from document.get: if someone changed the pages since, it is refused and you get the document again. Refused for a document set aside as not a bill, and once its bill has an approval or is no longer open (pages lock after approval). A bill still waiting for its first approval moves to the new version, and its history says so." },
   "document.split": { tier: "routine", personOnly: false, summary: "Move groups of pages into new documents, one per group, for a file holding several invoices. Each new document is a view of the same original file (nothing is copied), shows only its pages in the order given with their rotation, records which document it came from, and is in the inbox to be read and entered. The moved pages leave this document's next arrangement version; if none are left it becomes split and leaves the inbox. expected_version is pages.version from document.get. Refused for a document set aside or locked, for a stale version, for groups that overlap, name pages this document doesn't have, or would leave a new document with nothing to show. Takes effect at once; document.unsplit undoes it." },
   "document.create_bills": { tier: "routine", personOnly: true, summary: "Make a bill of each invoice in a file of several, in one request: the file is split at once (one new document per group of pages, as document.split does), and the server then reads each part and creates its bill in the background, as the person who asked. A part that reads cleanly becomes a bill; a copy of an invoice already here stacks on that bill (a resend, or a revision when the amount differs); any other part waits in To review for a person, with the reason. Pages in leftover are part of no bill and stay with this document. groups and leftover together must name every visible page once. request_id makes it safe to retry: the same request_id returns the batch already made instead of splitting again. document.get on this document shows the batch's progress (bill_batch)." },

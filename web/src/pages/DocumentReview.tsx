@@ -821,7 +821,7 @@ export function DocumentReview({ id: given, embedded = false, onDone }: { id?: s
               </ol>
             </VStack>
           )}
-          <details className="payvy-document-provenance"><summary>Document information</summary><p>{doc.source === 'email' ? 'Emailed' : 'Uploaded'} {date(doc.received_at)}</p>{x && <p>Read by {x.model}</p>}</details>
+          <details className="payvy-document-provenance"><summary>Document information</summary><p>{doc.source === 'email' ? 'Emailed' : 'Uploaded'} {date(doc.received_at)}</p>{x && <p>{x.provider === 'agent' ? `Read by your agent ${x.created_by}${x.model === 'unspecified' ? '' : ` (${x.model})`}` : `Read by ${x.model}`}</p>}</details>
         </VStack></div>
         {doc.status === 'inbox' && can('bill.create') && <footer className="payvy-review-actions">
           {/* Beside Create bill, so it is read before the button is pressed. */}
