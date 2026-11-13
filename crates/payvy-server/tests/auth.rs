@@ -275,9 +275,8 @@ async fn only_people_add_people_and_names_are_unique() {
     db.drop().await;
 }
 
-#[tokio::test]
-async fn one_email_in_two_companies_gets_a_link_for_each() {
-    let Some((db, sent)) = db().await else { return };
+/// Robert in a second company, "Other", with the same address.
+async fn in_two_companies(db: &TestDb) -> uuid::Uuid {
     let other = db.add_org().await;
     commit(
         &db.state,
@@ -287,10 +286,292 @@ async fn one_email_in_two_companies_gets_a_link_for_each() {
     )
     .await
     .unwrap();
+    other
+}
+
+/// Opens a fresh link for robert@example.com and returns the answer.
+async fn open_link(db: &TestDb, sent: &Arc<Mutex<Vec<Mail>>>) -> Res {
+    let before = sent.lock().unwrap().len();
+    ask_for_link(db, "robert@example.com").await;
+    let mail = mails(sent, before + 1).await.pop().unwrap();
+    call(
+        db,
+        post("/auth/session", json!({ "token": token_in(&mail) })),
+    )
+    .await
+}
+
+fn with_cookie(
+    req: axum::http::request::Builder,
+    cookie: &str,
+    client: bool,
+) -> axum::http::request::Builder {
+    let req = req.header(header::COOKIE, cookie);
+    if client {
+        req.header(CLIENT_HEADER, "web")
+    } else {
+        req
+    }
+}
+
+fn switch(cookie: &str, org: uuid::Uuid, client: bool) -> Request<Body> {
+    with_cookie(Request::post("/auth/session/switch"), cookie, client)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(json!({ "org_id": org }).to_string()))
+        .unwrap()
+}
+
+fn whoami(cookie: &str) -> Request<Body> {
+    with_cookie(Request::get("/auth/session"), cookie, true)
+        .body(Body::empty())
+        .unwrap()
+}
+
+#[tokio::test]
+async fn one_email_in_two_companies_gets_one_link_and_then_chooses() {
+    let Some((db, sent)) = db().await else { return };
+    let other = in_two_companies(&db).await;
+
+    // One link, naming no company.
     ask_for_link(&db, "robert@example.com").await;
     let mail = mails(&sent, 1).await.remove(0);
-    assert_eq!(mail.text.matches("#token=").count(), 2, "{}", mail.text);
-    assert!(mail.text.contains("Default:") && mail.text.contains("Other:"));
+    assert_eq!(mail.text.matches("#token=").count(), 1, "{}", mail.text);
+    assert!(!mail.text.contains("Other"), "{}", mail.text);
+
+    // Opening it proves the address, then lists only its companies.
+    let res = call(
+        &db,
+        post("/auth/session", json!({ "token": token_in(&mail) })),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    assert!(res.cookie.is_none(), "no session until a company is chosen");
+    let names: Vec<&str> = res.body["choose"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["Default", "Other"]);
+    let ticket = res.body["ticket"].as_str().unwrap().to_owned();
+
+    let res = call(
+        &db,
+        post(
+            "/auth/session/choose",
+            json!({ "ticket": ticket, "org_id": other }),
+        ),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    assert_eq!(res.body["organization"]["name"], "Other");
+    assert_eq!(res.body["companies"].as_array().unwrap().len(), 2);
+    assert!(res.cookie.is_some());
+
+    // A ticket picks once.
+    let res = call(
+        &db,
+        post(
+            "/auth/session/choose",
+            json!({ "ticket": ticket, "org_id": other }),
+        ),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(res.body["error"]["code"], "link_expired");
+    db.drop().await;
+}
+
+#[tokio::test]
+async fn choosing_checks_membership_then_and_tickets_expire() {
+    let Some((db, sent)) = db().await else { return };
+    let other = in_two_companies(&db).await;
+    let ticket = open_link(&db, &sent).await.body["ticket"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    // Removed from Other after proving the address: Other is refused, and
+    // the same ticket still picks a company the address belongs to.
+    commit(
+        &db.state,
+        &payvy_server::Actor::administrator(other, "admin"),
+        "person.add",
+        json!({ "email": "ops@example.com", "name": "Ops" }),
+    )
+    .await
+    .unwrap();
+    commit(
+        &db.state,
+        &payvy_server::Actor::administrator(other, "admin"),
+        "person.remove",
+        json!({ "actor": "robert" }),
+    )
+    .await
+    .unwrap();
+    let res = call(
+        &db,
+        post(
+            "/auth/session/choose",
+            json!({ "ticket": ticket, "org_id": other }),
+        ),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::FORBIDDEN);
+    assert_eq!(res.body["error"]["code"], "not_member");
+    // A company the address never belonged to says the same.
+    let res = call(
+        &db,
+        post(
+            "/auth/session/choose",
+            json!({ "ticket": ticket, "org_id": uuid::Uuid::new_v4() }),
+        ),
+    )
+    .await;
+    assert_eq!(res.body["error"]["code"], "not_member");
+    let res = call(
+        &db,
+        post(
+            "/auth/session/choose",
+            json!({ "ticket": ticket, "org_id": payvy_store::DEFAULT_ORG }),
+        ),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+
+    // Back in two companies; a ticket is good for ten minutes.
+    commit(
+        &db.state,
+        &payvy_server::Actor::administrator(other, "admin"),
+        "person.add",
+        json!({ "email": "robert@example.com", "name": "Robert" }),
+    )
+    .await
+    .unwrap();
+    let ticket = open_link(&db, &sent).await.body["ticket"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    *db.clock.lock().unwrap() += chrono::Duration::minutes(11);
+    let res = call(
+        &db,
+        post(
+            "/auth/session/choose",
+            json!({ "ticket": ticket, "org_id": other }),
+        ),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::UNAUTHORIZED);
+    db.drop().await;
+}
+
+#[tokio::test]
+async fn switching_company_rechecks_membership_and_ends_the_old_session() {
+    let Some((db, sent)) = db().await else { return };
+    // One company: the link signs straight in.
+    let first = sign_in(&db, &sent).await;
+    let other = in_two_companies(&db).await;
+
+    // Not from a cross-site form.
+    let res = call(&db, switch(&first, other, false)).await;
+    assert_eq!(res.status, StatusCode::FORBIDDEN);
+    // Not into a company the address doesn't belong to.
+    let res = call(&db, switch(&first, uuid::Uuid::new_v4(), true)).await;
+    assert_eq!(res.body["error"]["code"], "not_member");
+
+    let res = call(&db, switch(&first, other, true)).await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    assert_eq!(res.body["organization"]["name"], "Other");
+    let second = session(&res.cookie.unwrap());
+    assert_eq!(
+        call(&db, whoami(&first)).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    let me = call(&db, whoami(&second)).await;
+    assert_eq!(me.body["organization"]["name"], "Other");
+
+    // The session in Other runs commands in Other only.
+    let res = call(&db, run_as(&second, true)).await;
+    let people = res.body["result"]["people"].to_string();
+    assert!(people.contains("robert@example.com"), "{people}");
+    db.drop().await;
+}
+
+#[tokio::test]
+async fn a_link_sent_for_a_new_company_opens_there() {
+    let Some((mut db, sent)) = db().await else {
+        return;
+    };
+    db.state = db.state.clone().with_operator_key(common::OPERATOR_KEY);
+    let create = |key: &'static str| {
+        let state = db.state.clone();
+        async move {
+            payvy_server::operator::run(
+                &state,
+                "org.create",
+                json!({ "idempotency_key": key, "name": "Quarry Rentals",
+                        "admin_email": "Robert@Example.com", "admin_name": "Robert",
+                        "send_sign_in_link": true }),
+                payvy_server::commands::Mode::Commit {
+                    confirm_token: None,
+                },
+            )
+            .await
+            .unwrap()
+        }
+    };
+    let made = create("signup-1").await;
+    assert_eq!(made["result"]["sign_in_link"], "sent");
+    let org = made["result"]["organization"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    // Robert is also in Default, but this link opens the new company.
+    let mail = mails(&sent, 1).await.remove(0);
+    let res = call(
+        &db,
+        post("/auth/session", json!({ "token": token_in(&mail) })),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    assert_eq!(res.body["organization"]["id"], org.as_str());
+    assert_eq!(res.body["roles"], json!(["admin"]));
+
+    // A replay of the signup sends nothing more.
+    let again = create("signup-1").await;
+    assert_eq!(again["result"]["sign_in_link"], "not_sent");
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert_eq!(sent.lock().unwrap().len(), 1);
+    db.drop().await;
+}
+
+#[tokio::test]
+async fn a_link_sent_before_links_proved_addresses_still_works() {
+    let Some((db, _)) = db().await else { return };
+    let robert = db
+        .state
+        .store
+        .people_by_email("robert@example.com")
+        .await
+        .unwrap()
+        .remove(0);
+    let now = (db.state.clock)();
+    let token = "a".repeat(64);
+    db.state
+        .store
+        .insert_sign_in_link(
+            &payvy_server::hash_key(&token),
+            robert.person.id,
+            now,
+            now + chrono::Duration::minutes(15),
+        )
+        .await
+        .unwrap();
+    let res = call(&db, post("/auth/session", json!({ "token": token }))).await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    let res = call(&db, post("/auth/session", json!({ "token": token }))).await;
+    assert_eq!(res.status, StatusCode::UNAUTHORIZED);
     db.drop().await;
 }
 

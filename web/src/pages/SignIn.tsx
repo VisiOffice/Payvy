@@ -9,7 +9,7 @@ import { Spinner } from '@astryxdesign/core/Spinner';
 import { Text } from '@astryxdesign/core/Text';
 import { TextInput } from '@astryxdesign/core/TextInput';
 import { VStack } from '@astryxdesign/core/VStack';
-import { ApiError, auth, type Me } from '../api/client';
+import { ApiError, auth, isChoice, type Choice, type Me } from '../api/client';
 
 /**
  * Asks for a sign-in link, and opens one: the emailed link lands here with
@@ -26,6 +26,7 @@ export function SignIn({ onSignedIn }: { onSignedIn: (me: Me) => void }) {
   const [sent, setSent] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [redeeming, setRedeeming] = useState(Boolean(token));
+  const [choice, setChoice] = useState<Choice | null>(null);
   const redeemed = useRef(false);
 
   useEffect(() => {
@@ -36,8 +37,14 @@ export function SignIn({ onSignedIn }: { onSignedIn: (me: Me) => void }) {
     window.history.replaceState(null, '', '/sign-in');
     auth
       .redeem(token)
-      .then((me) => {
-        onSignedIn(me);
+      .then((r) => {
+        if (isChoice(r)) {
+          // The address belongs to several companies: pick one.
+          setChoice(r);
+          setRedeeming(false);
+          return;
+        }
+        onSignedIn(r);
         navigate(from, { replace: true });
       })
       .catch((e) => {
@@ -53,6 +60,22 @@ export function SignIn({ onSignedIn }: { onSignedIn: (me: Me) => void }) {
       setSent(r.message);
     } catch (e) {
       setError(e instanceof ApiError ? e.message : 'Something went wrong. Try again.');
+    }
+  }
+
+  async function pick(orgId: string) {
+    if (!choice) return;
+    setError(null);
+    setRedeeming(true);
+    try {
+      const me = await auth.choose(choice.ticket, orgId);
+      onSignedIn(me);
+      navigate(from, { replace: true });
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : 'Signing in failed. Try again.');
+      setRedeeming(false);
+      // An expired ticket can't pick again; start over with a new link.
+      if (e instanceof ApiError && e.code === 'link_expired') setChoice(null);
     }
   }
 
@@ -75,9 +98,16 @@ export function SignIn({ onSignedIn }: { onSignedIn: (me: Me) => void }) {
         </div>
         <Card width={400} maxWidth="calc(100vw - 32px)" padding={6}>
           <VStack gap={4}>
-            <Heading level={1}>Sign in to Payvy</Heading>
+            <Heading level={1}>{choice ? 'Choose a company' : 'Sign in to Payvy'}</Heading>
             {error && <Banner status="error" title={error} />}
-            {sent ? (
+            {choice ? (
+              <VStack gap={3}>
+                <Text type="supporting">Your address belongs to more than one company. Pick one; you can switch later from the company menu.</Text>
+                {choice.choose.map((c) => (
+                  <Button key={c.id} label={c.name} variant="secondary" width="100%" clickAction={() => pick(c.id)} />
+                ))}
+              </VStack>
+            ) : sent ? (
               <VStack gap={3}>
                 <Text>{sent}</Text>
                 <Text type="supporting">Check {email}. You can close this tab.</Text>

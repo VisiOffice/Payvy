@@ -216,6 +216,10 @@ struct CreateOrg {
     admin_email: String,
     admin_name: String,
     admin_actor: Option<String>,
+    /// Email the first Admin a sign-in link that opens in the new company.
+    /// Sent only when the company is created, never on a replay.
+    #[serde(default)]
+    send_sign_in_link: bool,
 }
 
 async fn create_org(
@@ -271,6 +275,34 @@ async fn create_org(
     } else {
         Vec::new()
     };
+    // Opening the link is what proves the address (docs/hosted.md).
+    let sign_in_link = match (input.send_sign_in_link, provisioned.created && !preview) {
+        (false, _) => Value::Null,
+        (true, false) => json!("not_sent"),
+        (true, true) => match &state.auth {
+            None => json!("not_configured"),
+            Some(auth) => {
+                // The company exists by now: a failure here must not turn the
+                // creation into an error. The person can ask for a link.
+                match auth::email_link(
+                    state,
+                    auth,
+                    &provisioned.admin.email,
+                    Some(provisioned.organization.id),
+                    "",
+                )
+                .await
+                {
+                    Ok(true) => json!("sent"),
+                    Ok(false) => json!("not_sent"),
+                    Err(error) => {
+                        tracing::warn!("signup sign-in link not queued: {error:#}");
+                        json!("failed")
+                    }
+                }
+            }
+        },
+    };
     let mut admin = json!(provisioned.admin);
     admin["roles"] = json!(provisioned.admin_roles);
 
@@ -279,6 +311,7 @@ async fn create_org(
             "created": provisioned.created,
             "organization": provisioned.organization,
             "admin": admin,
+            "sign_in_link": sign_in_link,
             "defaults": {
                 "workflow": "builtin",
                 "auto_pay_limit_cents": DEFAULT_AUTO_PAY_LIMIT_CENTS,

@@ -166,6 +166,11 @@ Conventions follow Visirent (`~/Code/visirent`).
   token travels after `#` and is posted by the app, so mail scanners can't use it up; only
   hashes of link and session tokens are stored; asking for a link answers the same for unknown
   addresses. A person signs in as the actor of the same name, with a person key's rights.
+  A link proves the address, not a company (`email_proofs`): one link however many companies
+  the address is in. Opening it signs in to the only company, or to the one it was sent for
+  (`org.create` with `send_sign_in_link`); otherwise it returns a ten-minute choice ticket and
+  the address's companies. Choosing and switching (`/auth/session/choose`, `/switch`) check
+  membership at that moment; a session is always one company's.
   Outbound mail goes through `mailer.rs` (Cloudflare Email Service, or the log in development).
 - **The README compares Payvy with Bill.com.** Keep every Bill.com figure sourced and dated, and
   keep the "what Bill.com has that Payvy doesn't" list honest.
