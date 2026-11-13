@@ -2222,13 +2222,14 @@ async fn apply_existing(
             po.po_number
         )));
     }
+    // A draft takes a new body from the authorized key only.
+    let Some(auth) = standing_auth(cx, po.vendor_id, &prepared.source).await? else {
+        return Err(CommandError::Conflict(format!(
+            "po_needs_person: only the authorized key can revise PO {}",
+            po.po_number
+        )));
+    };
     if po.status == "active" || po.status == "suspended" {
-        let Some(auth) = standing_auth(cx, po.vendor_id, &prepared.source).await? else {
-            return Err(CommandError::Conflict(format!(
-                "po_needs_person: only the authorized key can revise PO {}",
-                po.po_number
-            )));
-        };
         let current = po
             .revision
             .as_ref()
