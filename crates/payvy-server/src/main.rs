@@ -173,7 +173,7 @@ struct ExtractArgs {
     /// anthropic or openai-compatible.
     #[arg(long, env = "PAYVY_EXTRACT_PROVIDER")]
     extract_provider: Option<String>,
-    /// Defaults to claude-opus-5-5 for anthropic; required otherwise.
+    /// Defaults to claude-sonnet-5-5 for anthropic; required otherwise.
     #[arg(long, env = "PAYVY_EXTRACT_MODEL")]
     extract_model: Option<String>,
     /// Anthropic: https://api.anthropic.com. OpenAI-compatible: the URL
