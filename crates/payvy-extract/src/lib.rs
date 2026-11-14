@@ -24,7 +24,7 @@ use serde_json::{Value, json};
 /// The Claude API version these requests are written for.
 const ANTHROPIC_VERSION: &str = "2026-10-21";
 /// The default Claude model.
-pub const DEFAULT_CLAUDE_MODEL: &str = "claude-opus-5-5";
+pub const DEFAULT_CLAUDE_MODEL: &str = "claude-sonnet-5-5";
 /// Timeout for a single model HTTP request, also used to treat stale pending
 /// usage attempts as unknown in `usage.summary`.
 pub const REQUEST_TIMEOUT_SECS: i64 = 300;
