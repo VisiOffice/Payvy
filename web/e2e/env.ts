@@ -32,5 +32,14 @@ export interface State {
   /** An agent key (claude-ap) for setting up data the way an agent would. */
   agentKey: string;
   mercuryUrl: string;
+  /** The run's one company. */
+  orgId: string;
   serverLog: string;
 }
+
+/** Browser storage in which the first-run checklist was skipped for this
+ *  company ("Skip for now"), so `/` opens Waiting on you. */
+export const skippedFirstRun = (orgId: string) => ({
+  origin: BASE_URL,
+  localStorage: [{ name: `payvy:start-skipped:${orgId}`, value: '1' }],
+});

@@ -24,6 +24,7 @@ import {
   SIGNED_IN,
   STATE_DIR,
   STATE_FILE,
+  skippedFirstRun,
   type State,
 } from './env';
 
@@ -176,6 +177,7 @@ export default async function globalSetup() {
   });
   const cookie = /payvy_session=([0-9a-f]+)/.exec(res.headers.get('set-cookie') ?? '')?.[1];
   if (!res.ok || !cookie) throw new Error(`signing in failed: ${res.status} ${await res.text()}`);
+  const orgId = ((await res.json()) as { organization: { id: string } }).organization.id;
   fs.writeFileSync(
     SIGNED_IN,
     JSON.stringify({
@@ -191,10 +193,13 @@ export default async function globalSetup() {
           sameSite: 'Lax',
         },
       ],
-      origins: [],
+      // The run's company is new, so `/` would open the first-run checklist
+      // (first-run.spec.ts covers that). These tests are about the rest of
+      // the app: their browser has already skipped it.
+      origins: [skippedFirstRun(orgId)],
     }),
   );
-  fs.writeFileSync(STATE_FILE, JSON.stringify({ agentKey, serverLog, mercuryUrl: `http://127.0.0.1:${BANK_PORT}/mercury` } satisfies State));
+  fs.writeFileSync(STATE_FILE, JSON.stringify({ agentKey, orgId, serverLog, mercuryUrl: `http://127.0.0.1:${BANK_PORT}/mercury` } satisfies State));
 
   return async () => {
     if (edge && edge.exitCode === null) {

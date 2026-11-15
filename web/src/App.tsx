@@ -1,10 +1,11 @@
 import { Access, useCan } from './permissions';
 import { lazy, Suspense, useCallback, useEffect, useState } from 'react';
-import { Navigate, Route, Routes, useLocation, useParams } from 'react-router';
+import { Navigate, Route, Routes, useLocation, useNavigationType, useParams } from 'react-router';
 import { Center } from '@astryxdesign/core/Center';
 import { Spinner } from '@astryxdesign/core/Spinner';
 import { ApiError, auth, type Me } from './api/client';
 import { SessionContext, useSession } from './session';
+import { SetupProvider, skipped, useSetup } from './setup';
 import { Shell } from './Shell';
 import { SignIn } from './pages/SignIn';
 import { Bills } from './pages/Bills';
@@ -28,6 +29,7 @@ const Bank = lazy(() => import('./pages/Bank').then((m) => ({ default: m.Bank })
 const EmailSettings = lazy(() => import('./pages/EmailSettings').then((m) => ({ default: m.EmailSettings })));
 const PeopleSettings = lazy(() => import('./pages/PeopleSettings').then((m) => ({ default: m.PeopleSettings })));
 const CompanySettings = lazy(() => import('./pages/CompanySettings').then((m) => ({ default: m.CompanySettings })));
+const FirstRun = lazy(() => import('./pages/FirstRun').then((m) => ({ default: m.FirstRun })));
 const BillingSettings = lazy(() => import('./pages/BillingSettings').then((m) => ({ default: m.BillingSettings })));
 const AutoPaySettings = lazy(() => import('./pages/AutoPaySettings').then((m) => ({ default: m.AutoPaySettings })));
 const NotificationSettings = lazy(() => import('./pages/NotificationSettings').then(m => ({ default: m.NotificationSettings })));
@@ -104,9 +106,11 @@ export function App() {
 
   return (
     <SessionContext value={{ me: state.me, signOut, setMe: (me) => setState({ kind: 'signed_in', me }) }}>
+      <SetupProvider>
       <Shell>
         <Routes>
           <Route path="/" element={<Home />} />
+          <Route path="/start" element={<Suspense fallback={<Spinner label="Loading" />}><FirstRun /></Suspense>} />
           <Route path="/bills" element={<Bills />} />
           <Route
             path="/bills/:id"
@@ -192,6 +196,7 @@ export function App() {
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </Shell>
+      </SetupProvider>
     </SessionContext>
   );
 }
@@ -202,15 +207,35 @@ function OldWorkflowLink() {
   return <Navigate to={key === 'default' ? '/settings/workflows' : `/vendors/${key}#workflow`} replace />;
 }
 
-/** A hosted company without a plan can't read or pay yet: its Admins start
- *  on Settings > Billing to choose one. Everyone else, and every later visit
- *  once a plan is in force, starts on the inbox. Only `/` redirects, so the
- *  rest of the app stays reachable. */
+/** Where `/` lands. Waiting on you, except:
+ *  - A hosted company whose payments are off (its trial ended with no plan,
+ *    or it never had one) sends its Admins to Settings > Billing.
+ *  - A company with setup left to do sends whoever can do some of it to the
+ *    first-run checklist (/start), until every step is done or they skip it
+ *    in this browser. A company with every step done never goes there.
+ *  Following a link inside the app to `/` always shows Waiting on you, so
+ *  the checklist never stands between a person and their work; it is where
+ *  they arrive (a sign-in link, a typed address, a reload). */
 function Home() {
   const { me } = useSession();
   const can = useCan();
+  const setup = useSetup();
+  const arrived = useNavigationType() !== 'PUSH';
+  const waiting = <Center height="100%"><Spinner size="lg" label="Loading" /></Center>;
+
   if (me.plan?.billing && !me.plan.payments && can('billing.checkout')) {
-    return <Navigate to="/settings/billing" replace />;
+    // A new company's trial reaches billing.get before its plan reaches this
+    // server: while it runs, the company is new, not lapsed.
+    if (!setup.loaded) return waiting;
+    if (!setup.billing?.trial?.running) return <Navigate to="/settings/billing" replace />;
   }
-  return <Inbox />;
+  if (!arrived || skipped(me.organization.id)) return <Inbox />;
+  if (!setup.loaded) return waiting;
+  if (setup.failed || setup.done) return <Inbox />;
+  const canDoSome =
+    (!setup.bill && can('document.upload'))
+    || (!setup.bank && can('bank.connect'))
+    || (setup.people < 2 && can('person.add'))
+    || (setup.plan === 'todo' && can('billing.checkout'));
+  return canDoSome ? <Navigate to="/start" replace /> : <Inbox />;
 }

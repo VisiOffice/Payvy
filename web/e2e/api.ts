@@ -3,9 +3,14 @@
 // in the browser.
 import fs from 'node:fs';
 import path from 'node:path';
-import { BASE_URL, ROOT, STATE_FILE, type State } from './env';
+import { BASE_URL, ROOT, STATE_FILE, skippedFirstRun, type State } from './env';
 
 export const state = (): State => JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
+
+/** A browser nobody is signed in to, which has skipped the first-run
+ *  checklist: signing in lands on Waiting on you, as it does for a company
+ *  that is set up. */
+export const signedOut = () => ({ cookies: [], origins: [skippedFirstRun(state().orgId)] });
 
 export async function agent<R = Record<string, unknown>>(command: string, input: object): Promise<R> {
   const res = await fetch(`${BASE_URL}/api/commands/${command}`, {

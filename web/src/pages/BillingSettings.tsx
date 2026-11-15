@@ -16,45 +16,9 @@ import { Spinner } from '@astryxdesign/core/Spinner';
 import { Text } from '@astryxdesign/core/Text';
 import { VStack } from '@astryxdesign/core/VStack';
 import { run } from '../api/client';
+import { isLive, openBilling, PlanCards, type Billing } from '../billing';
 import { date } from '../money';
 import { Page } from '../Page';
-
-type PlanName = 'byoa' | 'managed';
-
-// Names, prices and terms come from the management app (billing.get); this
-// open-source page states none of its own.
-interface Subscription {
-  plan: PlanName | null;
-  status: string;
-  trial_end: string | null;
-  current_period_end: string | null;
-  cancel_at_period_end: boolean;
-  payments_stop_at: string | null;
-}
-
-/** The price carries its terms, as the management app words them. */
-interface Offer {
-  id: PlanName;
-  name: string;
-  price: string;
-  description: string[];
-}
-
-/** The card-free trial a new company starts with. `running`: it is what
- *  lets the company pay bills now (not ended, and no subscription yet). */
-interface Trial {
-  ends_at: string;
-  running: boolean;
-}
-
-interface Billing {
-  plan: { provisional?: boolean; reader: boolean; payments: boolean };
-  available: boolean;
-  subscription: Subscription | null;
-  /** Null for a company given no trial; absent from an older server. */
-  trial?: Trial | null;
-  offers: Offer[];
-}
 
 const STATUS: Record<string, { label: string; variant: 'success' | 'warning' | 'error' | 'neutral' }> = {
   trialing: { label: 'Trial', variant: 'success' },
@@ -72,7 +36,7 @@ const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 export function BillingSettings() {
   const [billing, setBilling] = useState<Billing | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
   const [openError, setOpenError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -81,23 +45,20 @@ export function BillingSettings() {
       .catch((e) => setError(message(e)));
   }, []);
 
-  async function open(command: 'billing.checkout' | 'billing.portal', input: Record<string, unknown>, key: string) {
-    setBusy(key);
+  async function portal() {
+    setBusy(true);
     setOpenError(null);
     try {
-      const r = await run<{ kind: string; url: string | null }>(command, input);
-      const url = r.result.url;
-      if (!url?.startsWith('https://')) throw new Error('Billing answered without a usable link; try again.');
-      window.location.assign(url);
+      await openBilling();
     } catch (e) {
       setOpenError(message(e));
-      setBusy(null);
+      setBusy(false);
     }
   }
 
   const sub = billing?.subscription;
   const offers = billing?.offers ?? [];
-  const live = !!sub && ['trialing', 'active', 'past_due'].includes(sub.status);
+  const live = isLive(sub);
   const current = offers.find((p) => p.id === sub?.plan);
   const status = sub ? STATUS[sub.status] : undefined;
   const trial = billing?.trial ?? null;
@@ -158,8 +119,8 @@ export function BillingSettings() {
               <Button
                 label="Manage billing"
                 variant="primary"
-                isLoading={busy === 'portal'}
-                onClick={() => void open('billing.portal', {}, 'portal')}
+                isLoading={busy}
+                onClick={() => void portal()}
               />
             </HStack>
             <Text type="supporting">Change plan or card, see invoices, or cancel, in Stripe.</Text>
@@ -196,28 +157,7 @@ export function BillingSettings() {
               description="Payments and reading are off. You can still sign in, read and export everything. Choose a plan to turn them back on."
             />
           )}
-          {offers.map((p) => (
-            <Card key={p.id}>
-              <VStack gap={2}>
-                <HStack gap={2} align="center">
-                  <Heading level={2}>{p.name}</Heading>
-                  <Text type="supporting">{p.price}</Text>
-                </HStack>
-                {p.description.map((line) => (
-                  <Text key={line}>{line}</Text>
-                ))}
-                <HStack>
-                  <Button
-                    label={`Choose ${p.name}`}
-                    variant={p.id === 'byoa' ? 'secondary' : 'primary'}
-                    isLoading={busy === p.id}
-                    isDisabled={!!busy && busy !== p.id}
-                    onClick={() => void open('billing.checkout', { plan: p.id }, p.id)}
-                  />
-                </HStack>
-              </VStack>
-            </Card>
-          ))}
+          <PlanCards offers={offers} onError={setOpenError} />
         </VStack>
       )}
     </Page>

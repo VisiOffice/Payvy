@@ -15,27 +15,12 @@ import { useSession } from '../session';
 import type { Doc } from '../documents/types';
 import { InboxBoard, InboxSide, InboxTable, typing, useInboxView, type Row, type View } from '../documents/InboxViews';
 import { readWithin } from '../documents/Loading';
+import { ACCEPT, base64, chosen } from '../documents/upload';
+import { ReaderLocked } from '../documents/ReaderLocked';
 
 type Status = Doc['status'];
 const STATUS_KEY: Record<string, Status> = { r: 'inbox', f: 'filed', n: 'trashed' };
 const LABEL: Record<Status, string> = { inbox: 'To review', filed: 'Filed', trashed: 'Not bills', split: 'Split' };
-const ACCEPT = 'application/pdf,image/png,image/jpeg,image/gif,image/webp,image/tiff';
-const MAX_BYTES = 25 * 1024 * 1024;
-function isInvoiceFile(file: File): boolean {
-  const type = file.type.toLowerCase();
-  return type === 'application/pdf' || type.startsWith('image/') || /\.(pdf|png|jpe?g|gif|webp|tiff?)$/i.test(file.name);
-}
-/** Files this page will take, and a sentence for each one it will not. */
-function chosen(list: File[]): { ok: File[]; problems: string[] } {
-  const ok: File[] = [];
-  const problems: string[] = [];
-  for (const file of list) {
-    if (file.size > MAX_BYTES) problems.push(`${file.name} is larger than 25 MB`);
-    else if (!isInvoiceFile(file)) problems.push(`${file.name} isn't a PDF or a photo`);
-    else ok.push(file);
-  }
-  return { ok, problems };
-}
 /**
  * True while files are dragged over the window and this page will take them.
  * The listeners stay up either way: a file drag is always cancelled, so the
@@ -110,14 +95,6 @@ function AddInvoices({ busy, onFiles }: { busy: boolean; onFiles: (files: File[]
     </div>
   );
 }
-function base64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const r = new FileReader();
-    r.onload = () => resolve(String(r.result).slice(String(r.result).indexOf(',') + 1));
-    r.onerror = () => reject(r.error ?? new Error(`Couldn't read ${file.name}`));
-    r.readAsDataURL(file);
-  });
-}
 export const fileSize = (bytes: number) => bytes < 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 
 /** Wide enough for a list beside a review; narrower screens show the table instead. */
@@ -135,6 +112,7 @@ function useRoomy(): boolean {
 
 export function Documents() {
   const { plan } = useSession().me;
+  const readerOff = !!plan?.hosted && !plan.reader;
   const [view, setView] = useInboxView();
   const [status, setStatus] = useState<Status>('inbox');
   const show = (s: Status) => { setStatus(s); setSearch(''); };
@@ -198,12 +176,15 @@ export function Documents() {
         added.push(r.result.id);
       }
       if (added.length === 1) {
-        setUploading({ title: 'Invoice uploaded. Reading the details…', detail: 'We’ll open it for review when the reading finishes.' });
-        await run('document.extract', { document_id: added[0]! }).catch(() => undefined);
+        // Without Payvy's reader on the plan there is no reading to wait for.
+        if (!readerOff) {
+          setUploading({ title: 'Invoice uploaded. Reading the details…', detail: 'We’ll open it for review when the reading finishes.' });
+          await run('document.extract', { document_id: added[0]! }).catch(() => undefined);
+        }
         navigate(`/inbox/${added[0]}`);
         return;
       }
-      toast({ body: `Added ${added.length} documents. They're read in the background.` });
+      toast({ body: readerOff ? `Added ${added.length} documents.` : `Added ${added.length} documents. They're read in the background.` });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       toast({ body: added.length ? `Added ${added.length}, then stopped: ${msg}` : msg, type: 'error' });
@@ -254,10 +235,11 @@ export function Documents() {
     </div>
     {dragging && <div className="payvy-drop-overlay" role="status"><strong>Drop to add invoices</strong><p>PDFs, scans, or photos · up to 25 MB each</p></div>}
     {uploading && <div role="status" className="payvy-upload-progress"><Spinner size="sm" /><div><strong>{uploading.title}</strong><p>{uploading.detail}</p></div></div>}
-    {plan?.hosted && !plan.reader && status === 'inbox' && <Banner
+    {readerOff && status === 'inbox' && <Banner
       status="info"
       title="Your own agent reads these invoices"
       description="This plan doesn't include Payvy's built-in reader, so documents here wait until your agent reads them over MCP or the API and creates the bills. You can also enter a bill by hand from any document."
+      endContent={<ReaderLocked />}
     />}
     {error && <Banner status="error" title="Couldn't load documents" description={error} endContent={<Button label="Try again" variant="secondary" onClick={() => load()} />} />}
     {!docs && !error && <div className="payvy-document-list-loading" aria-busy="true"><div role="status" className="payvy-loading-message"><Spinner size="sm" />Loading documents</div><div aria-hidden="true">{[0, 1, 2].map(i => <div className="payvy-document-row-placeholder" key={i}><span className="payvy-file-glyph" /><span className="payvy-skeleton" /><span className="payvy-skeleton" /></div>)}</div></div>}

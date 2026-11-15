@@ -10,6 +10,7 @@ import { Text } from '@astryxdesign/core/Text';
 import { HStack } from '@astryxdesign/core/HStack';
 import { DropdownMenu } from '@astryxdesign/core/DropdownMenu';
 import { useSession } from './session';
+import { useSetup } from './setup';
 import { NavIcon } from './NavIcon';
 import { Kbd } from '@astryxdesign/core/Kbd';
 
@@ -89,6 +90,9 @@ export function Shell({ children }: { children: ReactNode }) {
   const { pathname, search } = useLocation();
   const navigate = useNavigate();
   const nav = NAV.filter(n => n.href !== '/purchase-orders' || me.features.purchase_orders);
+  // The first-run checklist stays in the menu until every step is done.
+  const setup = useSetup();
+  const starting = setup.loaded && !setup.failed && !setup.done;
   const inSettings = pathname === '/settings' || pathname.startsWith('/settings/');
   // Where "Back to app" returns: the last page outside settings.
   const back = useRef('/');
@@ -183,6 +187,7 @@ export function Shell({ children }: { children: ReactNode }) {
                 isSelected={n.href === '/' ? pathname === '/' : pathname.startsWith(n.href)}
               />
             ))}
+            {starting && <SideNavItem label="Get started" icon={<NavIcon name="start" />} href="/start" isSelected={pathname === '/start'} />}
           </SideNavSection>
         </SideNav>
       )}
