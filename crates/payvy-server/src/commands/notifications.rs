@@ -255,6 +255,7 @@ pub async fn deliver(cx: &mut Cx<'_>, input: Deliver) -> Result<Value, CommandEr
             to: n.email.clone(),
             subject,
             text,
+            html: None,
         })
         .await;
     let current = store::notification_lock(&mut cx.tx, n.id)

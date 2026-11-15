@@ -172,6 +172,11 @@ Conventions follow Visirent (`~/Code/visirent`).
   the address's companies. Choosing and switching (`/auth/session/choose`, `/switch`) check
   membership at that moment; a session is always one company's.
   Outbound mail goes through `mailer.rs` (Cloudflare Email Service, or the log in development).
+  The words are in `emails.rs`: text that is complete on its own plus an HTML part (inline
+  styles, nothing fetched, everything a person typed escaped). A newly created company's first
+  Admin gets the welcome instead of the sign-in mail (`org.create` with `send_sign_in_link`),
+  with the operator's optional `welcome_note`; the core's own text never names a price, plan,
+  trial or site.
 - **The README compares Payvy with Bill.com.** Keep every Bill.com figure sourced and dated, and
   keep the "what Bill.com has that Payvy doesn't" list honest.
 - SQL is static strings (`concat!` with the column macros); sqlx 0.9 refuses runtime-built SQL.
