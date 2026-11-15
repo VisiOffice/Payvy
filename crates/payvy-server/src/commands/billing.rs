@@ -50,6 +50,29 @@ pub async fn get(cx: &mut Cx<'_>) -> Result<Value, CommandError> {
 #[serde(deny_unknown_fields)]
 pub struct Checkout {
     plan: PlanId,
+    #[serde(default)]
+    return_to: ReturnTo,
+}
+
+/// Where Stripe sends the person back. A fixed set of the app's own pages,
+/// never a path from the browser.
+#[derive(Deserialize, Default, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+pub enum ReturnTo {
+    /// Settings > Billing.
+    #[default]
+    Billing,
+    /// The first-run checklist, which ticks its plan step from `billing.get`.
+    Start,
+}
+
+impl ReturnTo {
+    fn path(self) -> &'static str {
+        match self {
+            ReturnTo::Billing => "/settings/billing",
+            ReturnTo::Start => "/start",
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -57,15 +80,19 @@ pub struct Checkout {
 pub struct Portal {}
 
 pub async fn checkout(cx: &mut Cx<'_>, input: Checkout) -> Result<Value, CommandError> {
-    open(cx, Some(input.plan)).await
+    open(cx, Some(input.plan), input.return_to).await
 }
 
 pub async fn portal(cx: &mut Cx<'_>, _: Portal) -> Result<Value, CommandError> {
-    open(cx, None).await
+    open(cx, None, ReturnTo::Billing).await
 }
 
 /// The link, and an event saying who opened it. Preview asks nothing.
-async fn open(cx: &mut Cx<'_>, plan: Option<PlanId>) -> Result<Value, CommandError> {
+async fn open(
+    cx: &mut Cx<'_>,
+    plan: Option<PlanId>,
+    return_to: ReturnTo,
+) -> Result<Value, CommandError> {
     let b = billing(cx)?;
     let auth = cx.auth().ok_or(CommandError::NotConfigured(
         "billing needs PAYVY_PUBLIC_URL",
@@ -78,7 +105,7 @@ async fn open(cx: &mut Cx<'_>, plan: Option<PlanId>) -> Result<Value, CommandErr
         .into_iter()
         .find(|p| p.actor == cx.actor.name)
         .ok_or_else(|| CommandError::Forbidden("billing is for a signed-in person".into()))?;
-    let return_url = format!("{}/settings/billing", auth.public_url);
+    let return_url = format!("{}{}", auth.public_url, return_to.path());
     let company = Company {
         org_id: cx.org,
         name: &org.name,

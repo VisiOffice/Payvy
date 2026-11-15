@@ -172,6 +172,50 @@ async fn checkout_sends_the_sessions_company_and_keeps_the_link_out_of_history()
 }
 
 #[tokio::test]
+async fn checkout_returns_to_the_first_run_checklist_when_asked_and_to_no_other_path() {
+    let Some((_db, state, fake)) = setup().await else {
+        return;
+    };
+    commit(
+        &state,
+        &person("robert"),
+        "billing.checkout",
+        json!({ "plan": "byoa", "return_to": "start" }),
+    )
+    .await
+    .unwrap();
+    commit(
+        &state,
+        &person("robert"),
+        "billing.checkout",
+        json!({ "plan": "byoa", "return_to": "billing" }),
+    )
+    .await
+    .unwrap();
+    // The page is one of a fixed set: a path or a URL from the caller is
+    // refused before the management app is asked.
+    for other in ["/inbox", "https://elsewhere.example", ""] {
+        let e = commit(
+            &state,
+            &person("robert"),
+            "billing.checkout",
+            json!({ "plan": "byoa", "return_to": other }),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(e, payvy_server::commands::CommandError::Invalid(_)),
+            "{other}: {e:?}"
+        );
+    }
+
+    let seen = fake.seen.lock().unwrap().clone();
+    assert_eq!(seen.len(), 2);
+    assert_eq!(seen[0].2["return_url"], format!("{APP}/start"));
+    assert_eq!(seen[1].2["return_url"], format!("{APP}/settings/billing"));
+}
+
+#[tokio::test]
 async fn a_subscribed_company_is_sent_to_the_portal() {
     let Some((_db, state, fake)) = setup().await else {
         return;
