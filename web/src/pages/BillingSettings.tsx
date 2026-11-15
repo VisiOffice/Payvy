@@ -1,7 +1,9 @@
 // Settings > Billing (hosted Payvy only). The plan is paid through Stripe:
 // billing.checkout opens Checkout for a company without a subscription and
 // the billing portal for one with it. Opening either grants nothing; the plan
-// changes when Stripe confirms, and this page shows what is in force.
+// changes when Stripe confirms, and this page shows what is in force. A new
+// company starts in a trial the management app gives it, with no card: the
+// page says when it ends, or that it has.
 import { useEffect, useState } from 'react';
 import { Badge } from '@astryxdesign/core/Badge';
 import { Banner } from '@astryxdesign/core/Banner';
@@ -30,18 +32,27 @@ interface Subscription {
   payments_stop_at: string | null;
 }
 
+/** The price carries its terms, as the management app words them. */
 interface Offer {
   id: PlanName;
   name: string;
   price: string;
   description: string[];
-  trial_days: number;
+}
+
+/** The card-free trial a new company starts with. `running`: it is what
+ *  lets the company pay bills now (not ended, and no subscription yet). */
+interface Trial {
+  ends_at: string;
+  running: boolean;
 }
 
 interface Billing {
   plan: { provisional?: boolean; reader: boolean; payments: boolean };
   available: boolean;
   subscription: Subscription | null;
+  /** Null for a company given no trial; absent from an older server. */
+  trial?: Trial | null;
   offers: Offer[];
 }
 
@@ -89,7 +100,10 @@ export function BillingSettings() {
   const live = !!sub && ['trialing', 'active', 'past_due'].includes(sub.status);
   const current = offers.find((p) => p.id === sub?.plan);
   const status = sub ? STATUS[sub.status] : undefined;
-  const trialDays = Math.max(0, ...offers.map((o) => o.trial_days));
+  const trial = billing?.trial ?? null;
+  // Over, and payments are off. (Not for a company whose payments were
+  // turned on by hand, or in the hour before the plan catches up.)
+  const trialEnded = !!trial && !trial.running && !billing?.plan.payments;
 
   return (
     <Page title="Billing" narrow description="Your Payvy plan. Payments go through Stripe; Payvy never sees your card.">
@@ -154,18 +168,28 @@ export function BillingSettings() {
       )}
       {billing && billing.available && !live && (
         <VStack gap={4}>
-          {billing.plan.provisional && (
+          {trial?.running && (
+            <Banner
+              status="info"
+              title={`Trial until ${date(trial.ends_at)}.`}
+              description="Add a plan to keep paying bills after that."
+            />
+          )}
+          {trial && trialEnded && (
+            <Banner
+              status="warning"
+              title={`Your trial ended on ${date(trial.ends_at)}.`}
+              description="Choose a plan to send payments again."
+            />
+          )}
+          {!trial && billing.plan.provisional && (
             <Banner
               status="info"
               title="Choose a plan to start"
-              description={
-                trialDays > 0
-                  ? `Until you do, Payvy won't read invoices or send payments. Plans start with a ${trialDays}-day free trial; you won't be charged until it ends, and you can cancel any time.`
-                  : "Until you do, Payvy won't read invoices or send payments."
-              }
+              description="Until you do, Payvy won't read invoices or send payments."
             />
           )}
-          {!billing.plan.provisional && !billing.plan.payments && (
+          {!trial && !billing.plan.provisional && !billing.plan.payments && (
             <Banner
               status="warning"
               title="Your plan has ended"
@@ -182,7 +206,6 @@ export function BillingSettings() {
                 {p.description.map((line) => (
                   <Text key={line}>{line}</Text>
                 ))}
-                {p.trial_days > 0 && <Text type="supporting">{`${p.trial_days}-day free trial`}</Text>}
                 <HStack>
                   <Button
                     label={`Choose ${p.name}`}

@@ -34,8 +34,22 @@ impl PlanId {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Status {
     pub subscription: Option<Subscription>,
+    /// Absent for a company the management app gave no trial, and from a
+    /// management app older than the field.
+    #[serde(default)]
+    pub trial: Option<Trial>,
     #[serde(default)]
     pub offers: Vec<Offer>,
+}
+
+/// The card-free trial the management app gives a new company. Its length
+/// and what it includes are the management app's; Payvy only shows it.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct Trial {
+    pub ends_at: DateTime<Utc>,
+    /// The trial is what lets the company pay bills now: it hasn't ended and
+    /// no subscription has taken over.
+    pub running: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -51,8 +65,9 @@ pub struct Subscription {
     pub payments_stop_at: Option<DateTime<Utc>>,
 }
 
-/// A plan as the management app offers it: the price and trial are its to
-/// state, so the open-source app never carries them.
+/// A plan as the management app offers it: the price, with whatever terms
+/// go with it ("Free for 14 days, then ..."), is its to state, so the
+/// open-source app never carries them.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Offer {
     pub id: PlanId,
@@ -60,8 +75,6 @@ pub struct Offer {
     pub price: String,
     #[serde(default)]
     pub description: Vec<String>,
-    #[serde(default)]
-    pub trial_days: u32,
 }
 
 /// A Checkout or portal link for the person who asked.
