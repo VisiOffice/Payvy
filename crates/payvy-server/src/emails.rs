@@ -6,8 +6,10 @@
 //! no images, no fonts or anything else fetched from elsewhere, no tracking,
 //! and the link exactly as issued. The frame sets no page background or body
 //! text colour and declares `color-scheme: light dark`, so a mail client's
-//! own light or dark colours apply; the few colours it does set (the button,
-//! the rule, the closing line) read on both.
+//! own light or dark colours apply; the few colours it does set (the brand
+//! red of the wordmark's dot, the button, the note's bar and the step numbers,
+//! and greys for fine print and the rule) read on both. A hidden first line
+//! is what an inbox shows beside the subject.
 //!
 //! Everything a person supplied (company name, address, the operator's note)
 //! goes through `escape` before it reaches the HTML part. This is open-source
@@ -52,10 +54,25 @@ pub fn escape(s: &str) -> String {
     out
 }
 
-const P: &str = "margin:0 0 16px;";
+// Colours that read on a light or a dark client background: the brand red
+// with white on it, a mid grey for fine print and a light grey rule.
+const RED: &str = "#dc3e46";
+const RED_EDGE: &str = "#b62b32";
+const MUTED: &str = "#767676";
+const RULE: &str = "#d4d4d0";
+const FONT: &str =
+    "-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,Roboto,Helvetica,Arial,sans-serif";
 
-/// The frame every HTML mail shares. `title` and `body` are already HTML.
-fn frame(title: &str, body: &str) -> String {
+/// The frame every HTML mail shares: the wordmark, the body and a closing
+/// line. `title`, `preview` and `body` are already HTML; `preview` is the
+/// line an inbox shows beside the subject, hidden in the message itself.
+fn frame(title: &str, preview: &str, body: &str, public_url: &str) -> String {
+    let url = escape(public_url);
+    let host = escape(
+        public_url
+            .trim_start_matches("https://")
+            .trim_start_matches("http://"),
+    );
     format!(
         concat!(
             "<!doctype html>\n",
@@ -68,35 +85,66 @@ fn frame(title: &str, body: &str) -> String {
             "<title>{title}</title>\n",
             "</head>\n",
             "<body style=\"margin:0;padding:0;color-scheme:light dark;\">\n",
-            "<div style=\"max-width:560px;margin:0 auto;padding:24px 20px;",
-            "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;",
-            "font-size:16px;line-height:1.5;\">\n",
-            "<p style=\"margin:0 0 24px;font-size:22px;font-weight:700;letter-spacing:-0.02em;\">Payvy</p>\n",
+            "<div style=\"display:none;max-height:0;overflow:hidden;opacity:0;\">{preview}</div>\n",
+            "<div style=\"max-width:520px;margin:0 auto;padding:32px 24px;",
+            "font-family:{FONT};font-size:16px;line-height:1.55;\">\n",
+            "<p style=\"margin:0 0 36px;font-size:26px;font-weight:760;letter-spacing:-1px;line-height:1;\">",
+            "Payvy<span style=\"color:{RED};\">.</span></p>\n",
             "{body}",
+            "<p style=\"margin:32px 0 0;font-size:13px;color:{MUTED};\">",
+            "Payvy &middot; <a href=\"{url}\" style=\"color:{MUTED};\">{host}</a></p>\n",
             "</div>\n",
             "</body>\n",
             "</html>\n",
         ),
         title = title,
+        preview = preview,
         body = body,
+        url = url,
+        host = host,
+        FONT = FONT,
+        RED = RED,
+        MUTED = MUTED,
     )
 }
 
-/// The link as a button, and again as text under it so it can be copied.
-fn button_and_link(link: &str) -> String {
+/// The red button, and the fine print under it.
+fn button(link: &str, label: &str, under: &str) -> String {
+    format!(
+        concat!(
+            "<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" style=\"margin:0 0 12px;\">",
+            "<tr><td style=\"background-color:{RED};border-radius:6px;border-bottom:3px solid {RED_EDGE};\">",
+            "<a href=\"{href}\" style=\"display:inline-block;padding:13px 24px;color:#ffffff;",
+            "font-size:16px;font-weight:600;text-decoration:none;\">{label} &rarr;</a>",
+            "</td></tr></table>\n",
+            "<p style=\"margin:0 0 32px;font-size:14px;color:{MUTED};\">{under}</p>\n",
+        ),
+        href = escape(link),
+        label = label,
+        under = under,
+        RED = RED,
+        RED_EDGE = RED_EDGE,
+        MUTED = MUTED,
+    )
+}
+
+/// Fine print under a rule: why the mail came, and the link to copy if the
+/// button doesn't work.
+fn fine_print(why: &str, link: &str) -> String {
     let href = escape(link);
     format!(
         concat!(
-            "<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" style=\"margin:0 0 16px;\">",
-            "<tr><td style=\"background-color:#1d4ed8;border-radius:6px;\">",
-            "<a href=\"{href}\" style=\"display:inline-block;padding:12px 22px;color:#ffffff;",
-            "font-weight:600;text-decoration:none;\">Sign in to Payvy</a>",
-            "</td></tr></table>\n",
-            "<p style=\"{P}\">Or copy this link into your browser:<br>",
-            "<a href=\"{href}\" style=\"word-break:break-all;\">{href}</a></p>\n",
+            "<div style=\"margin:32px 0 0;padding:20px 0 0;border-top:1px solid {RULE};",
+            "font-size:13px;line-height:1.6;color:{MUTED};\">\n",
+            "<p style=\"margin:0 0 12px;\">{why}</p>\n",
+            "<p style=\"margin:0;\">Button not working? Copy this link into your browser:<br>",
+            "<a href=\"{href}\" style=\"color:{MUTED};word-break:break-all;\">{href}</a></p>\n",
+            "</div>\n",
         ),
+        why = why,
         href = href,
-        P = P,
+        RULE = RULE,
+        MUTED = MUTED,
     )
 }
 
@@ -105,19 +153,42 @@ pub fn sign_in(to: &str, link: &str, link_minutes: i64) -> Mail {
     let rules = format!(
         "The link works once, for {link_minutes} minutes. If you didn't ask for it, ignore this email: nobody can sign in without opening it."
     );
-    let html = frame(
-        "Sign in to Payvy",
-        &format!(
-            "<p style=\"{P}\">Open this link to sign in to Payvy:</p>\n{}<p style=\"{P}\">{rules}</p>\n",
-            button_and_link(link),
+    // Links are always `{PAYVY_PUBLIC_URL}/sign-in…` (auth::email_link).
+    let public_url = link.split("/sign-in").next().unwrap_or(link);
+    let body = format!(
+        concat!(
+            "<h1 style=\"margin:0 0 12px;font-size:24px;font-weight:650;letter-spacing:-0.5px;line-height:1.25;\">Sign in to Payvy</h1>\n",
+            "<p style=\"margin:0 0 24px;\">Here's the link you asked for.</p>\n",
+            "{button}",
+            "{fine}",
+        ),
+        button = button(
+            link,
+            "Sign in to Payvy",
+            &format!("Works once, for {link_minutes} minutes.")
+        ),
+        fine = fine_print(
+            "If you didn't ask for it, ignore this email: nobody can sign in without opening it.",
+            link
         ),
     );
     Mail {
         to: to.to_owned(),
         subject: "Sign in to Payvy".into(),
         text: format!("Open this link to sign in to Payvy:\n\n{link}\n\n{rules}\n"),
-        html: Some(html),
+        html: Some(frame(
+            "Sign in to Payvy",
+            "Your sign-in link for Payvy.",
+            &body,
+            public_url,
+        )),
     }
+}
+
+/// One step of the welcome: a short title and what to do.
+struct Step {
+    title: &'static str,
+    detail: String,
 }
 
 /// The first mail a newly created company's first Admin gets, in place of
@@ -125,65 +196,101 @@ pub fn sign_in(to: &str, link: &str, link_minutes: i64) -> Mail {
 /// that has just been created.
 pub fn welcome(w: &Welcome<'_>) -> Mail {
     let sign_in_page = format!("{}/sign-in", w.public_url);
-    let created = format!("{} was created in Payvy for {}.", w.company, w.to);
-    let rules = format!(
-        "The link works once, for {} minutes. If it has expired, ask for a new one at {sign_in_page}. If you didn't ask for it, ignore this email: nobody can sign in without opening it.",
+    let steps = [
+        Step {
+            title: "Send your first bill",
+            detail: if w.email_intake {
+                "Upload an invoice in the Inbox, or create your email-in address under Settings > Email-in address and forward bills to it.".into()
+            } else {
+                "Upload an invoice in the Inbox.".into()
+            },
+        },
+        Step {
+            title: "Connect the bank that pays",
+            detail: "Under Settings > Bank. Payvy pays through Mercury from your own account, and never holds your money.".into(),
+        },
+        Step {
+            title: "Add the people who approve",
+            detail: format!(
+                "Under Settings > People. Each of them signs in with their email at {sign_in_page}."
+            ),
+        },
+    ];
+    let why = format!(
+        "{} was created in Payvy for {}. If you didn't ask for it, ignore this email: nobody can sign in without opening the link.",
+        w.company, w.to
+    );
+    let expired = format!(
+        "The link works once, for {} minutes. If it has expired, ask for a new one at {sign_in_page}.",
         w.link_minutes
     );
-    let first_bill = if w.email_intake {
-        "Send a first bill. Upload an invoice in the Inbox, or create your company's email-in address under Settings > Email-in address and forward bills to it."
-    } else {
-        "Send a first bill. Upload an invoice in the Inbox."
-    };
-    let steps = [
-        first_bill.to_owned(),
-        "Connect the bank that pays, under Settings > Bank. Payvy pays through Mercury today, from your own account: it never holds your money.".to_owned(),
-        format!(
-            "Add the people who approve, under Settings > People. Payvy doesn't email them: each asks for a sign-in link at {sign_in_page}."
-        ),
-    ];
 
+    // The text part: complete on its own, in the same order.
     let mut text = format!(
-        "{created}\n\nOpen this link to sign in:\n\n{}\n\n{rules}\n\nWhat to do first:\n\n",
-        w.link
+        "{} is ready in Payvy.\n\nSign in:\n\n{}\n\n{expired}\n\n",
+        w.company, w.link
     );
-    for (i, step) in steps.iter().enumerate() {
-        text.push_str(&format!("{}. {step}\n", i + 1));
-    }
     if let Some(note) = w.note {
-        text.push_str(&format!("\n{note}\n"));
+        text.push_str(&format!("{note}\n\n"));
     }
-    text.push_str(&format!("\nPayvy: {}\n", w.public_url));
+    text.push_str("Three steps to your first payment:\n\n");
+    for (i, step) in steps.iter().enumerate() {
+        text.push_str(&format!("{}. {}. {}\n", i + 1, step.title, step.detail));
+    }
+    text.push_str(&format!("\n{why}\n\nPayvy: {}\n", w.public_url));
 
+    let company = escape(w.company);
     let mut body = format!(
-        "<p style=\"{P}\">{}</p>\n{}<p style=\"{P}\">{}</p>\n<p style=\"margin:24px 0 8px;font-weight:700;\">What to do first</p>\n<ol style=\"margin:0 0 16px;padding:0 0 0 24px;\">\n",
-        escape(&created),
-        button_and_link(w.link),
-        escape(&rules),
+        "<h1 style=\"margin:0 0 12px;font-size:26px;font-weight:650;letter-spacing:-0.6px;line-height:1.2;\">{company} is ready</h1>\n\
+         <p style=\"margin:0 0 24px;\">Welcome to Payvy. Sign in to send your first bill.</p>\n"
     );
-    for step in &steps {
-        body.push_str(&format!(
-            "<li style=\"margin:0 0 8px;\">{}</li>\n",
-            escape(step)
-        ));
-    }
-    body.push_str("</ol>\n");
     if let Some(note) = w.note {
         // Escaped text with its line breaks kept; never an anchor.
         body.push_str(&format!(
-            "<p style=\"{P}\">{}</p>\n",
+            "<p style=\"margin:0 0 28px;padding:2px 0 2px 14px;border-left:3px solid {RED};\">{}</p>\n",
             escape(note).replace('\n', "<br>")
         ));
     }
-    let url = escape(w.public_url);
-    body.push_str(&format!(
-        "<p style=\"margin:24px 0 0;padding:16px 0 0;border-top:1px solid #8a8a8a;font-size:14px;color:#767676;\">Payvy: <a href=\"{url}\" style=\"color:#767676;\">{url}</a></p>\n"
+    body.push_str(&button(
+        w.link,
+        "Sign in to Payvy",
+        &format!(
+            "Works once, for {} minutes. Expired? <a href=\"{}\" style=\"color:{MUTED};\">Ask for a new link</a>.",
+            w.link_minutes,
+            escape(&sign_in_page)
+        ),
     ));
+    body.push_str(&format!(
+        "<p style=\"margin:0 0 16px;font-size:12px;font-weight:600;letter-spacing:1.2px;text-transform:uppercase;color:{MUTED};\">Three steps to your first payment</p>\n\
+         <table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" style=\"width:100%;\">\n"
+    ));
+    for (i, step) in steps.iter().enumerate() {
+        body.push_str(&format!(
+            concat!(
+                "<tr>",
+                "<td style=\"width:28px;padding:0 14px 20px 0;vertical-align:top;\">",
+                "<div style=\"width:26px;height:26px;border:1.5px solid {RED};border-radius:50%;",
+                "text-align:center;line-height:26px;font-size:13px;font-weight:700;color:{RED};\">{n}</div></td>",
+                "<td style=\"padding:0 0 20px;vertical-align:top;\">",
+                "<p style=\"margin:0 0 2px;font-weight:600;\">{title}</p>",
+                "<p style=\"margin:0;font-size:15px;color:{MUTED};\">{detail}</p>",
+                "</td></tr>\n",
+            ),
+            n = i + 1,
+            title = step.title,
+            detail = escape(&step.detail),
+            RED = RED,
+            MUTED = MUTED,
+        ));
+    }
+    body.push_str("</table>\n");
+    body.push_str(&fine_print(&escape(&why), w.link));
 
     let subject = format!("Welcome to Payvy: {} is ready", w.company);
+    let preview = format!("Sign in to {company} and send your first bill.");
     Mail {
         to: w.to.to_owned(),
-        html: Some(frame(&escape(&subject), &body)),
+        html: Some(frame(&escape(&subject), &preview, &body, w.public_url)),
         subject,
         text,
     }
@@ -222,7 +329,7 @@ mod tests {
         assert_eq!(html.matches(&format!("href=\"{LINK}\"")).count(), 2);
         assert!(html.contains(&format!(">{LINK}</a>")));
         assert!(html.contains("nobody can sign in without opening it."));
-        assert!(!html.contains("What to do first"));
+        assert!(!html.contains("Three steps"));
     }
 
     #[test]
@@ -231,19 +338,24 @@ mod tests {
         assert_eq!(mail.subject, "Welcome to Payvy: Quarry Rentals is ready");
         assert!(
             mail.text
-                .starts_with("Quarry Rentals was created in Payvy for robert@example.com.\n")
+                .starts_with("Quarry Rentals is ready in Payvy.\n\nSign in:\n\n")
         );
         assert!(mail.text.contains(LINK));
         assert!(mail.text.contains(
             "If it has expired, ask for a new one at https://app.payvy.example/sign-in."
         ));
         assert!(mail.text.contains(
-            "If you didn't ask for it, ignore this email: nobody can sign in without opening it."
+            "Quarry Rentals was created in Payvy for robert@example.com. If you didn't ask for it, ignore this email: nobody can sign in without opening the link."
         ));
         assert!(mail.text.ends_with("\nPayvy: https://app.payvy.example\n"));
         let html = mail.html.unwrap();
         assert_eq!(html.matches(&format!("href=\"{LINK}\"")).count(), 2);
+        assert!(html.contains(">Quarry Rentals is ready</h1>"));
         assert!(html.contains("Quarry Rentals was created in Payvy for robert@example.com."));
+        // The inbox preview line, hidden in the message itself.
+        assert!(html.contains(
+            "display:none;max-height:0;overflow:hidden;opacity:0;\">Sign in to Quarry Rentals and send your first bill.</div>"
+        ));
     }
 
     #[test]
@@ -292,14 +404,18 @@ mod tests {
         assert!(!html.contains("<b>"));
         assert!(!html.contains("evil.example\">"));
         assert!(html.contains(
+            "&lt;script&gt;alert(1)&lt;/script&gt; &amp; Sons &quot;Ltd&quot; is ready</h1>"
+        ));
+        assert!(html.contains(
             "&lt;script&gt;alert(1)&lt;/script&gt; &amp; Sons &quot;Ltd&quot; was created"
         ));
         assert!(html.contains("<title>Welcome to Payvy: &lt;script&gt;"));
         assert!(html.contains(
             "&lt;a href=&quot;https://evil.example&quot;&gt;Free&lt;/a&gt; &amp; &lt;b&gt;bold&lt;/b&gt;"
         ));
-        // The note made no link: the only anchors are the frame's own.
-        assert_eq!(html.matches("<a ").count(), 3);
+        // The note made no link: the only anchors are the mail's own (the
+        // button, a new link, the link to copy and the closing line).
+        assert_eq!(html.matches("<a ").count(), 4);
     }
 
     #[test]
@@ -307,23 +423,23 @@ mod tests {
         let with = welcome(&sample("Quarry Rentals", Some("Line one.\nLine two.")));
         assert!(
             with.text
-                .contains("\n\nLine one.\nLine two.\n\nPayvy: https://app.payvy.example\n")
+                .contains("\n\nLine one.\nLine two.\n\nThree steps to your first payment:\n")
         );
         assert!(
             with.html
                 .as_deref()
                 .unwrap()
-                .contains("<p style=\"margin:0 0 16px;\">Line one.<br>Line two.</p>\n")
+                .contains("border-left:3px solid #dc3e46;\">Line one.<br>Line two.</p>\n")
         );
 
         let without = welcome(&sample("Quarry Rentals", None));
         assert!(
             without
                 .text
-                .contains("sign-in.\n\nPayvy: https://app.payvy.example\n")
+                .contains("/sign-in.\n\nThree steps to your first payment:\n")
         );
         let html = without.html.unwrap();
-        assert!(html.contains("</ol>\n<p style=\"margin:24px 0 0;"));
+        assert!(!html.contains("border-left:3px"));
         assert_eq!(
             html.matches("<p ").count() + 1,
             with.html.unwrap().matches("<p ").count()
@@ -339,7 +455,7 @@ mod tests {
         assert!(!mail.text.contains("Email-in"));
         assert!(
             mail.text
-                .contains("1. Send a first bill. Upload an invoice in the Inbox.\n")
+                .contains("1. Send your first bill. Upload an invoice in the Inbox.\n")
         );
         assert!(!mail.html.unwrap().contains("Email-in"));
     }
