@@ -667,20 +667,22 @@ async fn a_new_company_gets_the_welcome_and_asking_for_a_link_still_gets_the_sig
     assert_eq!(
         welcome.text,
         format!(
-            "{company} was created in Payvy for dana@example.com.\n\n\
-             Open this link to sign in:\n\n\
+            "{company} is ready in Payvy.\n\n\
+             Sign in:\n\n\
              {link}\n\n\
-             The link works once, for 15 minutes. If it has expired, ask for a new one at {APP}/sign-in. If you didn't ask for it, ignore this email: nobody can sign in without opening it.\n\n\
-             What to do first:\n\n\
-             1. Send a first bill. Upload an invoice in the Inbox.\n\
-             2. Connect the bank that pays, under Settings > Bank. Payvy pays through Mercury today, from your own account: it never holds your money.\n\
-             3. Add the people who approve, under Settings > People. Payvy doesn't email them: each asks for a sign-in link at {APP}/sign-in.\n\n\
+             The link works once, for 15 minutes. If it has expired, ask for a new one at {APP}/sign-in.\n\n\
              {note}\n\n\
+             Three steps to your first payment:\n\n\
+             1. Send your first bill. Upload an invoice in the Inbox.\n\
+             2. Connect the bank that pays. Under Settings > Bank. Payvy pays through Mercury from your own account, and never holds your money.\n\
+             3. Add the people who approve. Under Settings > People. Each of them signs in with their email at {APP}/sign-in.\n\n\
+             {company} was created in Payvy for dana@example.com. If you didn't ask for it, ignore this email: nobody can sign in without opening the link.\n\n\
              Payvy: {APP}\n"
         )
     );
     let html = welcome.html.as_deref().expect("an HTML part");
     assert_eq!(html.matches(&format!("href=\"{link}\"")).count(), 2);
+    assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt; &amp; Sons is ready</h1>"));
     assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt; &amp; Sons was created in Payvy"));
     assert!(html.contains(
         "no card needed.<br>See &lt;b&gt;https://evil.example&lt;/b&gt; &amp; more.</p>"
@@ -713,7 +715,7 @@ async fn a_new_company_gets_the_welcome_and_asking_for_a_link_still_gets_the_sig
     );
     let html = sign_in.html.as_deref().expect("an HTML part");
     assert_eq!(html.matches(&format!("href=\"{link}\"")).count(), 2);
-    assert!(!html.contains("What to do first"));
+    assert!(!html.contains("Three steps"));
     assert!(!html.contains("Sons"));
     assert!(!html.contains("trial"));
     db.drop().await;
@@ -779,13 +781,12 @@ async fn the_welcome_note_is_optional_and_limited() {
     .unwrap();
     assert_eq!(made["result"]["created"], true);
     let with = mails(&sent, 1).await.remove(0);
-    assert!(
-        with.text
-            .contains(&format!("\n\n{longest}\n\nPayvy: {APP}\n"))
-    );
+    assert!(with.text.contains(&format!(
+        "\n\n{longest}\n\nThree steps to your first payment:\n"
+    )));
     assert!(with.html.as_deref().unwrap().contains(&longest));
 
-    // Absent (or blank), there is no paragraph: the steps run into the close.
+    // Absent (or blank), there is no paragraph: the link's rules run into the steps.
     for (key, email, note) in [
         ("note-2", "erin@example.com", None),
         ("note-3", "fay@example.com", Some("  \n ".to_owned())),
@@ -794,9 +795,9 @@ async fn the_welcome_note_is_optional_and_limited() {
         create_company(&db, signup(key, email, note)).await.unwrap();
         let without = mails(&sent, before + 1).await.pop().unwrap();
         assert!(
-            without
-                .text
-                .ends_with(&format!("at {APP}/sign-in.\n\nPayvy: {APP}\n")),
+            without.text.contains(&format!(
+                "at {APP}/sign-in.\n\nThree steps to your first payment:\n"
+            )),
             "{}",
             without.text
         );
