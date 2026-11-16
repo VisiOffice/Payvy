@@ -32,6 +32,9 @@ struct Fake {
     refuse: Arc<Mutex<bool>>,
     /// Answer with a link that isn't https.
     plain_link: Arc<Mutex<bool>>,
+    /// What status answers instead of the default, which is what a
+    /// management app from before the card-free trial sends.
+    status: Arc<Mutex<Option<Value>>>,
 }
 
 async fn fake_billing(fake: Fake) -> String {
@@ -72,6 +75,9 @@ async fn fake_billing(fake: Fake) -> String {
             "/api/billing/status",
             get(|State(f): State<Fake>, uri: Uri, h: HeaderMap| async move {
                 record(&f, &uri, &h, Value::Null).await;
+                if let Some(answer) = f.status.lock().unwrap().clone() {
+                    return Json(answer);
+                }
                 Json(json!({
                     "subscription": {
                         "plan": "byoa", "status": "past_due", "trial_end": null,
@@ -221,11 +227,19 @@ async fn preview_asks_nothing_and_billing_get_shows_both_sides() {
         "2026-11-20T12:00:00Z"
     );
     assert_eq!(b["offers"][0]["price"], "$39 a month");
-    assert_eq!(b["offers"][0]["trial_days"], 14);
+    // A management app from before the card-free trial sends no `trial`:
+    // the company is shown as having none.
+    assert_eq!(b["trial"], Value::Null);
     // Only the known fields pass through: nothing the management app adds
     // (a link, a Stripe id) reaches an agent or the page.
     let text = b.to_string();
-    for leak in ["leak", "cus_secret", "portal_url", "checkout_url"] {
+    for leak in [
+        "leak",
+        "cus_secret",
+        "portal_url",
+        "checkout_url",
+        "trial_days",
+    ] {
         assert!(!text.contains(leak), "{leak} passed through: {text}");
     }
 }
@@ -327,4 +341,74 @@ async fn a_refusal_or_an_outage_is_a_billing_error_with_nothing_recorded() {
     .unwrap_err();
     assert_eq!(e.code(), "billing_error");
     assert!(events(&state).await.is_empty());
+}
+
+#[tokio::test]
+async fn billing_get_passes_the_trial_through_with_only_its_known_fields() {
+    let Some((db, state, fake)) = setup().await else {
+        return;
+    };
+    let offers = json!([
+        { "id": "byoa", "name": "Bring your own agent",
+          "price": "Free for 14 days, then $39 a month", "description": ["Your agent reads."] },
+        { "id": "managed", "name": "Payvy reads for you",
+          "price": "$99 a month, charged today", "description": ["Payvy reads."] },
+    ]);
+    // In the trial, no subscription: as Rails writes a time, with milliseconds.
+    *fake.status.lock().unwrap() = Some(json!({
+        "subscription": null,
+        "trial": { "ends_at": "2026-11-28T03:10:22.000Z", "running": true,
+                   "checkout_url": "https://pay.example/checkout/leak" },
+        "offers": offers,
+    }));
+    let r = commit(&state, &person("robert"), "billing.get", json!({}))
+        .await
+        .unwrap();
+    let b = &r["result"];
+    assert_eq!(b["available"], true);
+    assert_eq!(b["subscription"], Value::Null);
+    assert_eq!(
+        b["trial"],
+        json!({ "ends_at": "2026-11-28T03:10:22Z", "running": true })
+    );
+    assert_eq!(b["offers"], offers);
+    assert!(!b.to_string().contains("leak"), "{b}");
+    // An agent reads the same thing.
+    let r = commit(&state, &agent("claude"), "billing.get", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(r["result"]["trial"]["running"], true);
+
+    // Ended with no plan: the date stays, so the page can say when.
+    *fake.status.lock().unwrap() = Some(json!({
+        "subscription": null,
+        "trial": { "ends_at": "2026-11-01T00:00:00Z", "running": false },
+        "offers": [],
+    }));
+    let r = commit(&state, &person("robert"), "billing.get", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(
+        r["result"]["trial"],
+        json!({ "ends_at": "2026-11-01T00:00:00Z", "running": false })
+    );
+
+    // A company the management app gave no trial: null, as when it is absent.
+    *fake.status.lock().unwrap() = Some(json!({
+        "subscription": null, "trial": null, "offers": [],
+    }));
+    let r = commit(&state, &person("robert"), "billing.get", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(r["result"]["trial"], Value::Null);
+
+    // Billing down: no trial is claimed either way.
+    let down = hosted(&db.state)
+        .with_auth(Auth::new(APP, Mailer::Memory(Arc::default())))
+        .with_billing(Billing::new("http://127.0.0.1:9", KEY).unwrap());
+    let r = commit(&down, &person("robert"), "billing.get", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(r["result"]["available"], false);
+    assert_eq!(r["result"]["trial"], Value::Null);
 }

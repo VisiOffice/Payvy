@@ -35,11 +35,13 @@ pub async fn get(cx: &mut Cx<'_>) -> Result<Value, CommandError> {
     match b.status(cx.org).await {
         Ok(s) => Ok(json!({
             "plan": plan, "available": true,
-            "subscription": s.subscription, "offers": s.offers,
+            "subscription": s.subscription, "trial": s.trial, "offers": s.offers,
         })),
         Err(e) => {
             tracing::warn!("billing status unavailable: {e}");
-            Ok(json!({ "plan": plan, "available": false, "subscription": null, "offers": [] }))
+            Ok(
+                json!({ "plan": plan, "available": false, "subscription": null, "trial": null, "offers": [] }),
+            )
         }
     }
 }

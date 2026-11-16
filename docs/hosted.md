@@ -82,15 +82,20 @@ Plans are paid through Stripe, which the private management app owns: prices, Ch
 customer portal, webhooks and the plan policy. The core keeps no Stripe state. It asks the
 management app, server to server, with `PAYVY_BILLING_URL` and `PAYVY_BILLING_KEY`:
 
-- `billing.get` shows the subscription as the management app last saw it, the plans it offers
-  (name, price, description, trial days) and the plan in force.
+- `billing.get` shows the subscription as the management app last saw it, the company's trial
+  (`trial: {ends_at, running}`, or null when it was given none), the plans it offers (name,
+  price with its terms, description) and the plan in force.
 - `billing.checkout {plan: byoa|managed}` returns a Checkout link. A company that already
   subscribes gets the portal instead, never a second subscription.
 - `billing.portal` returns the portal link, to change plan or card, see invoices or cancel.
 
 Prices and terms (trial length, the past-due grace and the date payments stop) live only in the
 management app; the open-source app shows what `billing.get` returns and states none of its
-own. The core passes on only the known fields of the management app's answer, so nothing else
+own. The trial is the management app's too: it starts one when a company signs up, with no
+card, by setting the entitlement, and ends it the same way. `trial.running` is true while the
+trial is what the company runs on: it hasn't ended and no subscription has taken over. Settings >
+Billing says "Trial until {date}" while it runs and "Your trial ended on {date}" once it is over
+with no plan. An older management app that sends no `trial` is shown as having none. The core passes on only the known fields of the management app's answer, so nothing else
 it sends (a link, a Stripe id) reaches the page or an agent. If the management app can't be
 reached, `billing.get` still answers, with `available: false` and the plan in force. The app
 shows Settings > Billing only when `me.plan.billing` is true (hosted, with both settings).

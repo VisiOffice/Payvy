@@ -663,7 +663,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "billing.get",
-        summary: "Hosted Payvy only: this company's subscription (plan, status, trial and period end) as the billing service last saw it, and what its plan allows now. No links: opening Checkout or the portal is billing.checkout or billing.portal, for an Admin.",
+        summary: "Hosted Payvy only: this company's subscription (plan, status, trial and period end) and its card-free trial (when it ends, and whether it is what the company runs on now) as the billing service last saw them, the plans on offer, and what its plan allows now. No links: opening Checkout or the portal is billing.checkout or billing.portal, for an Admin.",
         tier: RiskTier::Read,
         person_only: false,
         permission: Permission::Read,
