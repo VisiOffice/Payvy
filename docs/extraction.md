@@ -56,7 +56,7 @@ Set `PAYVY_EXTRACT_PROVIDER` and its key. Two backends cover nearly everything:
 
 | Provider | Settings |
 |---|---|
-| Claude (default model `claude-opus-5-5`) | `PAYVY_EXTRACT_PROVIDER=anthropic`, `PAYVY_EXTRACT_API_KEY` |
+| Claude (default model `claude-sonnet-5-5`) | `PAYVY_EXTRACT_PROVIDER=anthropic`, `PAYVY_EXTRACT_API_KEY` |
 | OpenAI | `openai-compatible`, key, `PAYVY_EXTRACT_MODEL` |
 | Gemini | `openai-compatible`, `PAYVY_EXTRACT_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai`, key, model |
 | Grok | `openai-compatible`, `PAYVY_EXTRACT_BASE_URL=https://api.x.ai/v1`, key, model |
