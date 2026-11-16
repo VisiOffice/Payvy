@@ -671,11 +671,11 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "billing.checkout",
-        summary: "Hosted Payvy only: a Stripe Checkout link to subscribe this company to a plan (byoa: bring your own agent, reader off; managed: Payvy reads invoices). A company that already subscribes gets the billing portal instead. The plan changes only when Stripe confirms the payment, never by opening the link. Admin.",
+        summary: "Hosted Payvy only: a Stripe Checkout link to subscribe this company to a plan (byoa: bring your own agent, reader off; managed: Payvy reads invoices). A company that already subscribes gets the billing portal instead. The plan changes only when Stripe confirms the payment, never by opening the link. return_to says which page of the app Stripe sends the person back to: Settings > Billing (default) or the first-run checklist. Admin.",
         tier: RiskTier::Routine,
         person_only: true,
         permission: Permission::Admin,
-        input_schema: r#"{"type":"object","additionalProperties":false,"required":["plan"],"properties":{"plan":{"type":"string","enum":["byoa","managed"]}}}"#,
+        input_schema: r#"{"type":"object","additionalProperties":false,"required":["plan"],"properties":{"plan":{"type":"string","enum":["byoa","managed"]},"return_to":{"type":"string","enum":["billing","start"],"description":"The page to come back to after Checkout: billing (Settings > Billing, the default) or start (the first-run checklist)"}}}"#,
     },
     CommandSpec {
         name: "billing.portal",

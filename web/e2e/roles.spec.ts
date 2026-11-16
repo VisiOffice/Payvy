@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { agent, bill, state, vendor } from './api';
+import { agent, bill, signedOut, state, vendor } from './api';
 import { BASE_URL } from './env';
 import { linkAfter, logMark } from './mail';
 
@@ -24,7 +24,7 @@ test('roles combine, restrict real sessions, and update without signing in again
   await page.getByRole('dialog').getByRole('button', { name: 'Add person', exact: true }).click();
   await expect(page.getByText('Role Clerk can sign in now')).toBeVisible();
 
-  const ctx = await browser.newContext({ baseURL: BASE_URL, storageState: { cookies: [], origins: [] } });
+  const ctx = await browser.newContext({ baseURL: BASE_URL, storageState: signedOut() });
   const clerk = await ctx.newPage();
   try {
     const mark = logMark(state().serverLog);

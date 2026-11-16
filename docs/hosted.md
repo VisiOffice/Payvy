@@ -102,13 +102,33 @@ shows Settings > Billing only when `me.plan.billing` is true (hosted, with both 
 
 `billing.get` is a shared read, open to agents too: it carries no links. The other two are
 person-only and need Admin. The company id comes from the session and the
-email from the person asking; the return URL is `PAYVY_PUBLIC_URL/settings/billing`. A link that
+email from the person asking; the return URL is `PAYVY_PUBLIC_URL/settings/billing`, or
+`PAYVY_PUBLIC_URL/start` (the first-run checklist) when `billing.checkout` is called with
+`return_to: start`. It is one of those two pages, never a path from the caller. A link that
 isn't https is refused before it reaches the browser. Opening a
 link appends `billing.checkout_opened` or `billing.portal_opened`, without the link, which is a
 bearer URL for the company's billing. Nothing here changes what a company may do: the plan
 changes only when Stripe confirms and the management app calls `entitlement.set`. Preview asks
 nothing. Self-hosted Payvy, or a hosted install without the two settings, answers
 `not_configured`; a refusal or an outage of the management app is `billing_error` (502).
+
+## The first-run checklist (`/start`)
+
+A company with setup left lands on a checklist instead of Waiting on you: send the first bill,
+connect the bank that pays, invite the people who approve and, on hosted Payvy with billing,
+choose a plan (the same plan cards as Settings > Billing, for people who may run
+`billing.checkout`). Self-hosted installs get the first three steps and no trial line. Each
+step is ticked from what exists, read with the ordinary commands (`document.list`, `bill.list`,
+`bank.get`, `person.list`, `billing.get`): nothing records that the page was seen. The plan step
+is done when a subscription is live, or when payments are on by something other than the trial
+(a plan the operator granted). `/` goes there only on arrival (not when a link inside the app
+is followed), only for someone who can do one of the open steps, and only until every step is
+done or the person skips it, which is remembered in that browser alone. The menu keeps it until
+every step is done. A company whose payments are off and whose trial isn't running goes to
+Settings > Billing instead, as before.
+
+During the trial the reader is off. Where the app would ask Payvy to read a document, it shows
+"Included in {plan} ({price})" from the offers instead of a button the server would refuse.
 
 ## Turning hosted mode on (rollout)
 

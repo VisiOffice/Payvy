@@ -546,3 +546,19 @@ body { -webkit-font-smoothing: antialiased; }
 .payvy-inbox-side-pane { min-width: 0; min-height: 0; overflow: hidden; display: flex; }
 .payvy-inbox-side-pane > .payvy-document-review { flex: 1; height: auto; min-width: 0; }
 .payvy-inbox-side-empty { margin: auto; color: var(--color-text-secondary); font-size: 13px; }
+
+/* The first-run checklist (/start): numbered steps, each ticked when done. */
+.payvy-setup { list-style: none; margin: 0; padding: 0; counter-reset: step; border: 1px solid var(--color-border); border-radius: 10px; background: var(--color-background-card); }
+.payvy-setup-step { counter-increment: step; display: flex; gap: 14px; padding: 18px 20px; scroll-margin-top: 24px; }
+.payvy-setup-step + .payvy-setup-step { border-top: 1px solid var(--color-border); }
+.payvy-setup-step-mark { flex: none; display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; border: 1.5px solid var(--color-border-emphasized); color: var(--color-text-secondary); font-size: 12px; font-weight: 600; }
+.payvy-setup-step-mark:empty::before { content: counter(step); }
+.payvy-setup-step[data-done] .payvy-setup-step-mark { border-color: transparent; background: var(--color-success-muted); color: var(--color-text-success); }
+.payvy-setup-step-body { flex: 1; min-width: 0; display: grid; gap: 10px; justify-items: start; }
+.payvy-setup-step-body > * { max-width: 100%; }
+.payvy-setup-step-body > [role="status"], .payvy-setup-plans { justify-self: stretch; }
+.payvy-setup-plans { display: grid; gap: 12px; }
+.payvy-setup-step-body > h2 { margin: 0; display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 600; line-height: 24px; }
+.payvy-setup-step-done { padding: 1px 7px; border-radius: 999px; background: var(--color-success-muted); color: var(--color-text-success); font-size: 11px; font-weight: 600; line-height: 16px; }
+.payvy-reader-locked { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--color-text-secondary); }
+.payvy-reader-locked svg { flex: none; }

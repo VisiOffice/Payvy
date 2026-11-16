@@ -1,10 +1,10 @@
 import { expect, test } from '@playwright/test';
-import { state } from './api';
+import { signedOut, state } from './api';
 import { PERSON } from './env';
 import { linkAfter, logMark } from './mail';
 
 // Signed out: these tests start without the saved cookie.
-test.use({ storageState: { cookies: [], origins: [] } });
+test.use({ storageState: async ({}, use) => use(signedOut()) });
 
 test('a person signs in with an emailed link and signs out', async ({ page }) => {
   const log = state().serverLog;

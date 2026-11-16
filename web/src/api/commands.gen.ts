@@ -864,6 +864,10 @@ export interface BillingGetInput {}
 
 export interface BillingCheckoutInput {
   plan: "byoa" | "managed";
+  /**
+   * The page to come back to after Checkout: billing (Settings > Billing, the default) or start (the first-run checklist)
+   */
+  return_to?: "billing" | "start";
 }
 
 export interface BillingPortalInput {}
@@ -1434,7 +1438,7 @@ export const COMMANDS: Record<CommandName, { tier: Tier; personOnly: boolean; su
   "person.remove": { tier: "routine", personOnly: true, summary: "Stop someone signing in, and sign them out everywhere. Their past actions stay on the record. Refused for yourself (someone else removes you) and for the last person who can sign in." },
   "org.get": { tier: "read", personOnly: false, summary: "This organization: its id, its name as people see it in the app and sign-in emails, and when it was created." },
   "billing.get": { tier: "read", personOnly: false, summary: "Hosted Payvy only: this company's subscription (plan, status, trial and period end) and its card-free trial (when it ends, and whether it is what the company runs on now) as the billing service last saw them, the plans on offer, and what its plan allows now. No links: opening Checkout or the portal is billing.checkout or billing.portal, for an Admin." },
-  "billing.checkout": { tier: "routine", personOnly: true, summary: "Hosted Payvy only: a Stripe Checkout link to subscribe this company to a plan (byoa: bring your own agent, reader off; managed: Payvy reads invoices). A company that already subscribes gets the billing portal instead. The plan changes only when Stripe confirms the payment, never by opening the link. Admin." },
+  "billing.checkout": { tier: "routine", personOnly: true, summary: "Hosted Payvy only: a Stripe Checkout link to subscribe this company to a plan (byoa: bring your own agent, reader off; managed: Payvy reads invoices). A company that already subscribes gets the billing portal instead. The plan changes only when Stripe confirms the payment, never by opening the link. return_to says which page of the app Stripe sends the person back to: Settings > Billing (default) or the first-run checklist. Admin." },
   "billing.portal": { tier: "routine", personOnly: true, summary: "Hosted Payvy only: a link to the Stripe billing portal, to change plan or card, see invoices or cancel. Admin." },
   "org.update": { tier: "routine", personOnly: true, summary: "Rename the organization. The name is trimmed, 1 to 100 characters, and must differ from the current one. Bills, vendors and events are unchanged." },
   "bank.authorize": { tier: "routine", personOnly: true, summary: "Begin Ramp OAuth with read scopes. Returns a consent URL; the current bank remains active. Authorization expires after ten minutes." },

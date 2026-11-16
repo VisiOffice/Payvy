@@ -38,6 +38,7 @@ import { SplitView } from '../documents/SplitView';
 import { BatchProgress } from '../documents/BatchProgress';
 import { describePages, historyLine, PAGE_EVENTS } from '../documents/pages';
 import { useSession } from '../session';
+import { ReaderLocked, useReaderLocked } from '../documents/ReaderLocked';
 
 interface Vendor {
   id: string;
@@ -163,6 +164,8 @@ export function DocumentReview({ id: given, embedded = false, onDone }: { id?: s
   const id = given ?? params.id;
   const navigate = useNavigate();
   const toast = useToast();
+  // Payvy's own reading isn't on this plan: the read buttons give way to a line saying so.
+  const readerLocked = useReaderLocked();
   const { me } = useSession();
   const [detail, setDetail] = useState<DocumentDetail | null>(null);
   const [vendors, setVendors] = useState<Vendor[]>([]);
@@ -392,6 +395,7 @@ export function DocumentReview({ id: given, embedded = false, onDone }: { id?: s
   }
 
   async function readAgain() {
+    if (readerLocked) return;
     setReading(true);
     try {
       const firstRead = activeReview && !reviewDetail?.review && !reviewExtraction
@@ -630,8 +634,8 @@ export function DocumentReview({ id: given, embedded = false, onDone }: { id?: s
             <Banner
               status="info"
               title="Not read yet"
-              description="Read it with the model, or fill in the bill yourself."
-              endContent={<Allowed command="document.extract"><Button label="Read it" size="sm" clickAction={readAgain} /></Allowed>}
+              description={readerLocked ? 'Your agent reads it, or fill in the bill yourself.' : 'Read it with the model, or fill in the bill yourself.'}
+              endContent={readerLocked ? <ReaderLocked /> : <Allowed command="document.extract"><Button label="Read it" size="sm" clickAction={readAgain} /></Allowed>}
             />
           )}
           {x?.status === 'failed' && !reading && (
@@ -639,7 +643,7 @@ export function DocumentReview({ id: given, embedded = false, onDone }: { id?: s
               status="error"
               title="Reading it failed"
               description={x.error ?? undefined}
-              endContent={<Allowed command="document.extract"><Button label="Try again" size="sm" clickAction={readAgain} /></Allowed>}
+              endContent={readerLocked ? <ReaderLocked /> : <Allowed command="document.extract"><Button label="Try again" size="sm" clickAction={readAgain} /></Allowed>}
             />
           )}
           {latest?.out_of_date && x?.status === 'read' && !reading && doc.status === 'inbox' && (
@@ -647,7 +651,7 @@ export function DocumentReview({ id: given, embedded = false, onDone }: { id?: s
               status="warning"
               title="Read before the pages were rearranged"
               description="These details were read from the pages as they were. Read it again to bring them up to date."
-              endContent={<Allowed command="document.extract"><Button label="Read again" size="sm" clickAction={readAgain} /></Allowed>}
+              endContent={readerLocked ? <ReaderLocked /> : <Allowed command="document.extract"><Button label="Read again" size="sm" clickAction={readAgain} /></Allowed>}
             />
           )}
           {doc.status === 'inbox' && open.length > 0 && (
@@ -854,7 +858,7 @@ export function DocumentReview({ id: given, embedded = false, onDone }: { id?: s
               isDisabled={!canCreate || reading || reviewBusy}
               clickAction={() => create()}
             /></div>}
-          <div className="payvy-review-secondary">{x && <Allowed command="document.extract"><Button label="Read again" variant="ghost" size="sm" isDisabled={reading} clickAction={readAgain} /></Allowed>}<Button label="Not a bill" variant="ghost" size="sm" isDisabled={reading} onClick={() => setTrashing(true)} /></div>
+          <div className="payvy-review-secondary">{x && (readerLocked ? <ReaderLocked /> : <Allowed command="document.extract"><Button label="Read again" variant="ghost" size="sm" isDisabled={reading} clickAction={readAgain} /></Allowed>)}<Button label="Not a bill" variant="ghost" size="sm" isDisabled={reading} onClick={() => setTrashing(true)} /></div>
         </footer>}
       </section>
       <section className="payvy-review-original" aria-label="Original document">
