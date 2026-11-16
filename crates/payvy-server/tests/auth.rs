@@ -623,3 +623,240 @@ async fn bill_links_survive_sign_in_but_external_redirects_do_not() {
     }
     db.drop().await;
 }
+
+/// `org.create` as the management app's signup calls it.
+async fn create_company(db: &TestDb, input: Value) -> Result<Value, CommandError> {
+    payvy_server::operator::run(
+        &db.state,
+        "org.create",
+        input,
+        payvy_server::commands::Mode::Commit {
+            confirm_token: None,
+        },
+    )
+    .await
+}
+
+#[tokio::test]
+async fn a_new_company_gets_the_welcome_and_asking_for_a_link_still_gets_the_sign_in_mail() {
+    let Some((mut db, sent)) = db().await else {
+        return;
+    };
+    db.state = db.state.clone().with_operator_key(common::OPERATOR_KEY);
+    let company = "<script>alert(1)</script> & Sons";
+    let note =
+        "Your 14-day trial has started, no card needed.\nSee <b>https://evil.example</b> & more.";
+    let signup = |note: &'static str| {
+        json!({ "idempotency_key": "signup-welcome", "name": company,
+                "admin_email": "Dana@Example.com", "admin_name": "Dana",
+                "send_sign_in_link": true, "welcome_note": note })
+    };
+    let made = create_company(&db, signup(note)).await.unwrap();
+    assert_eq!(made["result"]["created"], true);
+    assert_eq!(made["result"]["sign_in_link"], "sent");
+
+    let welcome = mails(&sent, 1).await.remove(0);
+    let link = format!("{APP}/sign-in#token={}", token_in(&welcome));
+    assert_eq!(welcome.to, "dana@example.com");
+    assert_eq!(
+        welcome.subject,
+        format!("Welcome to Payvy: {company} is ready")
+    );
+    // The text part is complete on its own. This server takes no bills by
+    // email, so the first step offers only what works here.
+    assert_eq!(
+        welcome.text,
+        format!(
+            "{company} was created in Payvy for dana@example.com.\n\n\
+             Open this link to sign in:\n\n\
+             {link}\n\n\
+             The link works once, for 15 minutes. If it has expired, ask for a new one at {APP}/sign-in. If you didn't ask for it, ignore this email: nobody can sign in without opening it.\n\n\
+             What to do first:\n\n\
+             1. Send a first bill. Upload an invoice in the Inbox.\n\
+             2. Connect the bank that pays, under Settings > Bank. Payvy pays through Mercury today, from your own account: it never holds your money.\n\
+             3. Add the people who approve, under Settings > People. Payvy doesn't email them: each asks for a sign-in link at {APP}/sign-in.\n\n\
+             {note}\n\n\
+             Payvy: {APP}\n"
+        )
+    );
+    let html = welcome.html.as_deref().expect("an HTML part");
+    assert_eq!(html.matches(&format!("href=\"{link}\"")).count(), 2);
+    assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt; &amp; Sons was created in Payvy"));
+    assert!(html.contains(
+        "no card needed.<br>See &lt;b&gt;https://evil.example&lt;/b&gt; &amp; more.</p>"
+    ));
+    assert!(!html.contains("<script"));
+    assert!(!html.contains("<b>"));
+    assert!(!html.contains("href=\"https://evil.example"));
+
+    // A replay sends nothing, whatever note it carries: the note is not part
+    // of what makes two calls the same signup.
+    let again = create_company(&db, signup("Another note.")).await.unwrap();
+    assert_eq!(again["result"]["created"], false);
+    assert_eq!(again["result"]["sign_in_link"], "not_sent");
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert_eq!(sent.lock().unwrap().len(), 1);
+
+    // Asking on the sign-in page is the ordinary mail, with nothing added.
+    assert_eq!(
+        ask_for_link(&db, "dana@example.com").await.status,
+        StatusCode::ACCEPTED
+    );
+    let sign_in = mails(&sent, 2).await.remove(1);
+    let link = format!("{APP}/sign-in#token={}", token_in(&sign_in));
+    assert_eq!(sign_in.subject, "Sign in to Payvy");
+    assert_eq!(
+        sign_in.text,
+        format!(
+            "Open this link to sign in to Payvy:\n\n{link}\n\nThe link works once, for 15 minutes. If you didn't ask for it, ignore this email: nobody can sign in without opening it.\n"
+        )
+    );
+    let html = sign_in.html.as_deref().expect("an HTML part");
+    assert_eq!(html.matches(&format!("href=\"{link}\"")).count(), 2);
+    assert!(!html.contains("What to do first"));
+    assert!(!html.contains("Sons"));
+    assert!(!html.contains("trial"));
+    db.drop().await;
+}
+
+#[tokio::test]
+async fn the_welcome_note_is_optional_and_limited() {
+    let Some((mut db, sent)) = db().await else {
+        return;
+    };
+    db.state = db.state.clone().with_operator_key(common::OPERATOR_KEY);
+    let signup = |key: &str, email: &str, note: Option<String>| {
+        let mut input = json!({ "idempotency_key": key, "name": "Quarry Rentals",
+                                "admin_email": email, "admin_name": "Dana",
+                                "send_sign_in_link": true });
+        if let Some(note) = note {
+            input["welcome_note"] = json!(note);
+        }
+        input
+    };
+
+    // One character over is refused before anything is created or sent.
+    let e = create_company(
+        &db,
+        signup("note-1", "dana@example.com", Some("é".repeat(501))),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(e, CommandError::Invalid(_)), "{e}");
+    assert_eq!(e.code(), "invalid_input");
+    assert_eq!(
+        e.to_string(),
+        "invalid input: welcome_note can be at most 500 characters"
+    );
+    // So is anything but text, and a preview checks the same.
+    let e = create_company(
+        &db,
+        signup("note-1", "dana@example.com", Some("a\u{1b}[31mb".into())),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(e.code(), "invalid_input");
+    let e = payvy_server::operator::run(
+        &db.state,
+        "org.create",
+        signup("note-1", "dana@example.com", Some("x".repeat(501))),
+        payvy_server::commands::Mode::Preview,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(e.code(), "invalid_input");
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert!(sent.lock().unwrap().is_empty());
+
+    // Exactly the limit goes out whole (counted in characters, not bytes);
+    // the refused calls created nothing, so the same key still creates.
+    let longest = "é".repeat(500);
+    let made = create_company(
+        &db,
+        signup("note-1", "dana@example.com", Some(longest.clone())),
+    )
+    .await
+    .unwrap();
+    assert_eq!(made["result"]["created"], true);
+    let with = mails(&sent, 1).await.remove(0);
+    assert!(
+        with.text
+            .contains(&format!("\n\n{longest}\n\nPayvy: {APP}\n"))
+    );
+    assert!(with.html.as_deref().unwrap().contains(&longest));
+
+    // Absent (or blank), there is no paragraph: the steps run into the close.
+    for (key, email, note) in [
+        ("note-2", "erin@example.com", None),
+        ("note-3", "fay@example.com", Some("  \n ".to_owned())),
+    ] {
+        let before = sent.lock().unwrap().len();
+        create_company(&db, signup(key, email, note)).await.unwrap();
+        let without = mails(&sent, before + 1).await.pop().unwrap();
+        assert!(
+            without
+                .text
+                .ends_with(&format!("at {APP}/sign-in.\n\nPayvy: {APP}\n")),
+            "{}",
+            without.text
+        );
+        assert_eq!(
+            without.html.as_deref().unwrap().matches("<p ").count() + 1,
+            with.html.as_deref().unwrap().matches("<p ").count()
+        );
+    }
+    db.drop().await;
+}
+
+#[tokio::test]
+async fn the_welcome_link_keeps_the_rules_of_any_sign_in_link() {
+    let Some((mut db, sent)) = db().await else {
+        return;
+    };
+    db.state = db.state.clone().with_operator_key(common::OPERATOR_KEY);
+    let signup = |key: &str| {
+        json!({ "idempotency_key": key, "name": format!("Company {key}"),
+                "admin_email": "dana@example.com", "admin_name": "Dana",
+                "send_sign_in_link": true })
+    };
+
+    // Once.
+    create_company(&db, signup("a")).await.unwrap();
+    let token = token_in(&mails(&sent, 1).await[0]);
+    assert_eq!(token.len(), 64);
+    assert!(token.chars().all(|c| c.is_ascii_hexdigit()));
+    let open = || call(&db, post("/auth/session", json!({ "token": token })));
+    assert_eq!(open().await.status, StatusCode::OK);
+    let second = open().await;
+    assert_eq!(second.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(second.body["error"]["code"], "link_expired");
+
+    // For 15 minutes.
+    *db.clock.lock().unwrap() += chrono::Duration::minutes(16);
+    create_company(&db, signup("b")).await.unwrap();
+    let token = token_in(&mails(&sent, 2).await[1]);
+    *db.clock.lock().unwrap() += chrono::Duration::minutes(16);
+    let late = call(&db, post("/auth/session", json!({ "token": token }))).await;
+    assert_eq!(late.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(late.body["error"]["code"], "link_expired");
+
+    // And it counts toward the address's five per window like any other:
+    // one welcome and four sign-in mails, then nothing, welcome or not.
+    let made = create_company(&db, signup("c")).await.unwrap();
+    assert_eq!(made["result"]["sign_in_link"], "sent");
+    for _ in 0..6 {
+        ask_for_link(&db, "dana@example.com").await;
+    }
+    let refused = create_company(&db, signup("d")).await.unwrap();
+    assert_eq!(refused["result"]["created"], true);
+    assert_eq!(refused["result"]["sign_in_link"], "not_sent");
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let all = sent.lock().unwrap().clone();
+    assert_eq!(all.len(), 2 + 5);
+    let welcomes = all
+        .iter()
+        .filter(|m| m.subject.starts_with("Welcome to Payvy: "))
+        .count();
+    assert_eq!(welcomes, 3);
+    db.drop().await;
+}

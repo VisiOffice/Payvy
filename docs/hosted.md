@@ -68,6 +68,30 @@ never signs anyone in. The link is sent only when the company is created, never 
 queued, not delivered. On anything but `sent` the company still exists: the signup page tells the
 person to ask for a link on the sign-in page, and never creates the company again.
 
+That first mail is a welcome, not the ordinary sign-in mail (`emails.rs`): subject
+`Welcome to Payvy: {company} is ready`, the same link with the same rules (once, 15 minutes, the
+per-address limit), then what to do first: send a bill, connect the bank that pays, add the
+people who approve. A link asked for on the sign-in page is always the ordinary mail. Both go out
+as plain text with an HTML alternative: inline styles, no images, no tracking, nothing fetched.
+
+The core's words describe the product only. What the operator wants a new company to know, such
+as trial or plan terms, goes in `org.create`'s optional `welcome_note`:
+
+```json
+{ "input": { "idempotency_key": "signup-8f2c", "name": "Quarry Rentals",
+             "admin_email": "robert@example.com", "admin_name": "Robert",
+             "send_sign_in_link": true,
+             "welcome_note": "Your 14-day trial has started, no card needed." } }
+```
+
+- Plain text, at most 500 characters after trimming. Longer, or with control characters other
+  than line breaks, is refused before anything is created: 422, `invalid_input`.
+- It is its own paragraph after the steps in both parts, escaped in the HTML part and never
+  made into a link by Payvy. (A mail client may still make a URL typed in it clickable.) Absent
+  or blank, there is no paragraph.
+- It is used once, in the welcome mail, and not stored. It isn't part of the idempotency check:
+  a replay with a different note is still a replay, and sends nothing.
+
 Anyone can sign up with someone else's address. They get no access, but the owner of the address
 gets mail and an extra company in their chooser. The signup app rate-limits signups, and hides or
 removes companies whose link was never opened.

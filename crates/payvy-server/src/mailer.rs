@@ -11,7 +11,11 @@ use serde_json::{Value, json};
 pub struct Mail {
     pub to: String,
     pub subject: String,
+    /// Always present, and complete on its own.
     pub text: String,
+    /// The same message as HTML, sent beside the text as an alternative.
+    /// `None` sends text alone, exactly as before HTML mail existed.
+    pub html: Option<String>,
 }
 
 /// Safe, bounded delivery classifications. Never persist provider response bodies.
@@ -118,6 +122,9 @@ impl Mailer {
                     "no mail sender configured; this message was not sent:\n{}",
                     mail.text
                 );
+                if let Some(html) = &mail.html {
+                    tracing::debug!(to = %mail.to, "its HTML part:\n{html}");
+                }
                 Ok(())
             }
             Self::Memory(sent) => {
@@ -131,14 +138,18 @@ impl Mailer {
                 api_base,
                 http,
             } => {
+                let mut message = json!({
+                    "from": from, "to": mail.to, "subject": mail.subject, "text": mail.text,
+                });
+                if let Some(html) = mail.html {
+                    message["html"] = json!(html);
+                }
                 let res = http
                     .post(format!(
                         "{api_base}/accounts/{account_id}/email/sending/send"
                     ))
                     .bearer_auth(token)
-                    .json(&json!({
-                        "from": from, "to": mail.to, "subject": mail.subject, "text": mail.text,
-                    }))
+                    .json(&message)
                     .send()
                     .await?;
                 let status = res.status();
@@ -168,14 +179,19 @@ impl Mailer {
                 endpoint,
                 http,
             } => {
-                let body = serde_json::to_vec(&json!({
+                let mut message = json!({
                     "FromEmailAddress": from,
                     "Destination": { "ToAddresses": [mail.to] },
                     "Content": { "Simple": {
                         "Subject": { "Data": mail.subject, "Charset": "UTF-8" },
                         "Body": { "Text": { "Data": mail.text, "Charset": "UTF-8" } },
                     } },
-                }))?;
+                });
+                if let Some(html) = mail.html {
+                    message["Content"]["Simple"]["Body"]["Html"] =
+                        json!({ "Data": html, "Charset": "UTF-8" });
+                }
+                let body = serde_json::to_vec(&message)?;
                 let url = reqwest::Url::parse(&format!("{endpoint}{SES_PATH}"))?;
                 let host = match (url.host_str(), url.port()) {
                     (Some(h), Some(p)) => format!("{h}:{p}"),

@@ -25,7 +25,7 @@ use payvy_store::{NotSignedIn, OpenedLink, SignedIn};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::mailer::{Mail, Mailer};
+use crate::mailer::Mailer;
 use crate::{AppState, hash_key};
 
 pub const COOKIE: &str = "payvy_session";
@@ -126,7 +126,7 @@ async fn send_link(State(state): State<AppState>, Json(body): Json<LinkRequest>)
         .and_then(|id| uuid::Uuid::parse_str(id).ok())
         .map(|id| format!("?return_to=/bills/{id}"))
         .unwrap_or_default();
-    if let Err(e) = email_link(&state, &auth, &email, None, &return_to).await {
+    if let Err(e) = email_link(&state, &auth, &email, None, &return_to, LinkMail::SignIn).await {
         return internal(e);
     }
     (
@@ -136,6 +136,18 @@ async fn send_link(State(state): State<AppState>, Json(body): Json<LinkRequest>)
         })),
     )
         .into_response()
+}
+
+/// Which message carries the link. The link and its rules are the same.
+pub(crate) enum LinkMail<'a> {
+    /// The ordinary sign-in mail.
+    SignIn,
+    /// The welcome for a company that was just created (`org.create`).
+    Welcome {
+        company: &'a str,
+        /// The operator's `welcome_note`, already validated.
+        note: Option<&'a str>,
+    },
 }
 
 /// Emails one sign-in link to an address that belongs to at least one
@@ -149,6 +161,7 @@ pub(crate) async fn email_link(
     email: &str,
     org: Option<uuid::Uuid>,
     query: &str,
+    kind: LinkMail<'_>,
 ) -> anyhow::Result<bool> {
     let now = (state.clock)();
     if state.store.companies_for_email(email).await?.is_empty() {
@@ -173,10 +186,19 @@ pub(crate) async fn email_link(
             now + Duration::minutes(LINK_MINUTES),
         )
         .await?;
-    let mail = sign_in_mail(
-        email,
-        &format!("{}/sign-in{query}#token={token}", auth.public_url),
-    );
+    let link = format!("{}/sign-in{query}#token={token}", auth.public_url);
+    let mail = match kind {
+        LinkMail::SignIn => crate::emails::sign_in(email, &link, LINK_MINUTES),
+        LinkMail::Welcome { company, note } => crate::emails::welcome(&crate::emails::Welcome {
+            to: email,
+            company,
+            link: &link,
+            public_url: &auth.public_url,
+            link_minutes: LINK_MINUTES,
+            email_intake: state.inbound.is_some(),
+            note,
+        }),
+    };
     let auth = auth.clone();
     tokio::spawn(async move {
         if let Err(e) = auth.mailer.send(mail).await {
@@ -184,16 +206,6 @@ pub(crate) async fn email_link(
         }
     });
     Ok(true)
-}
-
-fn sign_in_mail(to: &str, link: &str) -> Mail {
-    Mail {
-        to: to.to_owned(),
-        subject: "Sign in to Payvy".into(),
-        text: format!(
-            "Open this link to sign in to Payvy:\n\n{link}\n\nThe link works once, for {LINK_MINUTES} minutes. If you didn't ask for it, ignore this email: nobody can sign in without opening it.\n"
-        ),
-    }
 }
 
 async fn me(state: &AppState, s: &SignedIn) -> anyhow::Result<Value> {

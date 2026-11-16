@@ -27,6 +27,7 @@ use crate::{AppState, auth, hash_key};
 
 const IDEMPOTENCY_KEY_MAX: usize = 255;
 const PERSON_NAME_MAX: usize = 200;
+const WELCOME_NOTE_MAX: usize = 500;
 const EMAIL_MAX: usize = 320;
 const ORG_LIST_MAX: i64 = 500;
 
@@ -220,6 +221,10 @@ struct CreateOrg {
     /// Sent only when the company is created, never on a replay.
     #[serde(default)]
     send_sign_in_link: bool,
+    /// Plain text from the management app (trial and plan terms, which the
+    /// core knows nothing about), placed as its own paragraph in the welcome
+    /// mail that carries the sign-in link. Never stored.
+    welcome_note: Option<String>,
 }
 
 async fn create_org(
@@ -231,6 +236,7 @@ async fn create_org(
     let org_name = valid_org_name(&input.name)?;
     let (admin_email, local) = valid_email(&input.admin_email)?;
     let admin_name = valid_person_name(&input.admin_name)?;
+    let welcome_note = valid_welcome_note(input.welcome_note.as_deref())?;
     let admin_actor = match input.admin_actor.map(|s| s.trim().to_owned()) {
         Some(a) if !a.is_empty() => {
             let lower = a.to_lowercase();
@@ -290,6 +296,10 @@ async fn create_org(
                     &provisioned.admin.email,
                     Some(provisioned.organization.id),
                     "",
+                    auth::LinkMail::Welcome {
+                        company: &provisioned.organization.name,
+                        note: welcome_note.as_deref(),
+                    },
                 )
                 .await
                 {
@@ -513,6 +523,30 @@ fn valid_person_name(raw: &str) -> Result<String, CommandError> {
         ));
     }
     Ok(n.to_owned())
+}
+
+/// The management app's note for the welcome mail: plain text, line breaks
+/// allowed. Blank counts as absent.
+fn valid_welcome_note(raw: Option<&str>) -> Result<Option<String>, CommandError> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let note = raw.replace("\r\n", "\n");
+    let note = note.trim();
+    if note.is_empty() {
+        return Ok(None);
+    }
+    if note.chars().count() > WELCOME_NOTE_MAX {
+        return Err(CommandError::Invalid(format!(
+            "welcome_note can be at most {WELCOME_NOTE_MAX} characters"
+        )));
+    }
+    if note.chars().any(|c| c.is_control() && c != '\n') {
+        return Err(CommandError::Invalid(
+            "welcome_note can't contain control characters other than line breaks".into(),
+        ));
+    }
+    Ok(Some(note.to_owned()))
 }
 
 fn valid_email(raw: &str) -> Result<(String, String), CommandError> {

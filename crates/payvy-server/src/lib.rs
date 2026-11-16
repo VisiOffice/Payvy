@@ -3,6 +3,7 @@ pub mod bill_batch_worker;
 pub mod billing;
 pub mod commands;
 pub mod confirm;
+pub mod emails;
 pub mod entitlements;
 pub mod eval;
 pub mod extract_worker;

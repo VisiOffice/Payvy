@@ -1,5 +1,8 @@
 //! Sending mail through Amazon SES, against a fake SES that checks the
-//! request's signature the way AWS does: from the request it received.
+//! request's signature the way AWS does: from the request it received; and
+//! through Cloudflare Email Service, against a fake that keeps what it got.
+//! Each backend sends text alone exactly as it always did, and text with
+//! HTML as its API's two parts.
 
 use std::sync::{Arc, Mutex};
 
@@ -103,6 +106,7 @@ fn mail() -> Mail {
         to: "robert@example.com".into(),
         subject: "Sign in to Payvy".into(),
         text: "Open this link: https://beta.payvy.com/sign-in#token=abc\n".into(),
+        html: None,
     }
 }
 
@@ -161,4 +165,141 @@ async fn a_wrong_secret_is_refused() {
     };
     let e = wrong.send(mail()).await.unwrap_err().to_string();
     assert!(e.contains("signature"), "{e}");
+}
+
+const LINK: &str = "https://beta.payvy.com/sign-in#token=0000000000000000000000000000000000000000000000000000000000000000";
+
+/// A sign-in mail as the server writes it: both parts.
+fn both_parts() -> Mail {
+    let mail = payvy_server::emails::sign_in("robert@example.com", LINK, 15);
+    assert!(mail.html.is_some());
+    mail
+}
+
+#[tokio::test]
+async fn ses_gets_text_alone_as_before_and_both_parts_when_there_is_html() {
+    let (fake, mailer) = fake_ses().await;
+    mailer.send(mail()).await.unwrap();
+    let mail = both_parts();
+    mailer.send(mail.clone()).await.unwrap();
+    let sent = fake.sent.lock().unwrap().clone();
+
+    // Without HTML the request is what it was before HTML mail existed.
+    assert_eq!(
+        sent[0],
+        json!({
+            "FromEmailAddress": "Payvy <no-reply@payvy.com>",
+            "Destination": { "ToAddresses": ["robert@example.com"] },
+            "Content": { "Simple": {
+                "Subject": { "Data": "Sign in to Payvy", "Charset": "UTF-8" },
+                "Body": { "Text": {
+                    "Data": "Open this link: https://beta.payvy.com/sign-in#token=abc\n",
+                    "Charset": "UTF-8",
+                } },
+            } },
+        })
+    );
+
+    let body = &sent[1]["Content"]["Simple"]["Body"];
+    assert_eq!(
+        body,
+        &json!({
+            "Text": { "Data": mail.text, "Charset": "UTF-8" },
+            "Html": { "Data": mail.html, "Charset": "UTF-8" },
+        })
+    );
+    assert!(body["Text"]["Data"].as_str().unwrap().contains(LINK));
+    assert!(body["Html"]["Data"].as_str().unwrap().contains(LINK));
+}
+
+type CloudflareSent = Arc<Mutex<Vec<(String, String, Value)>>>;
+
+async fn cloudflare_send(
+    State(sent): State<CloudflareSent>,
+    axum::extract::Path(account): axum::extract::Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Json<Value> {
+    let auth = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_owned();
+    sent.lock().unwrap().push((account, auth, body));
+    Json(json!({ "success": true, "errors": [], "result": { "permanent_bounces": [] } }))
+}
+
+async fn fake_cloudflare() -> (CloudflareSent, Mailer) {
+    let sent = CloudflareSent::default();
+    let app = Router::new()
+        .route(
+            "/accounts/{account}/email/sending/send",
+            post(cloudflare_send),
+        )
+        .with_state(sent.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let Mailer::Cloudflare {
+        account_id,
+        token,
+        from,
+        http,
+        ..
+    } = Mailer::cloudflare("acct-1", "cf-test-token", "Payvy <no-reply@payvy.com>").unwrap()
+    else {
+        unreachable!()
+    };
+    let mailer = Mailer::Cloudflare {
+        account_id,
+        token,
+        from,
+        api_base: format!("http://{addr}"),
+        http,
+    };
+    (sent, mailer)
+}
+
+#[tokio::test]
+async fn cloudflare_gets_text_alone_as_before_and_both_parts_when_there_is_html() {
+    let (sent, mailer) = fake_cloudflare().await;
+    mailer.send(mail()).await.unwrap();
+    let mail = both_parts();
+    mailer.send(mail.clone()).await.unwrap();
+    let sent = sent.lock().unwrap().clone();
+    assert_eq!(sent.len(), 2);
+    assert_eq!(sent[0].0, "acct-1");
+    assert_eq!(sent[0].1, "Bearer cf-test-token");
+
+    // Without HTML the request is what it was before HTML mail existed.
+    assert_eq!(
+        sent[0].2,
+        json!({
+            "from": "Payvy <no-reply@payvy.com>",
+            "to": "robert@example.com",
+            "subject": "Sign in to Payvy",
+            "text": "Open this link: https://beta.payvy.com/sign-in#token=abc\n",
+        })
+    );
+    assert_eq!(
+        sent[1].2,
+        json!({
+            "from": "Payvy <no-reply@payvy.com>",
+            "to": "robert@example.com",
+            "subject": "Sign in to Payvy",
+            "text": mail.text,
+            "html": mail.html,
+        })
+    );
+    assert!(sent[1].2["text"].as_str().unwrap().contains(LINK));
+}
+
+#[tokio::test]
+async fn the_memory_backend_keeps_both_parts() {
+    let kept = Arc::new(Mutex::new(Vec::new()));
+    let mailer = Mailer::Memory(kept.clone());
+    let mail = both_parts();
+    mailer.send(mail.clone()).await.unwrap();
+    Mailer::Log.send(mail.clone()).await.unwrap();
+    assert_eq!(kept.lock().unwrap().as_slice(), &[mail]);
 }
