@@ -24,7 +24,8 @@ test('a person signs in with an emailed link and signs out', async ({ page }) =>
   await page.reload();
   await expect(page.getByRole('heading', { name: 'Waiting on you', exact: true })).toBeVisible();
 
-  await page.getByRole('button', { name: 'Sign out' }).click();
+  await page.getByRole('button', { name: /account menu/ }).click();
+  await page.getByRole('menuitem', { name: 'Sign out' }).click();
   await expect(page).toHaveURL(/\/sign-in$/);
   await page.goto('/');
   await expect(page).toHaveURL(/\/sign-in$/);

@@ -4,10 +4,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { useLocation, useNavigate } from 'react-router';
 import { auth, run } from './api/client';
 import { AppShell } from '@astryxdesign/core/AppShell';
-import { Button } from '@astryxdesign/core/Button';
 import { SideNav, SideNavItem, SideNavSection } from '@astryxdesign/core/SideNav';
-import { Text } from '@astryxdesign/core/Text';
-import { HStack } from '@astryxdesign/core/HStack';
 import { DropdownMenu } from '@astryxdesign/core/DropdownMenu';
 import { useSession } from './session';
 import { useSetup } from './setup';
@@ -83,6 +80,9 @@ const shortcut = (...keys: string[]) => (
   </span>
 );
 
+/** Up to two initials, for a company mark or a person's avatar. */
+const initials = (name: string) => name.trim().split(/\s+/).slice(0, 2).map(word => word[0]).join('').toUpperCase();
+
 export function Shell({ children }: { children: ReactNode }) {
   const { me, signOut } = useSession();
   const can = useCan();
@@ -102,6 +102,7 @@ export function Shell({ children }: { children: ReactNode }) {
   const groups = SETTINGS
     .map(g => ({ ...g, items: g.items.filter(i => (!i.command || can(i.command)) && (!i.hostedOnly || !!me.plan?.billing)) }))
     .filter(g => g.items.length > 0);
+  const billing = !!me.plan?.billing && can('billing.checkout');
   const [waiting, setWaiting] = useState<number | null>(null);
 
   useEffect(() => {
@@ -152,7 +153,7 @@ export function Shell({ children }: { children: ReactNode }) {
         <SideNav
           header={<div className="payvy-company-menu"><DropdownMenu
             renderTrigger={props => <button {...props} className="payvy-company-switcher" aria-label={`${me.organization.name}, company menu`}>
-              <span className="payvy-company-mark" aria-hidden="true">{me.organization.name.trim().split(/\s+/).slice(0, 2).map(word => word[0]).join('').toUpperCase()}</span>
+              <span className="payvy-company-mark" aria-hidden="true">{initials(me.organization.name)}</span>
               <span className="payvy-company-label"><strong>{me.organization.name}</strong><span>Company</span></span>
               <svg width="14" height="18" viewBox="0 0 14 18" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m4 6 3-3 3 3m-6 6 3 3 3-3" /></svg>
             </button>}
@@ -160,20 +161,31 @@ export function Shell({ children }: { children: ReactNode }) {
               { label: 'Settings', href: '/settings', endContent: shortcut('g', 's') },
               { label: 'Invite and manage people', href: '/settings/people' },
               ...switchItems,
-              { type: 'divider' },
-              { label: 'Sign out', onClick: signOut },
             ]}
           /></div>}
           footer={
-            <div className="payvy-nav-footer">
-            <HStack gap={2} padding={2} hAlign="between" vAlign="center">
-              <span className="payvy-avatar" aria-hidden="true">{me.person.name.slice(0, 1).toUpperCase()}</span>
-              <Text type="supporting" maxLines={1}>
-                {me.person.name}
-              </Text>
-              <Button label="Sign out" variant="ghost" size="sm" clickAction={signOut} />
-            </HStack>
-            </div>
+            <div className="payvy-nav-footer"><DropdownMenu
+              placement="end"
+              alignment="end"
+              menuWidth={240}
+              renderTrigger={props => <button {...props} className="payvy-company-switcher payvy-account-switcher" aria-label={`${me.person.name}, account menu`}>
+                <span className="payvy-avatar" aria-hidden="true">{initials(me.person.name)}</span>
+                <span className="payvy-company-label"><strong>{me.person.name}</strong><span>{me.person.email}</span></span>
+                <svg width="14" height="18" viewBox="0 0 14 18" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m4 6 3-3 3 3m-6 6 3 3 3-3" /></svg>
+              </button>}
+              header={<div className="payvy-account-header">
+                <span className="payvy-avatar" aria-hidden="true">{initials(me.person.name)}</span>
+                <span className="payvy-company-label"><strong>{me.person.name}</strong><span>{me.person.email}</span></span>
+              </div>}
+              items={[
+                { label: 'Preferences', href: '/settings/preferences' },
+                ...(billing ? [{ label: 'Billing', href: '/settings/billing' }] : []),
+                ...(can('notification.configure') ? [{ label: 'Notifications', href: '/settings/notifications' }] : []),
+                { label: 'Settings', href: '/settings', endContent: shortcut('g', 's') },
+                { type: 'divider' as const },
+                { label: 'Sign out', onClick: signOut },
+              ]}
+            /></div>
           }
         >
           <SideNavSection title="Workspace">

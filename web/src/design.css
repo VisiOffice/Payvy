@@ -76,7 +76,10 @@ body { -webkit-font-smoothing: antialiased; }
   background: var(--color-neutral); color: var(--color-text-secondary); font-size: 11px;
   font-weight: 600; font-variant-numeric: tabular-nums;
 }
-.payvy-nav-footer { border-top: 1px solid var(--color-border); padding-top: 16px; }
+.payvy-nav-footer { border-top: 1px solid var(--color-border); padding-top: 8px; width: 100%; }
+.payvy-account-switcher .payvy-avatar, .payvy-account-header .payvy-avatar { width: 32px; height: 32px; border-radius: 8px; font-size: 12px; }
+.payvy-account-switcher .payvy-company-label > span, .payvy-account-header .payvy-company-label > span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.payvy-account-header { display: flex; align-items: center; gap: 9px; padding: 8px 10px; border-bottom: 1px solid var(--color-border); }
 .payvy-avatar {
   display: grid; place-content: center; flex-shrink: 0; width: 26px; height: 26px;
   border-radius: 50%; background: var(--color-accent-muted); color: var(--color-text-accent); font-size: 11px; font-weight: 600;
