@@ -1,4 +1,5 @@
-// Static assets are served by Cloudflare. Only API/auth paths enter this Worker.
+// Static assets are served by Cloudflare. Only API, auth and MCP paths enter this
+// Worker, so an agent can use the app's own address for MCP (Settings > Agents).
 // Rust remains the sole authority for sessions, commands and payment confirmation.
 interface Env { API_ORIGIN: string }
 
@@ -9,7 +10,7 @@ function error(status: number, message: string) {
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
-    if (!/^\/(api|auth)(\/|$)/.test(url.pathname)) return error(404, 'Not found');
+    if (!/^\/(api|auth|mcp)(\/|$)/.test(url.pathname)) return error(404, 'Not found');
     // Preserve the browser's same-origin session boundary, including sign-in.
     const origin = request.headers.get('Origin');
     if (!['GET', 'HEAD'].includes(request.method) && origin && origin !== url.origin) {

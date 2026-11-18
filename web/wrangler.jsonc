@@ -14,7 +14,7 @@
   "assets": {
     "directory": "./dist",
     "not_found_handling": "single-page-application",
-    "run_worker_first": ["/api", "/api/*", "/auth", "/auth/*"]
+    "run_worker_first": ["/api", "/api/*", "/auth", "/auth/*", "/mcp", "/mcp/*"]
   },
   "env": {
     "local": {
