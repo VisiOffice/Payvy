@@ -1340,6 +1340,7 @@ pub async fn execute_job(
         storage: state.storage.as_deref(),
         inbound_domain: state.inbound.as_ref().map(|i| i.domain.as_str()),
         extractor: state.extractor.as_deref(),
+        reader_key_origin: state.reader_key_origin.as_deref(),
         bank: state.bank.as_deref(),
         auth: state.auth.as_deref(),
         ledger: state.ledger.as_deref(),

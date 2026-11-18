@@ -30,6 +30,7 @@ mod people;
 mod purchase_orders;
 mod ramp;
 mod ramp_health;
+mod reader_key;
 mod usage;
 mod vendors;
 mod workflows;
@@ -219,6 +220,7 @@ pub async fn run(
         storage: state.storage.as_deref(),
         inbound_domain: state.inbound.as_ref().map(|i| i.domain.as_str()),
         extractor: state.extractor.as_deref(),
+        reader_key_origin: state.reader_key_origin.as_deref(),
         bank: state.bank.as_deref(),
         auth: state.auth.as_deref(),
         ledger: state.ledger.as_deref(),
@@ -329,6 +331,9 @@ async fn execute(cx: &mut Cx<'_>, name: &str, input: &Value) -> Result<Value, Co
         "inbox.get" => inbox::get(cx).await,
         "approval_rules.get" => approval_rules::get(cx).await,
         "approval_rules.set" => approval_rules::set(cx, parse(input)?).await,
+        "reader_key.get" => reader_key::get(cx).await,
+        "reader_key.set" => reader_key::set(cx, parse(input)?).await,
+        "reader_key.remove" => reader_key::remove(cx).await,
         "agent_key.list" => agents::list(cx).await,
         "agent_key.create" => agents::create(cx, parse(input)?).await,
         "agent_key.revoke" => agents::revoke(cx, parse(input)?).await,
@@ -449,6 +454,7 @@ pub(crate) struct Cx<'a> {
     storage: Option<&'a payvy_storage::Storage>,
     inbound_domain: Option<&'a str>,
     extractor: Option<&'a payvy_extract::Extractor>,
+    pub(crate) reader_key_origin: Option<&'a str>,
     bank: Option<&'a crate::Bank>,
     auth: Option<&'a crate::auth::Auth>,
     ledger: Option<&'a (dyn payvy_ledger::Ledger + Send + Sync)>,
@@ -480,6 +486,15 @@ impl<'a> Cx<'a> {
         ))
     }
 
+    /// The reader for this company: its own model key when it has set one
+    /// (`reader_key.set`), else the server's.
+    pub async fn reader(&mut self) -> Result<reader_key::Reader<'a>, CommandError> {
+        if let Some(own) = reader_key::own(self).await? {
+            return Ok(reader_key::Reader::Own(Box::new(own)));
+        }
+        self.extractor().map(reader_key::Reader::Shared)
+    }
+
     pub fn bank(&self) -> Result<&'a crate::Bank, CommandError> {
         self.bank.ok_or(CommandError::NotConfigured(
             "paying through a bank isn't configured (set PAYVY_SECRETS_KEY)",
@@ -504,6 +519,12 @@ impl<'a> Cx<'a> {
         }
         let stored = store::entitlement(&mut self.tx, self.org).await?;
         if crate::entitlements::allows(stored.as_ref(), need) {
+            Ok(())
+        } else if need == crate::entitlements::Need::Reader
+            && store::reader_key(&mut self.tx, self.org).await?.is_some()
+        {
+            // The company reads with its own model key: its provider bills
+            // the reading, so the plan's built-in reader isn't needed.
             Ok(())
         } else {
             Err(CommandError::NotEntitled(need.refusal()))

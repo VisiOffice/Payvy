@@ -27,7 +27,7 @@ pub async fn extract(cx: &mut Cx<'_>, input: Extract) -> Result<Value, CommandEr
     // Before anything else: on a plan without the built-in reader, Payvy
     // makes no model calls for this company, retries and split parts included.
     cx.require(crate::entitlements::Need::Reader).await?;
-    let extractor = cx.extractor()?;
+    let extractor = cx.reader().await?;
     let storage = cx.storage()?;
     store::lock_invoice_settings(&mut cx.tx, cx.org).await?;
     let doc = store::get_document(&mut cx.tx, input.document_id)
@@ -48,7 +48,7 @@ pub async fn extract(cx: &mut Cx<'_>, input: Extract) -> Result<Value, CommandEr
             done.model, done.id
         )));
     }
-    let provider = extractor.provider_label();
+    let provider = extractor.label();
     // The model reads the original file, told which of its pages are this
     // document's when that isn't all of them (docs/document-pages.md). The
     // reading records the arrangement it was made under, so a later change

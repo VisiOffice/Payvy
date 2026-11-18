@@ -48,6 +48,7 @@ export function ReaderLocked() {
       {billing && can('billing.checkout')
         ? <Link href="/settings/billing">{line}</Link>
         : <Text type="supporting">{billing ? `${line}. Ask an admin to change the plan.` : line}</Text>}
+      {can('reader_key.set') && <Text type="supporting"> · <Link href="/settings/agents">or use your own model key</Link></Text>}
     </span>
   );
 }

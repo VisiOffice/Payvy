@@ -208,6 +208,61 @@ impl Extractor {
         &self.config.model
     }
 
+    /// Asks the provider about this model with this key: free, and it
+    /// answers whether the key works and the model exists, without reading
+    /// anything. Never echoes the provider's response body.
+    pub async fn check_key(&self) -> Result<(), ExtractError> {
+        let base = self.config.base_url.trim_end_matches('/');
+        let model = &self.config.model;
+        if model.contains(['/', '?', '#']) || model.chars().any(char::is_whitespace) {
+            return Err(ExtractError::Failed(format!(
+                "{model:?} isn't a model name"
+            )));
+        }
+        let req = match self.config.provider {
+            Provider::Anthropic => {
+                let r = self
+                    .http
+                    .get(format!("{base}/v1/models/{model}"))
+                    .header("anthropic-version", ANTHROPIC_VERSION);
+                match &self.config.api_key {
+                    Some(k) => r.header("x-api-key", k),
+                    None => r,
+                }
+            }
+            Provider::OpenAiCompatible => {
+                let r = self.http.get(format!("{base}/models/{model}"));
+                match &self.config.api_key {
+                    Some(k) => r.bearer_auth(k),
+                    None => r,
+                }
+            }
+        };
+        let res = req
+            .timeout(Duration::from_secs(20))
+            .send()
+            .await
+            .map_err(|e| {
+                ExtractError::Failed(format!("couldn't reach the provider: {}", e.without_url()))
+            })?;
+        match res.status().as_u16() {
+            200..=299 => Ok(()),
+            401 | 403 => Err(ExtractError::Failed(
+                "the provider refused this key: check it was copied whole and is active".into(),
+            )),
+            404 => Err(ExtractError::Failed(format!(
+                "the provider doesn't offer the model {model} to this key"
+            ))),
+            429 => Err(ExtractError::Failed(
+                "the provider is rate-limiting this key, or it has no credit: try again shortly"
+                    .into(),
+            )),
+            s => Err(ExtractError::Failed(format!(
+                "the provider answered {s}: try again shortly"
+            ))),
+        }
+    }
+
     pub async fn read(&self, bytes: &[u8], kind: Kind) -> Result<Output, ExtractError> {
         self.read_pages(bytes, kind, None).await
     }

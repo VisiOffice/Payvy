@@ -55,12 +55,13 @@ pub async fn company_allows(state: &AppState, org: Uuid, need: Need) -> anyhow::
     }
     let mut tx = state.store.begin(org).await?;
     let stored = store::entitlement(&mut tx, org).await?;
+    let own_key = need == Need::Reader && store::reader_key(&mut tx, org).await?.is_some();
     tx.rollback().await?;
-    Ok(allows(stored.as_ref(), need))
+    Ok(allows(stored.as_ref(), need) || own_key)
 }
 
 /// For the background reader: None to skip the company (no reader on its
-/// plan); otherwise the time documents must have arrived since to be read
+/// plan and no model key of its own); otherwise the time documents must have arrived since to be read
 /// automatically (None: all of them, as when self-hosted).
 pub async fn auto_read_since(
     state: &AppState,
@@ -71,9 +72,13 @@ pub async fn auto_read_since(
     }
     let mut tx = state.store.begin(org).await?;
     let stored = store::entitlement(&mut tx, org).await?;
+    let own_key = store::reader_key(&mut tx, org).await?;
     tx.rollback().await?;
-    Ok(match stored {
-        Some(e) if e.reader => Some(e.reader_since),
+    Ok(match (stored, own_key) {
+        (Some(e), _) if e.reader => Some(e.reader_since),
+        // Reading with the company's own key: what arrives from when it was
+        // set, so setting one doesn't read a backlog on the company's bill.
+        (_, Some(k)) => Some(Some(k.set_at)),
         _ => None,
     })
 }

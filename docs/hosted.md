@@ -12,6 +12,15 @@ On `byoa` the company's own agent reads instead and submits its reading with
 `document.submit_reading`, which Payvy checks like its own (docs/extraction.md). That makes no
 model call, so the `reader` entitlement doesn't gate it.
 
+A company can also read with **its own model key** (Settings → Agents → Reading invoices,
+`reader_key.set`, Admin): an Anthropic or OpenAI key that Payvy checks with the provider (a free
+model lookup), seals with `PAYVY_SECRETS_KEY` and never shows again. With one, `document.extract`
+and the background reader use that key, the provider bills the company, and the `reader`
+entitlement isn't needed (`org.get` reports `reader: true, own_reader_key: true`). The background
+reader reads only what arrives after the key was set, so a key never reads a backlog on the
+company's bill; earlier invoices are read from Documents. The key only ever goes to the provider's
+own address. `reader_key.remove` forgets it, and reading follows the plan again.
+
 Self-hosted Payvy has no plans: nothing is checked and everything is on.
 
 ## Mode
