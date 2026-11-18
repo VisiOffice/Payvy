@@ -29,6 +29,7 @@ import { DocumentViewer, type PageRef } from '../viewer/DocumentViewer';
 import { highlightsOf, type DocumentDetail, type Read } from '../documents/types';
 import { ReadFields } from '../documents/ReadFields';
 import { waitingOnOthers, type ApprovalTurn } from '../approval';
+import { usePageTitle } from '../title';
 
 interface Step {
   id: string;
@@ -111,6 +112,7 @@ export function BillPage() {
   const access = useAccessVersion();
   const { id } = useParams<{ id: string }>();
   const [detail, setDetail] = useState<Detail | null>(null);
+  usePageTitle(detail ? `${detail.bill.vendor_name} ${detail.bill.invoice_number}` : 'Bill');
   const [read, setRead] = useState<Read | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [focus, setFocus] = useState<string | null>(null);
