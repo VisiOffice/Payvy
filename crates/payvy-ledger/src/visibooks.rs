@@ -1,5 +1,9 @@
 //! VisiBooks recording transport. No payment rail, credential logging, or redirects.
-use crate::{BillBody, Code, LEDGER_CALL_TIMEOUT, Ledger, LedgerError, PaymentBody, Posted};
+use crate::{
+    BillBody, Catalog, CatalogAccount, CatalogPeriod, CatalogSegment, CatalogVendor, Code,
+    LEDGER_CALL_TIMEOUT, Ledger, LedgerError, PaymentBody, Posted,
+};
+use chrono::NaiveDate;
 use reqwest::{Client, Method, Url, header};
 use serde_json::{Value, json};
 use std::{future::Future, pin::Pin};
@@ -76,23 +80,80 @@ impl VisiBooks {
     }
 
     async fn request(&self, method: Method, path: &str, body: Value) -> Result<Value, LedgerError> {
+        self.send(method, path, Some(body), 65_536).await
+    }
+
+    /// One page of a read. Pages are larger than post answers (up to 100
+    /// rows), so the cap is 1 MiB; it is still a cap.
+    async fn read(&self, path: &str) -> Result<Value, LedgerError> {
+        self.send(Method::GET, path, None, 1_048_576).await
+    }
+
+    /// Every row of a list, following `page.has_more` with `after=<last id>`.
+    /// Ids must strictly increase, so a server that repeats a page can't
+    /// loop forever; at most 500 pages are read.
+    async fn read_all(&self, path: &str) -> Result<(Vec<Value>, Value), LedgerError> {
+        let mut rows = Vec::new();
+        let mut first = Value::Null;
+        let mut after: Option<i64> = None;
+        let joiner = if path.contains('?') { '&' } else { '?' };
+        for _ in 0..500 {
+            let url = match after {
+                Some(id) => format!("{path}{joiner}limit=100&after={id}"),
+                None => format!("{path}{joiner}limit=100"),
+            };
+            let page = self.read(&url).await?;
+            let data = page
+                .get("data")
+                .and_then(Value::as_array)
+                .ok_or_else(|| unreadable("a list without data"))?;
+            for row in data {
+                let id = row
+                    .get("id")
+                    .and_then(Value::as_i64)
+                    .ok_or_else(|| unreadable("a row without an id"))?;
+                if after.is_some_and(|last| id <= last) {
+                    return Err(unreadable("ids that don't increase"));
+                }
+                after = Some(id);
+                rows.push(row.clone());
+            }
+            if first.is_null() {
+                first = page.clone();
+            }
+            let more = page
+                .pointer("/page/has_more")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if !more || data.is_empty() {
+                return Ok((rows, first));
+            }
+        }
+        Err(unreadable("more than 500 pages"))
+    }
+
+    async fn send(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<Value>,
+        cap: usize,
+    ) -> Result<Value, LedgerError> {
         let url = self
             .base
             .join(path)
             .map_err(|_| missing("Invalid ledger path"))?;
-        let mut response = self
-            .client
-            .request(method, url)
-            .json(&body)
-            .send()
-            .await
-            .map_err(transport_error)?;
+        let mut request = self.client.request(method, url);
+        if let Some(body) = &body {
+            request = request.json(body);
+        }
+        let mut response = request.send().await.map_err(transport_error)?;
         let status = response.status();
         // Never buffer arbitrary upstream pages (or reflect their content into
         // the bill's history). Large or malformed answers leave the same key retryable.
         let mut bytes = Vec::new();
         while let Some(chunk) = response.chunk().await.map_err(transport_error)? {
-            if bytes.len() + chunk.len() > 65_536 {
+            if bytes.len() + chunk.len() > cap {
                 return Err(LedgerError::new(
                     Code::Timeout,
                     "VisiBooks response was too large; retry the same request",
@@ -307,8 +368,132 @@ impl Ledger for VisiBooks {
     ) -> Call<'a, String> {
         Box::pin(async { Err(missing("VisiBooks file attachment is not implemented yet")) })
     }
+
+    fn catalog<'a>(&'a self) -> Call<'a, Catalog> {
+        Box::pin(async move {
+            let (accounts, _) = self.read_all("/api/v1/books/accounts").await?;
+            let (periods, periods_page) = self.read_all("/api/v1/books/periods").await?;
+            let (mut vendors, _) = self
+                .read_all("/api/v1/books/contacts?contact_type=vendor")
+                .await?;
+            let (both, _) = self
+                .read_all("/api/v1/books/contacts?contact_type=both")
+                .await?;
+            vendors.extend(both);
+            let (segments, segments_page) = self.read_all("/api/v1/books/segments").await?;
+            Ok(Catalog {
+                accounts: accounts.iter().map(account).collect::<Result<_, _>>()?,
+                periods: periods.iter().map(period).collect::<Result<_, _>>()?,
+                ledger_start_date: match periods_page.get("ledger_start_date") {
+                    None | Some(Value::Null) => None,
+                    Some(v) => Some(date(v, "ledger_start_date")?),
+                },
+                vendors: vendors.iter().map(vendor).collect::<Result<_, _>>()?,
+                segments: segments.iter().map(segment).collect::<Result<_, _>>()?,
+                segmentation_enabled: segments_page
+                    .get("segmentation_enabled")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+            })
+        })
+    }
 }
 
+fn unreadable(what: &str) -> LedgerError {
+    LedgerError::new(
+        Code::Timeout,
+        format!("VisiBooks returned {what}; try the sync again"),
+    )
+}
+
+/// An id or code as text: VisiBooks sends numbers, Payvy stores strings.
+fn text(row: &Value, field: &str) -> Option<String> {
+    match row.get(field)? {
+        Value::String(s) if !s.trim().is_empty() => Some(s.trim().to_owned()),
+        Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
+fn required(row: &Value, field: &str) -> Result<String, LedgerError> {
+    text(row, field).ok_or_else(|| unreadable(&format!("a row without {field}")))
+}
+
+fn flag(row: &Value, field: &str) -> bool {
+    row.get(field).and_then(Value::as_bool).unwrap_or(false)
+}
+
+fn date(value: &Value, field: &str) -> Result<NaiveDate, LedgerError> {
+    value
+        .as_str()
+        .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
+        .ok_or_else(|| unreadable(&format!("an unreadable {field}")))
+}
+
+fn account(row: &Value) -> Result<CatalogAccount, LedgerError> {
+    Ok(CatalogAccount {
+        id: required(row, "id")?,
+        number: text(row, "number"),
+        name: text(row, "name").unwrap_or_default(),
+        account_type: required(row, "account_type")?,
+        sub_type: text(row, "sub_type"),
+        active: flag(row, "active"),
+        required_segment_type_ids: row
+            .get("required_segment_type_ids")
+            .and_then(Value::as_array)
+            .map(|ids| {
+                ids.iter()
+                    .filter_map(|v| match v {
+                        Value::Number(n) => Some(n.to_string()),
+                        Value::String(s) => Some(s.clone()),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+    })
+}
+
+fn period(row: &Value) -> Result<CatalogPeriod, LedgerError> {
+    Ok(CatalogPeriod {
+        id: required(row, "id")?,
+        name: text(row, "name").unwrap_or_default(),
+        start: date(row.get("start_date").unwrap_or(&Value::Null), "start_date")?,
+        end: date(row.get("end_date").unwrap_or(&Value::Null), "end_date")?,
+        status: required(row, "status")?,
+    })
+}
+
+fn vendor(row: &Value) -> Result<CatalogVendor, LedgerError> {
+    Ok(CatalogVendor {
+        id: required(row, "id")?,
+        name: text(row, "name").unwrap_or_default(),
+        email: text(row, "email"),
+        archived: flag(row, "archived"),
+        ap_owner: text(row, "ap_owner"),
+        default_expense_account_id: text(row, "default_expense_account_id"),
+        external_source: text(row, "external_source"),
+        // Compared exactly, as VisiBooks stores it: not trimmed.
+        external_id: row.get("external_id").and_then(|v| match v {
+            Value::String(s) if !s.is_empty() => Some(s.clone()),
+            Value::Number(n) => Some(n.to_string()),
+            _ => None,
+        }),
+    })
+}
+
+fn segment(row: &Value) -> Result<CatalogSegment, LedgerError> {
+    let kind = row.get("segment_type").unwrap_or(&Value::Null);
+    Ok(CatalogSegment {
+        id: required(row, "id")?,
+        name: text(row, "name").unwrap_or_default(),
+        code: text(row, "code"),
+        active: flag(row, "active"),
+        accepts_postings: flag(row, "accepts_postings"),
+        type_id: required(kind, "id")?,
+        type_name: text(kind, "name").unwrap_or_default(),
+    })
+}
 fn missing(message: &str) -> LedgerError {
     LedgerError::new(Code::MissingField, message)
 }
@@ -726,5 +911,96 @@ mod tests {
         assert_eq!(calls[0]["bill"]["service_period"]["ends_on"], "2026-11-30");
         assert_eq!(calls[1]["document_link"], "https://app.payvy.com/bills/abc");
         assert_eq!(calls[2]["bank_reference"], "ach-123");
+    }
+
+    /// Paged reads: every page is followed with `after=<last id>`, vendor
+    /// and "both" contacts are both read, and the page-level fields
+    /// (ledger_start_date, segmentation_enabled) come through.
+    #[tokio::test]
+    async fn catalog_reads_every_page_of_every_list() {
+        use axum::extract::{Query, Request};
+        use std::collections::HashMap;
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let app = Router::new()
+            .fallback(any({
+                let seen = seen.clone();
+                move |Query(q): Query<HashMap<String, String>>, request: Request| {
+                    let seen = seen.clone();
+                    async move {
+                        assert_eq!(request.method(), axum::http::Method::GET);
+                        assert_eq!(request.headers()["x-books-entity-id"], "12");
+                        let path = request.uri().path().to_owned();
+                        seen.lock().unwrap().push(request.uri().to_string());
+                        let after = q.get("after").cloned();
+                        let body = match (path.as_str(), q.get("contact_type").map(String::as_str), after.as_deref()) {
+                            ("/api/v1/books/accounts", _, None) => json!({
+                                "data": [{ "id": 1, "number": "5000", "name": "Repairs", "account_type": "expense", "sub_type": null, "active": true, "required_segment_type_ids": [2] }],
+                                "page": { "has_more": true } }),
+                            ("/api/v1/books/accounts", _, Some("1")) => json!({
+                                "data": [{ "id": 4, "number": "1000", "name": "Operating", "account_type": "asset", "sub_type": "bank", "active": true }],
+                                "page": { "has_more": false } }),
+                            ("/api/v1/books/periods", _, None) => json!({
+                                "data": [{ "id": 3, "name": "Jan", "start_date": "2027-01-01", "end_date": "2027-01-31", "status": "locked" }],
+                                "page": { "has_more": false }, "ledger_start_date": "2026-01-01" }),
+                            ("/api/v1/books/contacts", Some("vendor"), None) => json!({
+                                "data": [{ "id": 38, "name": "Allied", "external_source": "quarry", "external_id": "quarry_vendor_9", "archived": false, "default_expense_account_id": 1 }],
+                                "page": { "has_more": false } }),
+                            ("/api/v1/books/contacts", Some("both"), None) => json!({
+                                "data": [{ "id": 40, "name": "Acme", "archived": true }],
+                                "page": { "has_more": false } }),
+                            ("/api/v1/books/segments", _, None) => json!({
+                                "data": [{ "id": 5, "name": "Phoenix", "code": "PHX", "active": true, "accepts_postings": true, "segment_type": { "id": 2, "name": "Location", "code": "LOC" } }],
+                                "page": { "has_more": false }, "segmentation_enabled": true }),
+                            other => panic!("unexpected read {other:?}"),
+                        };
+                        (StatusCode::OK, Json(body))
+                    }
+                }
+            }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let _task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let books = VisiBooks::build(&origin, "12", "vk_test-only", true).unwrap();
+        let catalog = books.catalog().await.unwrap();
+        assert_eq!(catalog.accounts.len(), 2);
+        assert_eq!(catalog.accounts[0].required_segment_type_ids, vec!["2"]);
+        assert_eq!(catalog.accounts[1].sub_type.as_deref(), Some("bank"));
+        assert_eq!(catalog.periods[0].status, "locked");
+        assert_eq!(
+            catalog.ledger_start_date,
+            NaiveDate::from_ymd_opt(2026, 1, 1)
+        );
+        assert_eq!(catalog.vendors.len(), 2);
+        assert_eq!(
+            catalog.vendors[0].external_id.as_deref(),
+            Some("quarry_vendor_9")
+        );
+        assert_eq!(
+            catalog.vendors[0].default_expense_account_id.as_deref(),
+            Some("1")
+        );
+        assert!(catalog.vendors[1].archived);
+        assert!(catalog.segmentation_enabled);
+        assert_eq!(catalog.segments[0].type_id, "2");
+        let seen = seen.lock().unwrap();
+        assert!(
+            seen.iter()
+                .any(|u| u.ends_with("/api/v1/books/accounts?limit=100&after=1")),
+            "{seen:?}"
+        );
+    }
+
+    /// A server that repeats a page can't make the sync loop.
+    #[tokio::test]
+    async fn catalog_refuses_ids_that_do_not_increase() {
+        let app = Router::new().fallback(any(|| async {
+            Json(json!({ "data": [{ "id": 7, "account_type": "expense" }], "page": { "has_more": true } }))
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let _task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let books = VisiBooks::build(&origin, "12", "vk_test-only", true).unwrap();
+        let e = books.catalog().await.unwrap_err();
+        assert!(e.detail.contains("don't increase"), "{}", e.detail);
     }
 }

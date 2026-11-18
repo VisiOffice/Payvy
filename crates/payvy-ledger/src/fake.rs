@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 
 use sha2::{Digest, Sha256};
 
-use super::{BillBody, Code, Ledger, LedgerError, PaymentBody, Posted, body_hash};
+use super::{BillBody, Catalog, Code, Ledger, LedgerError, PaymentBody, Posted, body_hash};
 
 #[derive(Clone)]
 struct Remembered {
@@ -32,6 +32,7 @@ struct Inner {
     next_bill: u64,
     next_payment: u64,
     next_file: u64,
+    catalog: Option<Catalog>,
 }
 
 /// Shared by a test and the server. `script_err` queues the next refusal.
@@ -62,6 +63,11 @@ impl FakeLedger {
             .expect("fake ledger")
             .script
             .push_back(Ok(()));
+    }
+
+    /// What [`Ledger::catalog`] returns. Without one, reading it is refused.
+    pub fn set_catalog(&self, catalog: Catalog) {
+        self.inner.lock().expect("fake ledger").catalog = Some(catalog);
     }
 
     pub fn calls(&self) -> Vec<String> {
@@ -252,5 +258,19 @@ impl Ledger for FakeLedger {
         bytes: &'a [u8],
     ) -> Pin<Box<dyn Future<Output = Result<String, LedgerError>> + Send + 'a>> {
         Box::pin(self.do_attach_file(bill_external_id, name, bytes))
+    }
+
+    fn catalog<'a>(
+        &'a self,
+    ) -> Pin<Box<dyn Future<Output = Result<Catalog, LedgerError>> + Send + 'a>> {
+        Box::pin(async move {
+            self.take("catalog".into())?;
+            self.inner
+                .lock()
+                .expect("fake ledger")
+                .catalog
+                .clone()
+                .ok_or_else(|| LedgerError::new(Code::NeedsAuth, "no catalog in the fake ledger"))
+        })
     }
 }

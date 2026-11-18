@@ -885,7 +885,7 @@
       "name": "ledger.settings",
       "permission": "read",
       "person_only": false,
-      "summary": "The company's ledger connection: provider, origin, entity, when it posts (post_when), the AP account and the bank account map. Never the credential. Disconnected companies read connected: false.",
+      "summary": "The company's ledger connection: provider, origin, entity, when it posts (post_when), the AP account, coding defaults, the bank account map, when the catalog was last synced and the synced accounts. Never the credential. Disconnected companies read connected: false.",
       "tier": "read"
     },
     {
@@ -895,6 +895,30 @@
       "person_only": true,
       "summary": "Change how the connected ledger posts (person only, confirmed): post_when (approval or payment), the AP account, coding defaults, and the map from Payvy bank connections (or payment methods) to ledger bank accounts. Map keys are validated against the company's bank connections and methods. Asking for what is already set is refused.",
       "tier": "confirmed"
+    },
+    {
+      "input_schema": "{\"type\":\"object\",\"additionalProperties\":false,\"properties\":{}}",
+      "name": "ledger.sync",
+      "permission": "prepare",
+      "person_only": false,
+      "summary": "Read the connected ledger's accounts, periods, vendors and segments into Payvy, so bills are checked against the books before they are sent. Nothing is sent to the ledger and no vendor is linked: the result counts what changed and how many vendors are linked, have a suggested match, or have none.",
+      "tier": "routine"
+    },
+    {
+      "input_schema": "{\"type\":\"object\",\"additionalProperties\":false,\"properties\":{}}",
+      "name": "ledger.vendor_matches",
+      "permission": "read",
+      "person_only": false,
+      "summary": "Each vendor's ledger vendor: the link in force, or a suggestion (the same id in another system, such as Quarry's vendor id, else the same name). Also lists the ledger's active vendors and which Payvy vendor each is linked to.",
+      "tier": "read"
+    },
+    {
+      "input_schema": "{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"vendor_id\",\"external_id\"],\"properties\":{\"vendor_id\":{\"type\":\"string\",\"format\":\"uuid\"},\"external_id\":{\"type\":[\"string\",\"null\"]}}}",
+      "name": "ledger.link_vendor",
+      "permission": "admin",
+      "person_only": true,
+      "summary": "Link a vendor to its vendor in the connected ledger (person only), or unlink it with external_id null. The ledger vendor must be in the synced catalog, active, and not linked to another vendor. Once one of the vendor's bills is posted the link can't change, because its payments must post to the same ledger vendor.",
+      "tier": "routine"
     },
     {
       "input_schema": "{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"bill_id\"],\"properties\":{\"bill_id\":{\"type\":\"string\",\"format\":\"uuid\"}}}",

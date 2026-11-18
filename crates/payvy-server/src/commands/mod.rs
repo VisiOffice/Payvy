@@ -417,6 +417,9 @@ async fn execute(cx: &mut Cx<'_>, name: &str, input: &Value) -> Result<Value, Co
         "ledger.post_bill" => ledger::post_bill(cx, parse(input)?).await,
         "ledger.post_payment" => ledger::post_payment(cx, parse(input)?).await,
         "ledger.void" => ledger::void(cx, parse(input)?).await,
+        "ledger.sync" => ledger::sync(cx, parse(input)?).await,
+        "ledger.vendor_matches" => ledger::vendor_matches(cx, parse(input)?).await,
+        "ledger.link_vendor" => ledger::link_vendor(cx, parse(input)?).await,
         "usage.summary" => usage::summary(cx, parse(input)?).await,
         other => Err(CommandError::Unknown(other.to_owned())),
     }

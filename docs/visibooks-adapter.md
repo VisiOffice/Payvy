@@ -99,8 +99,9 @@ The adapter is now hooked into the app, per company:
 ## Still required before cutover
 
 - Merge/review PR #41 and the VisiAPI recording API.
-- Reference catalog reads and cache refresh; linking existing contacts without
-  replacing Quarry's source identifiers; handling contact merges.
+- Handling contact merges in VisiBooks (catalog reads, the cache refresh and
+  person-confirmed vendor links are done: `ledger.sync`, `ledger.link_vendor`,
+  see `docs/ledger.md`).
 - Confirmation of bank-feed clearing. A payment already
   settled in VisiBooks currently requires reconciliation before its ledger void.
 - Signed evidence links in the core body model; attachment API (the
