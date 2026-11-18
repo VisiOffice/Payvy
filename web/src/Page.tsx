@@ -5,6 +5,7 @@ import { Heading } from '@astryxdesign/core/Heading';
 import { HStack } from '@astryxdesign/core/HStack';
 import { Text } from '@astryxdesign/core/Text';
 import { VStack } from '@astryxdesign/core/VStack';
+import { usePageTitle } from './title';
 
 export function Page({
   title,
@@ -14,6 +15,7 @@ export function Page({
   actions,
   narrow,
   wide,
+  tabTitle,
   children,
 }: {
   title: ReactNode;
@@ -27,8 +29,11 @@ export function Page({
   narrow?: boolean;
   /** For long lists: the page uses the whole width, and the text columns take what's added. */
   wide?: boolean;
+  /** The browser tab's title, when the title isn't plain text or should say more. */
+  tabTitle?: string;
   children?: ReactNode;
 }) {
+  usePageTitle(tabTitle ?? (typeof title === 'string' ? title : undefined));
   return (
     <div className={narrow ? 'payvy-page payvy-page-narrow' : wide ? 'payvy-page payvy-page-wide' : 'payvy-page'}>
       <VStack gap={6}>

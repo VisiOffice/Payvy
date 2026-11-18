@@ -3,6 +3,7 @@ import { CHECK } from '../documents/checks';
 import { Allowed, useCan } from '../permissions';
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps, type ReactNode } from 'react';
 import { useNavigate, useParams } from 'react-router';
+import { usePageTitle } from '../title';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
 import { CheckboxInput } from '@astryxdesign/core/CheckboxInput';
@@ -168,6 +169,7 @@ export function DocumentReview({ id: given, embedded = false, onDone }: { id?: s
   const readerLocked = useReaderLocked();
   const { me } = useSession();
   const [detail, setDetail] = useState<DocumentDetail | null>(null);
+  usePageTitle(embedded ? undefined : (detail?.document.filename ?? 'Inbox'));
   const [vendors, setVendors] = useState<Vendor[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [form, setForm] = useState<Form>(EMPTY);

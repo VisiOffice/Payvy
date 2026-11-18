@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router';
+import { usePageTitle } from '../title';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
 import { Card } from '@astryxdesign/core/Card';
@@ -16,6 +17,7 @@ import { ApiError, auth, isChoice, type Choice, type Me } from '../api/client';
  * its token after `#`, which never leaves the browser until it's posted.
  */
 export function SignIn({ onSignedIn }: { onSignedIn: (me: Me) => void }) {
+  usePageTitle('Sign in');
   const navigate = useNavigate();
   const location = useLocation();
   const requested = (location.state as { from?: string } | null)?.from ?? new URLSearchParams(location.search).get('return_to');
