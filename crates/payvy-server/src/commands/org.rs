@@ -20,7 +20,13 @@ pub async fn get(cx: &mut Cx<'_>) -> Result<Value, CommandError> {
     } else {
         None
     };
-    let plan = crate::entitlements::view(cx.hosted, stored.as_ref());
+    let mut plan = crate::entitlements::view(cx.hosted, stored.as_ref());
+    // A company reading with its own model key has Payvy's reader whatever
+    // the plan says.
+    if store::reader_key(&mut cx.tx, cx.org).await?.is_some() {
+        plan["reader"] = json!(true);
+        plan["own_reader_key"] = json!(true);
+    }
     Ok(json!({ "organization": org, "plan": plan }))
 }
 

@@ -654,6 +654,30 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     // ── Agents ──────────────────────────────────────────────────────────────
     CommandSpec {
+        name: "reader_key.get",
+        summary: "Whether this company reads invoices with its own model key: the provider, model, the key's last four characters, and who set it when. Never the key.",
+        tier: RiskTier::Read,
+        person_only: false,
+        permission: Permission::Read,
+        input_schema: r#"{"type":"object","additionalProperties":false,"properties":{}}"#,
+    },
+    CommandSpec {
+        name: "reader_key.set",
+        summary: "Read this company's invoices with its own Anthropic or OpenAI key: Payvy's reader (document.extract and automatic reading of new invoices) then uses it, and the provider bills the company, whatever its plan's built-in reader. The key is checked with the provider first (a free lookup of the model), sealed, and never shown again. Replaces any key already set. Admin.",
+        tier: RiskTier::Routine,
+        person_only: true,
+        permission: Permission::Admin,
+        input_schema: r#"{"type":"object","additionalProperties":false,"required":["provider","api_key"],"properties":{"provider":{"type":"string","enum":["anthropic","openai"]},"api_key":{"type":"string"},"model":{"type":"string","description":"The model to read with. Defaults to Payvy's Claude model for anthropic; required for openai (one that reads PDFs and images)."}}}"#,
+    },
+    CommandSpec {
+        name: "reader_key.remove",
+        summary: "Stop reading with this company's own model key and forget it. Reading then follows the plan again. Admin.",
+        tier: RiskTier::Routine,
+        person_only: true,
+        permission: Permission::Admin,
+        input_schema: r#"{"type":"object","additionalProperties":false,"properties":{}}"#,
+    },
+    CommandSpec {
         name: "agent_key.list",
         summary: "This company's agent API keys: id, the agent's name, when it was made and whether it is revoked. Never the key itself.",
         tier: RiskTier::Read,

@@ -13,9 +13,11 @@ mod ledger;
 pub use ledger::*;
 mod notifications;
 mod operator;
+mod reader_keys;
 mod roles;
 pub use notifications::*;
 pub use operator::*;
+pub use reader_keys::*;
 pub use roles::*;
 
 use chrono::{DateTime, NaiveDate, Utc};

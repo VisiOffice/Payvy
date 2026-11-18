@@ -227,10 +227,17 @@ async fn me(state: &AppState, s: &SignedIn) -> anyhow::Result<Value> {
     } else {
         None
     };
+    let own_reader_key = payvy_store::reader_key(&mut tx, actor.org_id)
+        .await?
+        .is_some();
     tx.rollback().await?;
     // The other companies this address can switch to.
     let companies = state.store.companies_for_email(&s.person.email).await?;
     let mut plan = crate::entitlements::view(state.hosted, stored.as_ref());
+    if own_reader_key {
+        plan["reader"] = json!(true);
+        plan["own_reader_key"] = json!(true);
+    }
     // Whether Settings > Billing can work here (hosted, with the settings).
     plan["billing"] = json!(state.hosted && state.billing.is_some());
     Ok(json!({

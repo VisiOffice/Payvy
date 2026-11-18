@@ -122,6 +122,10 @@ pub struct AppState {
     /// None when no model is configured to read documents: document.extract
     /// says so, and the background reader doesn't run.
     pub extractor: Option<Arc<payvy_extract::Extractor>>,
+    /// Tests only: where a company's own model key is sent instead of its
+    /// provider's address. Nothing in configuration sets it, so in
+    /// production a company key only ever goes to Anthropic or OpenAI.
+    pub reader_key_origin: Option<String>,
     /// None when PAYVY_SECRETS_KEY isn't set: bank commands say so, and
     /// bills are paid outside Payvy and marked paid.
     pub bank: Option<Arc<Bank>>,
@@ -189,6 +193,7 @@ impl AppState {
             storage: None,
             inbound: None,
             extractor: None,
+            reader_key_origin: None,
             bank: None,
             auth: None,
             bill_batches: Arc::new(tokio::sync::Notify::new()),
