@@ -29,6 +29,8 @@ pub struct LedgerConnection {
     pub bank_account_map: Value,
     pub created_at: DateTime<Utc>,
     pub created_by: String,
+    /// When `ledger.sync` last read the whole catalog. None: never.
+    pub catalog_synced_at: Option<DateTime<Utc>>,
 }
 
 impl std::fmt::Debug for LedgerConnection {
@@ -51,6 +53,7 @@ impl std::fmt::Debug for LedgerConnection {
             .field("bank_account_map", &self.bank_account_map)
             .field("created_at", &self.created_at)
             .field("created_by", &self.created_by)
+            .field("catalog_synced_at", &self.catalog_synced_at)
             .finish()
     }
 }
@@ -94,12 +97,13 @@ fn connection(row: &sqlx::postgres::PgRow) -> LedgerConnection {
         bank_account_map: row.get("bank_account_map"),
         created_at: row.get("created_at"),
         created_by: row.get("created_by"),
+        catalog_synced_at: row.get("catalog_synced_at"),
     }
 }
 
 macro_rules! connection_cols {
     () => {
-"id, origin, provider, environment, account_id, subsidiary_id, subsidiary_name, currency, status, auth_kind, token_sealed, post_when, ap_account_id, defaults, bank_account_map, created_at, created_by"
+"id, origin, provider, environment, account_id, subsidiary_id, subsidiary_name, currency, status, auth_kind, token_sealed, post_when, ap_account_id, defaults, bank_account_map, created_at, created_by, catalog_synced_at"
     };
 }
 
@@ -276,6 +280,91 @@ pub async fn ledger_records(tx: &mut Tx, connection_id: Uuid) -> anyhow::Result<
     .fetch_all(&mut **tx)
     .await?;
     Ok(rows.iter().map(record).collect())
+}
+
+/// Makes the cache's rows of one kind match what the ledger just returned:
+/// new rows are added, known ones take the new name and detail, and rows
+/// the ledger no longer lists are marked inactive (links may still name
+/// them, so nothing is deleted). Returns (added, updated, retired).
+pub async fn sync_ledger_records(
+    tx: &mut Tx,
+    org_id: Uuid,
+    connection_id: Uuid,
+    kind: &str,
+    rows: &[NewLedgerRecord<'_>],
+) -> anyhow::Result<(u64, u64, u64)> {
+    let mut added = 0;
+    let mut updated = 0;
+    let mut seen: Vec<String> = Vec::with_capacity(rows.len());
+    for new in rows {
+        let changed: Option<bool> = sqlx::query_scalar(
+            "INSERT INTO ledger_records (id, org_id, connection_id, kind, external_id, name, parent_external_id, inactive, detail)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+             ON CONFLICT (connection_id, kind, external_id) DO UPDATE SET
+                name = EXCLUDED.name,
+                parent_external_id = EXCLUDED.parent_external_id,
+                inactive = EXCLUDED.inactive,
+                detail = EXCLUDED.detail
+             WHERE (ledger_records.name, ledger_records.parent_external_id, ledger_records.inactive, ledger_records.detail)
+                IS DISTINCT FROM (EXCLUDED.name, EXCLUDED.parent_external_id, EXCLUDED.inactive, EXCLUDED.detail)
+             RETURNING (xmax = 0)",
+        )
+        .bind(Uuid::new_v4())
+        .bind(org_id)
+        .bind(connection_id)
+        .bind(kind)
+        .bind(new.external_id)
+        .bind(new.name)
+        .bind(new.parent_external_id)
+        .bind(new.inactive)
+        .bind(new.detail)
+        .fetch_optional(&mut **tx)
+        .await?;
+        match changed {
+            Some(true) => added += 1,
+            Some(false) => updated += 1,
+            None => {}
+        }
+        seen.push(new.external_id.to_owned());
+    }
+    let retired = sqlx::query(
+        "UPDATE ledger_records SET inactive = true
+         WHERE connection_id = $1 AND kind = $2 AND NOT inactive AND NOT (external_id = ANY($3))",
+    )
+    .bind(connection_id)
+    .bind(kind)
+    .bind(&seen)
+    .execute(&mut **tx)
+    .await?
+    .rows_affected();
+    Ok((added, updated, retired))
+}
+
+pub async fn set_catalog_synced(tx: &mut Tx, id: Uuid, at: DateTime<Utc>) -> anyhow::Result<()> {
+    sqlx::query("UPDATE ledger_connections SET catalog_synced_at = $2 WHERE id = $1")
+        .bind(id)
+        .bind(at)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
+/// How many of a vendor's bills are posted (or were, and are now void) on
+/// this connection: their ledger copies name the vendor's linked contact.
+pub async fn vendor_posted_bills(
+    tx: &mut Tx,
+    connection_id: Uuid,
+    vendor_id: Uuid,
+) -> anyhow::Result<i64> {
+    Ok(sqlx::query_scalar(
+        "SELECT count(*) FROM ledger_links l JOIN bills b ON b.id = l.payvy_id
+         WHERE l.connection_id = $1 AND l.entity = 'bill' AND l.status IN ('posted', 'voided')
+           AND b.vendor_id = $2",
+    )
+    .bind(connection_id)
+    .bind(vendor_id)
+    .fetch_one(&mut **tx)
+    .await?)
 }
 
 fn record(row: &sqlx::postgres::PgRow) -> LedgerRecord {
@@ -628,4 +717,39 @@ pub async fn set_ledger_link_bank_reference(
     .execute(&mut **tx)
     .await?;
     Ok(())
+}
+
+/// Every vendor link on a connection, current or retired.
+pub async fn ledger_vendor_links(
+    tx: &mut Tx,
+    connection_id: Uuid,
+) -> anyhow::Result<Vec<LedgerLink>> {
+    let rows = sqlx::query(concat!(
+        "SELECT ",
+        link_cols!(),
+        " FROM ledger_links WHERE connection_id = $1 AND entity = 'vendor'"
+    ))
+    .bind(connection_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    Ok(rows.iter().map(link).collect())
+}
+
+/// Every vendor's id in other systems: (vendor, source, id).
+pub async fn all_vendor_external_ids(tx: &mut Tx) -> anyhow::Result<Vec<(Uuid, String, String)>> {
+    let rows = sqlx::query("SELECT vendor_id, source, external_id FROM vendor_external_ids")
+        .fetch_all(&mut **tx)
+        .await?;
+    Ok(rows
+        .iter()
+        .map(|r| (r.get("vendor_id"), r.get("source"), r.get("external_id")))
+        .collect())
+}
+
+/// Every vendor's id and name, for matching against the ledger's vendors.
+pub async fn vendor_names(tx: &mut Tx) -> anyhow::Result<Vec<(Uuid, String)>> {
+    let rows = sqlx::query("SELECT id, name FROM vendors ORDER BY lower(name), id")
+        .fetch_all(&mut **tx)
+        .await?;
+    Ok(rows.iter().map(|r| (r.get("id"), r.get("name"))).collect())
 }

@@ -339,8 +339,83 @@ impl Defaults {
 pub struct AccountRec {
     pub external_id: String,
     pub inactive: bool,
-    /// Field names the account cannot post without.
+    /// Field names the account cannot post without. `segment_type:<id>`
+    /// asks for a line segment of that type (VisiBooks segmentation).
     pub requires: Vec<String>,
+    /// The ledger's account type when the catalog says it ("expense",
+    /// "asset"...). A bill line posts only to an expense account; a
+    /// cache row without a type (older rows, tests) is not checked.
+    pub account_type: Option<String>,
+}
+
+/// A segment a bill line can carry (VisiBooks: department, class,
+/// location or any other type the books define).
+#[derive(Debug, Clone)]
+pub struct SegmentRec {
+    pub external_id: String,
+    pub type_id: String,
+    /// Active and accepting postings.
+    pub usable: bool,
+}
+
+/// The reference data a ledger publishes, read by `ledger.sync` and kept in
+/// Payvy's cache so a bill is checked before it is sent. Ids are strings.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Catalog {
+    pub accounts: Vec<CatalogAccount>,
+    pub periods: Vec<CatalogPeriod>,
+    /// Nothing may post before this date.
+    pub ledger_start_date: Option<NaiveDate>,
+    pub vendors: Vec<CatalogVendor>,
+    pub segments: Vec<CatalogSegment>,
+    /// Whether accounts' required segment types are enforced.
+    pub segmentation_enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatalogAccount {
+    pub id: String,
+    pub number: Option<String>,
+    pub name: String,
+    pub account_type: String,
+    pub sub_type: Option<String>,
+    pub active: bool,
+    pub required_segment_type_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatalogPeriod {
+    pub id: String,
+    pub name: String,
+    pub start: NaiveDate,
+    pub end: NaiveDate,
+    /// "open", "closed" or "locked". Anything but open refuses postings.
+    pub status: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatalogVendor {
+    pub id: String,
+    pub name: String,
+    pub email: Option<String>,
+    pub archived: bool,
+    pub ap_owner: Option<String>,
+    pub default_expense_account_id: Option<String>,
+    /// The vendor's id in another system, with that system's name. Matched
+    /// only as a pair: an id without a source is never matched alone.
+    pub external_source: Option<String>,
+    pub external_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatalogSegment {
+    pub id: String,
+    pub name: String,
+    pub code: Option<String>,
+    pub active: bool,
+    pub accepts_postings: bool,
+    pub type_id: String,
+    pub type_name: String,
 }
 
 #[derive(Debug, Clone)]
@@ -359,6 +434,12 @@ pub struct Books {
     pub accounts: Vec<AccountRec>,
     pub periods: Vec<PeriodRec>,
     pub vendor_currency: Option<String>,
+    /// Empty when no segment catalog has been read: segment ids are then
+    /// sent unchecked, as before the catalog existed.
+    pub segments: Vec<SegmentRec>,
+    /// The vendor's default expense account in the ledger, used for a line
+    /// with no account before the company default.
+    pub vendor_default_account: Option<String>,
 }
 
 pub fn account_rec(external_id: String, inactive: bool, detail: &Value) -> AccountRec {
@@ -367,11 +448,31 @@ pub fn account_rec(external_id: String, inactive: bool, detail: &Value) -> Accou
         .and_then(Value::as_array)
         .map(|items| items.iter().filter_map(text_of).collect())
         .unwrap_or_default();
+    let account_type =
+        string_field(detail, "account_type").or_else(|| string_field(detail, "type"));
     AccountRec {
         external_id,
         inactive,
         requires,
+        account_type,
     }
+}
+
+pub fn segment_rec(external_id: String, inactive: bool, detail: &Value) -> Option<SegmentRec> {
+    let type_id = string_field(detail, "type_id")?;
+    let accepts = detail
+        .get("accepts_postings")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    Some(SegmentRec {
+        external_id,
+        type_id,
+        usable: !inactive && accepts,
+    })
+}
+
+pub fn vendor_default_account(detail: &Value) -> Option<String> {
+    string_field(detail, "default_expense_account_id")
 }
 
 /// None when the cache row has no start and end. A missing catalog is an
@@ -446,6 +547,18 @@ pub trait Ledger: Send + Sync {
         name: &'a str,
         bytes: &'a [u8],
     ) -> Pin<Box<dyn Future<Output = Result<String, LedgerError>> + Send + 'a>>;
+
+    /// The ledger's accounts, periods, vendors and segments. Read-only.
+    fn catalog<'a>(
+        &'a self,
+    ) -> Pin<Box<dyn Future<Output = Result<Catalog, LedgerError>> + Send + 'a>> {
+        Box::pin(async {
+            Err(LedgerError::new(
+                Code::NeedsAuth,
+                "this ledger's accounts and vendors can't be read yet",
+            ))
+        })
+    }
 }
 
 pub fn plan_bill(
@@ -700,6 +813,7 @@ fn compose_lines(books: &Books, draft: &BillDraft) -> Vec<BillLineBody> {
         .iter()
         .map(|line| BillLineBody {
             account_id: filled(&Some(line.account_id.clone()))
+                .or_else(|| filled(&books.vendor_default_account))
                 .or_else(|| books.defaults.expense_account_id.clone())
                 .unwrap_or_default(),
             amount: cents_to_amount(line.amount_cents),
@@ -876,7 +990,53 @@ fn validate_line(books: &Books, line: &BillLineBody) -> Result<(), PrepareError>
             format!("account {account_id} is inactive"),
         ));
     }
+    if let Some(kind) = &account.account_type
+        && kind != "expense"
+    {
+        return Err(ledger(
+            Code::UnknownAccount,
+            format!("account {account_id} is not an expense account ({kind})"),
+        ));
+    }
+    let line_segments: Vec<&String> = [&line.department_id, &line.class_id, &line.location_id]
+        .into_iter()
+        .flatten()
+        .collect();
+    if !books.segments.is_empty() {
+        for id in &line_segments {
+            match books.segments.iter().find(|s| &s.external_id == *id) {
+                Some(segment) if segment.usable => {}
+                Some(_) => {
+                    return Err(ledger(
+                        Code::MissingField,
+                        format!("segment {id} is inactive or doesn't take postings"),
+                    ));
+                }
+                None => {
+                    return Err(ledger(
+                        Code::MissingField,
+                        format!("segment {id} is not in the ledger cache"),
+                    ));
+                }
+            }
+        }
+    }
     for name in &account.requires {
+        if let Some(type_id) = name.strip_prefix("segment_type:") {
+            let present = line_segments.iter().any(|id| {
+                books
+                    .segments
+                    .iter()
+                    .any(|s| &s.external_id == *id && s.type_id == type_id)
+            });
+            if !present {
+                return Err(ledger(
+                    Code::MissingField,
+                    format!("account {account_id} needs a segment of type {type_id}"),
+                ));
+            }
+            continue;
+        }
         let present = match name.as_str() {
             "department" => line.department_id.is_some(),
             "class" => line.class_id.is_some(),
@@ -1025,9 +1185,12 @@ mod tests {
                 external_id: "65".into(),
                 inactive: false,
                 requires: vec![],
+                account_type: None,
             }],
             periods: vec![],
             vendor_currency: None,
+            segments: vec![],
+            vendor_default_account: None,
         }
     }
 

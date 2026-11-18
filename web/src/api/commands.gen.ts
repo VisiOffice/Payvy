@@ -1212,6 +1212,15 @@ export interface LedgerConfigureInput {
   bank_account_map?: {};
 }
 
+export interface LedgerSyncInput {}
+
+export interface LedgerVendorMatchesInput {}
+
+export interface LedgerLinkVendorInput {
+  vendor_id: string;
+  external_id: string | null;
+}
+
 export interface LedgerPostBillInput {
   bill_id: string;
 }
@@ -1349,6 +1358,9 @@ export interface CommandInputs {
   "ledger.connect": LedgerConnectInput;
   "ledger.settings": LedgerSettingsInput;
   "ledger.configure": LedgerConfigureInput;
+  "ledger.sync": LedgerSyncInput;
+  "ledger.vendor_matches": LedgerVendorMatchesInput;
+  "ledger.link_vendor": LedgerLinkVendorInput;
   "ledger.post_bill": LedgerPostBillInput;
   "ledger.post_payment": LedgerPostPaymentInput;
   "ledger.void": LedgerVoidInput;
@@ -1471,8 +1483,11 @@ export const COMMANDS: Record<CommandName, { tier: Tier; personOnly: boolean; su
   "email.list": { tier: "read", personOnly: false, summary: "Emails received, newest first: sender, subject and what was skipped." },
   "email.get": { tier: "read", personOnly: false, summary: "One email: its details, the documents it brought in, and a 15-minute download link for the original message." },
   "ledger.connect": { tier: "confirmed", personOnly: true, summary: "Connect VisiBooks for this company (person only): its HTTPS origin, entity id and API key. The key is sealed at once and never read back; reconnecting updates the same connection, so its links stand. Confirmed, because it carries a credential." },
-  "ledger.settings": { tier: "read", personOnly: false, summary: "The company's ledger connection: provider, origin, entity, when it posts (post_when), the AP account and the bank account map. Never the credential. Disconnected companies read connected: false." },
+  "ledger.settings": { tier: "read", personOnly: false, summary: "The company's ledger connection: provider, origin, entity, when it posts (post_when), the AP account, coding defaults, the bank account map, when the catalog was last synced and the synced accounts. Never the credential. Disconnected companies read connected: false." },
   "ledger.configure": { tier: "confirmed", personOnly: true, summary: "Change how the connected ledger posts (person only, confirmed): post_when (approval or payment), the AP account, coding defaults, and the map from Payvy bank connections (or payment methods) to ledger bank accounts. Map keys are validated against the company's bank connections and methods. Asking for what is already set is refused." },
+  "ledger.sync": { tier: "routine", personOnly: false, summary: "Read the connected ledger's accounts, periods, vendors and segments into Payvy, so bills are checked against the books before they are sent. Nothing is sent to the ledger and no vendor is linked: the result counts what changed and how many vendors are linked, have a suggested match, or have none." },
+  "ledger.vendor_matches": { tier: "read", personOnly: false, summary: "Each vendor's ledger vendor: the link in force, or a suggestion (the same id in another system, such as Quarry's vendor id, else the same name). Also lists the ledger's active vendors and which Payvy vendor each is linked to." },
+  "ledger.link_vendor": { tier: "routine", personOnly: true, summary: "Link a vendor to its vendor in the connected ledger (person only), or unlink it with external_id null. The ledger vendor must be in the synced catalog, active, and not linked to another vendor. Once one of the vendor's bills is posted the link can't change, because its payments must post to the same ledger vendor." },
   "ledger.post_bill": { tier: "routine", personOnly: false, summary: "Post one bill to the connected ledger. The same bill posted again returns the first ledger id and sends nothing. A changed bill after posting is a conflict. A rejected or void bill is refused. Preview sends nothing." },
   "ledger.post_payment": { tier: "routine", personOnly: false, summary: "Record one sent payment in the ledger, applied to its posted bill and drawn on the mapped ledger bank account. Payvy has already paid through the customer's bank. Preview sends nothing." },
   "ledger.void": { tier: "confirmed", personOnly: true, summary: "Void the ledger's copy of a bill. Every posted payment is voided first, oldest first, including one the bank later returned. If a payment void is refused the bill stays posted. This cannot be undone, so it asks for confirmation. Only a person with admin may do this. Preview sends nothing." },

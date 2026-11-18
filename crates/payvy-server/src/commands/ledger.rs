@@ -588,6 +588,8 @@ fn books_for(
     let mut accounts = Vec::new();
     let mut periods = Vec::new();
     let mut vendor_currency = None;
+    let mut vendor_default_account = None;
+    let mut segments = Vec::new();
     for record in records {
         match record.kind.as_str() {
             "account" => accounts.push(payvy_ledger::account_rec(
@@ -602,6 +604,16 @@ fn books_for(
             }
             "vendor" if record.external_id == vendor_external_id => {
                 vendor_currency = payvy_ledger::vendor_currency(&record.detail);
+                vendor_default_account = payvy_ledger::vendor_default_account(&record.detail);
+            }
+            "segment" => {
+                if let Some(segment) = payvy_ledger::segment_rec(
+                    record.external_id.clone(),
+                    record.inactive,
+                    &record.detail,
+                ) {
+                    segments.push(segment);
+                }
             }
             _ => {}
         }
@@ -619,6 +631,8 @@ fn books_for(
         accounts,
         periods,
         vendor_currency,
+        segments,
+        vendor_default_account,
     }
 }
 
@@ -646,6 +660,7 @@ fn connection_view(connection: Option<&store::LedgerConnection>) -> Value {
             "defaults": c.defaults,
             "bank_account_map": c.bank_account_map,
             "status": c.status,
+            "catalog_synced_at": c.catalog_synced_at,
         }),
         None => json!({ "connected": false }),
     }
@@ -657,7 +672,26 @@ pub struct Settings {}
 
 pub async fn settings(cx: &mut Cx<'_>, _input: Settings) -> Result<Value, CommandError> {
     let connection = store::active_ledger_connection(&mut cx.tx).await?;
-    Ok(connection_view(connection.as_ref()))
+    let mut view = connection_view(connection.as_ref());
+    // The synced accounts, so Settings can offer them by name.
+    if let Some(c) = &connection {
+        let accounts: Vec<Value> = store::ledger_records(&mut cx.tx, c.id)
+            .await?
+            .iter()
+            .filter(|r| r.kind == "account")
+            .map(|r| {
+                json!({
+                    "id": r.external_id,
+                    "name": r.name,
+                    "account_type": r.detail.get("account_type").or_else(|| r.detail.get("type")),
+                    "sub_type": r.detail.get("sub_type"),
+                    "inactive": r.inactive,
+                })
+            })
+            .collect();
+        view["accounts"] = json!(accounts);
+    }
+    Ok(view)
 }
 
 #[derive(Deserialize)]
@@ -1434,4 +1468,431 @@ async fn run_job(cx: &mut Cx<'_>, job: &store::LedgerJob) -> Result<JobOutcome, 
         }
         other => Err(CommandError::Invalid(format!("unknown ledger job {other}"))),
     }
+}
+
+// ── Catalog sync and vendor links (ledger.sync, ledger.vendor_matches,
+//    ledger.link_vendor) ────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SyncInput {}
+
+/// Reads the ledger's accounts, periods, vendors and segments into the
+/// cache that every post is checked against. Nothing is sent to the
+/// ledger. A vendor is never linked here: `ledger.vendor_matches`
+/// suggests, and a person links with `ledger.link_vendor`.
+pub async fn sync(cx: &mut Cx<'_>, _input: SyncInput) -> Result<Value, CommandError> {
+    let connection = store::active_ledger_connection(&mut cx.tx)
+        .await?
+        .ok_or_else(|| CommandError::Ledger {
+            code: "needs_auth",
+            detail: "Connect a ledger in Settings → Ledger before syncing.".into(),
+        })?;
+    let catalog = {
+        let adapter = adapter_for(cx, &connection).await?;
+        adapter.get().catalog().await.map_err(ledger_error)?
+    };
+    let counts = write_catalog(cx, connection.id, &catalog).await?;
+    store::set_catalog_synced(&mut cx.tx, connection.id, cx.now).await?;
+    let matches = vendor_matches_for(cx, &connection).await?;
+    let summary = match_summary(&matches);
+    cx.emit(
+        "ledger.synced",
+        connection.id,
+        json!({ "counts": counts, "vendors": summary }),
+    )
+    .await?;
+    Ok(json!({ "synced_at": cx.now, "counts": counts, "vendors": summary }))
+}
+
+async fn write_catalog(
+    cx: &mut Cx<'_>,
+    connection_id: Uuid,
+    catalog: &payvy_ledger::Catalog,
+) -> Result<Value, CommandError> {
+    struct Row {
+        id: String,
+        name: String,
+        inactive: bool,
+        detail: Value,
+    }
+    let accounts: Vec<Row> = catalog
+        .accounts
+        .iter()
+        .map(|a| Row {
+            id: a.id.clone(),
+            name: match &a.number {
+                Some(n) => format!("{n} {}", a.name),
+                None => a.name.clone(),
+            },
+            inactive: !a.active,
+            detail: json!({
+                "account_type": a.account_type,
+                "sub_type": a.sub_type,
+                "number": a.number,
+                // Required segment types bind only while the books enforce them.
+                "requires": if catalog.segmentation_enabled {
+                    a.required_segment_type_ids.iter().map(|t| format!("segment_type:{t}")).collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                },
+            }),
+        })
+        .collect();
+    let mut periods: Vec<Row> = catalog
+        .periods
+        .iter()
+        .map(|p| Row {
+            id: p.id.clone(),
+            name: p.name.clone(),
+            inactive: false,
+            detail: json!({
+                "start": p.start.to_string(),
+                "end": p.end.to_string(),
+                "status": p.status,
+                "closed": p.status != "open",
+            }),
+        })
+        .collect();
+    // Nothing posts before the books start: a closed span up to that day.
+    if let Some(start) = catalog.ledger_start_date
+        && let Some(end) = start.pred_opt()
+    {
+        periods.push(Row {
+            id: "ledger_start".into(),
+            name: format!("Before the books start ({start})"),
+            inactive: false,
+            detail: json!({ "start": "1900-01-01", "end": end.to_string(), "closed": true }),
+        });
+    }
+    let vendors: Vec<Row> = catalog
+        .vendors
+        .iter()
+        .map(|v| Row {
+            id: v.id.clone(),
+            name: v.name.clone(),
+            inactive: v.archived,
+            detail: json!({
+                "email": v.email,
+                "ap_owner": v.ap_owner,
+                "default_expense_account_id": v.default_expense_account_id,
+                "external_source": v.external_source,
+                "external_id": v.external_id,
+            }),
+        })
+        .collect();
+    let segments: Vec<Row> = catalog
+        .segments
+        .iter()
+        .map(|g| Row {
+            id: g.id.clone(),
+            name: g.name.clone(),
+            inactive: !g.active,
+            detail: json!({
+                "type_id": g.type_id,
+                "type_name": g.type_name,
+                "code": g.code,
+                "accepts_postings": g.accepts_postings,
+            }),
+        })
+        .collect();
+    let mut counts = serde_json::Map::new();
+    for (kind, rows) in [
+        ("account", &accounts),
+        ("period", &periods),
+        ("vendor", &vendors),
+        ("segment", &segments),
+    ] {
+        let new: Vec<store::NewLedgerRecord<'_>> = rows
+            .iter()
+            .map(|r| store::NewLedgerRecord {
+                connection_id,
+                kind,
+                external_id: &r.id,
+                name: &r.name,
+                parent_external_id: None,
+                inactive: r.inactive,
+                detail: &r.detail,
+            })
+            .collect();
+        let (added, updated, retired) =
+            store::sync_ledger_records(&mut cx.tx, cx.org, connection_id, kind, &new).await?;
+        counts.insert(
+            format!("{kind}s"),
+            json!({ "total": rows.len(), "added": added, "updated": updated, "retired": retired }),
+        );
+    }
+    Ok(Value::Object(counts))
+}
+
+/// A Payvy vendor and its ledger vendor: the link in force, or what
+/// Payvy would suggest.
+struct VendorMatch {
+    vendor_id: Uuid,
+    name: String,
+    linked: Option<(String, String, bool)>,
+    suggestion: Option<(String, String, &'static str)>,
+}
+
+/// Letters and digits only, lower case: "Allied Waste, Inc." and
+/// "allied waste inc" are the same name.
+fn name_key(name: &str) -> String {
+    name.chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+/// The ledger vendor carrying this Payvy vendor's id in another system, by
+/// source and id together (never by id alone). VisiBooks writes Quarry's
+/// vendor 9 as `quarry_vendor_9`, so that form matches as well as the bare id.
+fn external_match<'a>(
+    ids: &[(String, String)],
+    records: &'a [store::LedgerRecord],
+) -> Option<&'a store::LedgerRecord> {
+    records.iter().find(|r| {
+        let source = r.detail.get("external_source").and_then(Value::as_str);
+        let id = r.detail.get("external_id").and_then(Value::as_str);
+        let (Some(source), Some(id)) = (source, id) else {
+            return false;
+        };
+        ids.iter()
+            .any(|(s, x)| s == source && (id == x || id == format!("{s}_vendor_{x}")))
+    })
+}
+
+async fn vendor_matches_for(
+    cx: &mut Cx<'_>,
+    connection: &store::LedgerConnection,
+) -> Result<Vec<VendorMatch>, CommandError> {
+    let records: Vec<store::LedgerRecord> = store::ledger_records(&mut cx.tx, connection.id)
+        .await?
+        .into_iter()
+        .filter(|r| r.kind == "vendor")
+        .collect();
+    let live: Vec<store::LedgerRecord> = records.iter().filter(|r| !r.inactive).cloned().collect();
+    let links = store::ledger_vendor_links(&mut cx.tx, connection.id).await?;
+    let external = store::all_vendor_external_ids(&mut cx.tx).await?;
+    let taken: Vec<&str> = links
+        .iter()
+        .filter(|l| l.status == "linked" || l.status == "posted")
+        .filter_map(|l| l.external_id.as_deref())
+        .collect();
+    let mut out = Vec::new();
+    for (vendor_id, name) in store::vendor_names(&mut cx.tx).await? {
+        let linked = links
+            .iter()
+            .find(|l| l.payvy_id == vendor_id && (l.status == "linked" || l.status == "posted"))
+            .and_then(|l| l.external_id.clone())
+            .map(|id| {
+                let record = records.iter().find(|r| r.external_id == id);
+                (
+                    id,
+                    record.map(|r| r.name.clone()).unwrap_or_default(),
+                    record.is_some_and(|r| r.inactive),
+                )
+            });
+        let suggestion = if linked.is_some() {
+            None
+        } else {
+            let ids: Vec<(String, String)> = external
+                .iter()
+                .filter(|(v, _, _)| *v == vendor_id)
+                .map(|(_, s, x)| (s.clone(), x.clone()))
+                .collect();
+            let free: Vec<&store::LedgerRecord> = live
+                .iter()
+                .filter(|r| !taken.contains(&r.external_id.as_str()))
+                .collect();
+            let free_owned: Vec<store::LedgerRecord> = free.iter().map(|r| (*r).clone()).collect();
+            if let Some(r) = external_match(&ids, &free_owned) {
+                Some((r.external_id.clone(), r.name.clone(), "external_id"))
+            } else {
+                let key = name_key(&name);
+                let same: Vec<&&store::LedgerRecord> = free
+                    .iter()
+                    .filter(|r| !key.is_empty() && name_key(&r.name) == key)
+                    .collect();
+                match same.as_slice() {
+                    [one] => Some((one.external_id.clone(), one.name.clone(), "name")),
+                    _ => None,
+                }
+            }
+        };
+        out.push(VendorMatch {
+            vendor_id,
+            name,
+            linked,
+            suggestion,
+        });
+    }
+    Ok(out)
+}
+
+fn match_summary(matches: &[VendorMatch]) -> Value {
+    let linked = matches.iter().filter(|m| m.linked.is_some()).count();
+    let suggested = matches.iter().filter(|m| m.suggestion.is_some()).count();
+    json!({
+        "linked": linked,
+        "suggested": suggested,
+        "unmatched": matches.len() - linked - suggested,
+    })
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VendorMatches {}
+
+pub async fn vendor_matches(cx: &mut Cx<'_>, _input: VendorMatches) -> Result<Value, CommandError> {
+    let Some(connection) = store::active_ledger_connection(&mut cx.tx).await? else {
+        return Ok(json!({ "connected": false, "vendors": [], "ledger_vendors": [] }));
+    };
+    let matches = vendor_matches_for(cx, &connection).await?;
+    let records = store::ledger_records(&mut cx.tx, connection.id).await?;
+    let links = store::ledger_vendor_links(&mut cx.tx, connection.id).await?;
+    let ledger_vendors: Vec<Value> = records
+        .iter()
+        .filter(|r| r.kind == "vendor" && !r.inactive)
+        .map(|r| {
+            let linked_to = links
+                .iter()
+                .find(|l| {
+                    l.external_id.as_deref() == Some(r.external_id.as_str())
+                        && (l.status == "linked" || l.status == "posted")
+                })
+                .map(|l| l.payvy_id);
+            json!({ "external_id": r.external_id, "name": r.name, "linked_to": linked_to })
+        })
+        .collect();
+    Ok(json!({
+        "connected": true,
+        "synced_at": connection.catalog_synced_at,
+        "summary": match_summary(&matches),
+        "vendors": matches.iter().map(|m| json!({
+            "vendor_id": m.vendor_id,
+            "name": m.name,
+            "linked": m.linked.as_ref().map(|(id, name, archived)| json!({ "external_id": id, "name": name, "archived": archived })),
+            "suggestion": m.suggestion.as_ref().map(|(id, name, reason)| json!({ "external_id": id, "name": name, "reason": reason })),
+        })).collect::<Vec<_>>(),
+        "ledger_vendors": ledger_vendors,
+    }))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LinkVendor {
+    vendor_id: Uuid,
+    /// The ledger vendor's id, or null to remove the link.
+    external_id: Option<String>,
+}
+
+/// A person says which ledger vendor a Payvy vendor's bills post to. The
+/// contact must be in the synced catalog and not archived, and not linked to
+/// another vendor. Once a bill of the vendor is posted, the link stays:
+/// its payments must name the same contact as the bill.
+pub async fn link_vendor(cx: &mut Cx<'_>, input: LinkVendor) -> Result<Value, CommandError> {
+    let connection = store::active_ledger_connection(&mut cx.tx)
+        .await?
+        .ok_or_else(|| CommandError::Ledger {
+            code: "needs_auth",
+            detail: "Connect a ledger in Settings → Ledger first.".into(),
+        })?;
+    let vendor = store::get_vendor(&mut cx.tx, input.vendor_id)
+        .await?
+        .ok_or(CommandError::NotFound("vendor"))?;
+    let wanted = input
+        .external_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned);
+    let links = store::ledger_vendor_links(&mut cx.tx, connection.id).await?;
+    let live = |l: &&store::LedgerLink| l.status == "linked" || l.status == "posted";
+    let current = links
+        .iter()
+        .filter(live)
+        .find(|l| l.payvy_id == vendor.id)
+        .and_then(|l| l.external_id.clone());
+    if current == wanted {
+        return Err(CommandError::Conflict(match &wanted {
+            Some(id) => format!("{} is already linked to ledger vendor {id}", vendor.name),
+            None => format!("{} has no ledger vendor to unlink", vendor.name),
+        }));
+    }
+    let records = store::ledger_records(&mut cx.tx, connection.id).await?;
+    let record = match &wanted {
+        Some(id) => {
+            let record = records
+                .iter()
+                .find(|r| r.kind == "vendor" && &r.external_id == id)
+                .ok_or_else(|| {
+                    CommandError::Invalid(format!(
+                        "ledger vendor {id} isn't in the synced catalog; run ledger.sync"
+                    ))
+                })?;
+            if record.inactive {
+                return Err(CommandError::Invalid(format!(
+                    "ledger vendor {id} ({}) is archived",
+                    record.name
+                )));
+            }
+            if let Some(other) = links
+                .iter()
+                .filter(live)
+                .find(|l| l.external_id.as_deref() == Some(id) && l.payvy_id != vendor.id)
+            {
+                return Err(CommandError::Conflict(format!(
+                    "ledger vendor {id} ({}) is already linked to another vendor ({})",
+                    record.name, other.payvy_id
+                )));
+            }
+            Some(record)
+        }
+        None => None,
+    };
+    if current.is_some() {
+        let posted = store::vendor_posted_bills(&mut cx.tx, connection.id, vendor.id).await?;
+        if posted > 0 {
+            return Err(CommandError::Conflict(format!(
+                "{} has {posted} bill(s) posted under ledger vendor {}; their payments must post to the same vendor, so the link can't change",
+                vendor.name,
+                current.as_deref().unwrap_or_default()
+            )));
+        }
+    }
+    store::put_ledger_link(
+        &mut cx.tx,
+        cx.org,
+        &store::PutLedgerLink {
+            connection_id: connection.id,
+            entity: "vendor",
+            payvy_id: vendor.id,
+            external_id: wanted.as_deref(),
+            external_key: &payvy_ledger::vendor_key(vendor.id),
+            status: if wanted.is_some() { "linked" } else { "voided" },
+            error_code: None,
+            error_detail: None,
+            request_hash: None,
+            posted_at: None,
+        },
+    )
+    .await?;
+    let payload = json!({
+        "vendor_id": vendor.id,
+        "vendor": vendor.name,
+        "external_id": wanted,
+        "ledger_vendor": record.map(|r| r.name.clone()),
+        "previous": current,
+    });
+    cx.emit(
+        if wanted.is_some() {
+            "ledger.vendor_linked"
+        } else {
+            "ledger.vendor_unlinked"
+        },
+        vendor.id,
+        payload.clone(),
+    )
+    .await?;
+    Ok(payload)
 }

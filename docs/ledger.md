@@ -25,6 +25,36 @@ connection id → ledger bank account id, or a payment method like `ach`
 for bills paid outside Payvy). Map keys and a named AP account are
 validated against the company's bank connections and mirrored accounts.
 
+## The catalog and vendor links (`ledger.sync`, `ledger.link_vendor`)
+
+Every post is checked against Payvy's copy of the books before anything is
+sent, so a closed month or a wrong account is caught as a named refusal on
+the bill. `ledger.sync` (Routine; an agent may run it) reads the books into
+`ledger_records`: accounts (type, active, required segment types),
+periods (and a closed span before the books' start date), vendors
+(archived, default expense account, and their id in another system) and
+segments. Nothing is sent to the ledger. A row that leaves the books is
+marked inactive, never deleted. Settings → Ledger runs it after connecting
+and on **Sync now**.
+
+The checks it feeds, in `payvy-ledger`: a bill line's account must be in
+the catalog, active, and an expense account; it must carry a segment of
+each type the account requires while the books enforce segmentation; a
+segment must be active and take postings; the bill date must not fall in a
+closed or locked period or before the books start. A line with no account
+takes the vendor's default expense account from the books, then the
+company's default.
+
+A bill posts only for a **linked** vendor (`vendor_unlinked` otherwise).
+`ledger.vendor_matches` suggests each vendor's ledger vendor: the same id
+in another system, matched by source and id together (VisiBooks writes
+Quarry's vendor 9 as `quarry_vendor_9` with source `quarry`; an id with no
+source never matches), else a unique same name. A person links it
+(`ledger.link_vendor`, person-only Admin); the ledger vendor must be
+synced, not archived and not linked to another vendor. Once one of the
+vendor's bills is posted the link can't change or be removed: its
+payments must post to the same ledger vendor as the bill.
+
 ## When things post (`post_when`)
 
 Hooks never call the ledger. They queue a job in the same transaction
@@ -75,10 +105,9 @@ commands remain the by-hand path and run at once: `ledger.post_bill`,
 
 ## What is not posted yet
 
-- Reference-catalog reads (accounts, periods, vendor currency) are
-  mirrored rows the posts check against; refreshing that mirror from
-  VisiBooks and linking existing contacts are later phases of the Allied
-  cutover, as is confirming bank-feed clearing for voids of settled
-  payments. See `docs/visibooks-adapter.md` for the wire contract and
+- The catalog is read when someone syncs, not on a schedule; sync again
+  after adding vendors or accounts in VisiBooks. Confirming bank-feed
+  clearing for voids of settled payments is a later phase of the Allied
+  cutover. See `docs/visibooks-adapter.md` for the wire contract and
   the Allied brief for the rollout gates (statement reconciliation
   before any live Allied payment).
