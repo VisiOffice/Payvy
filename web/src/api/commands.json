@@ -609,12 +609,20 @@
       "tier": "read"
     },
     {
-      "input_schema": "{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"provider\",\"api_key\"],\"properties\":{\"provider\":{\"type\":\"string\",\"enum\":[\"anthropic\",\"openai\"]},\"api_key\":{\"type\":\"string\"},\"model\":{\"type\":\"string\",\"description\":\"The model to read with. Defaults to Payvy's Claude model for anthropic; required for openai (one that reads PDFs and images).\"}}}",
+      "input_schema": "{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"provider\",\"api_key\"],\"properties\":{\"provider\":{\"type\":\"string\",\"enum\":[\"anthropic\",\"openai\",\"gemini\",\"xai\",\"meta\"]},\"api_key\":{\"type\":\"string\"},\"model\":{\"type\":\"string\",\"description\":\"The model to read with, as reader_key.models lists it. Defaults to Payvy's Claude model for anthropic; required for the others.\"}}}",
       "name": "reader_key.set",
       "permission": "admin",
       "person_only": true,
-      "summary": "Read this company's invoices with its own Anthropic or OpenAI key: Payvy's reader (document.extract and automatic reading of new invoices) then uses it, and the provider bills the company, whatever its plan's built-in reader. The key is checked with the provider first (a free lookup of the model), sealed, and never shown again. Replaces any key already set. Admin.",
+      "summary": "Read this company's invoices with its own model key: Anthropic, OpenAI, Google Gemini, xAI Grok or Meta Muse. Payvy's reader (document.extract and automatic reading of new invoices) then uses it, and the provider bills the company, whatever its plan's built-in reader. Before saving, Payvy checks the provider lists the model for the key and has it read a one-page sample invoice (about a cent on the key), then seals the key; it is never shown again. Replaces any key already set. Admin.",
       "tier": "routine"
+    },
+    {
+      "input_schema": "{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"provider\",\"api_key\"],\"properties\":{\"provider\":{\"type\":\"string\",\"enum\":[\"anthropic\",\"openai\",\"gemini\",\"xai\",\"meta\"]},\"api_key\":{\"type\":\"string\"}}}",
+      "name": "reader_key.models",
+      "permission": "admin",
+      "person_only": false,
+      "summary": "The models a model key can use, as its provider lists them (a free lookup), with a hint on which to choose for reading invoices. Stores nothing.",
+      "tier": "read"
     },
     {
       "input_schema": "{\"type\":\"object\",\"additionalProperties\":false,\"properties\":{}}",

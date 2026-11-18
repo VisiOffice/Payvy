@@ -13,8 +13,12 @@ On `byoa` the company's own agent reads instead and submits its reading with
 model call, so the `reader` entitlement doesn't gate it.
 
 A company can also read with **its own model key** (Settings → Agents → Reading invoices,
-`reader_key.set`, Admin): an Anthropic or OpenAI key that Payvy checks with the provider (a free
-model lookup), seals with `PAYVY_SECRETS_KEY` and never shows again. With one, `document.extract`
+`reader_key.set`, Admin): a key from Anthropic, OpenAI, Google Gemini, xAI Grok or Meta Muse
+(the last four through their OpenAI-compatible APIs, each at an address fixed in the server).
+`reader_key.models` lists the models the key can use, from the provider (free), with a hint on
+which to pick. Before saving, Payvy checks the model is on that list and has it read a one-page
+sample invoice (about a cent on the key), so a model that can't read PDFs through that API is
+refused at once. The key is sealed with `PAYVY_SECRETS_KEY` and never shown again. With one, `document.extract`
 and the background reader use that key, the provider bills the company, and the `reader`
 entitlement isn't needed (`org.get` reports `reader: true, own_reader_key: true`). The background
 reader reads only what arrives after the key was set, so a key never reads a backlog on the

@@ -861,12 +861,17 @@ export interface PersonRemoveInput {
 export interface ReaderKeyGetInput {}
 
 export interface ReaderKeySetInput {
-  provider: "anthropic" | "openai";
+  provider: "anthropic" | "openai" | "gemini" | "xai" | "meta";
   api_key: string;
   /**
-   * The model to read with. Defaults to Payvy's Claude model for anthropic; required for openai (one that reads PDFs and images).
+   * The model to read with, as reader_key.models lists it. Defaults to Payvy's Claude model for anthropic; required for the others.
    */
   model?: string;
+}
+
+export interface ReaderKeyModelsInput {
+  provider: "anthropic" | "openai" | "gemini" | "xai" | "meta";
+  api_key: string;
 }
 
 export interface ReaderKeyRemoveInput {}
@@ -1349,6 +1354,7 @@ export interface CommandInputs {
   "person.remove": PersonRemoveInput;
   "reader_key.get": ReaderKeyGetInput;
   "reader_key.set": ReaderKeySetInput;
+  "reader_key.models": ReaderKeyModelsInput;
   "reader_key.remove": ReaderKeyRemoveInput;
   "agent_key.list": AgentKeyListInput;
   "agent_key.create": AgentKeyCreateInput;
@@ -1481,7 +1487,8 @@ export const COMMANDS: Record<CommandName, { tier: Tier; personOnly: boolean; su
   "person.set_roles": { tier: "routine", personOnly: true, summary: "Set a person's company roles. Admin only; roles combine. Cannot remove the last sign-in admin. Changes take effect on their next command, including an existing session or person API key. Audit records old and new roles." },
   "person.remove": { tier: "routine", personOnly: true, summary: "Stop someone signing in, and sign them out everywhere. Their past actions stay on the record. Refused for yourself (someone else removes you) and for the last person who can sign in." },
   "reader_key.get": { tier: "read", personOnly: false, summary: "Whether this company reads invoices with its own model key: the provider, model, the key's last four characters, and who set it when. Never the key." },
-  "reader_key.set": { tier: "routine", personOnly: true, summary: "Read this company's invoices with its own Anthropic or OpenAI key: Payvy's reader (document.extract and automatic reading of new invoices) then uses it, and the provider bills the company, whatever its plan's built-in reader. The key is checked with the provider first (a free lookup of the model), sealed, and never shown again. Replaces any key already set. Admin." },
+  "reader_key.set": { tier: "routine", personOnly: true, summary: "Read this company's invoices with its own model key: Anthropic, OpenAI, Google Gemini, xAI Grok or Meta Muse. Payvy's reader (document.extract and automatic reading of new invoices) then uses it, and the provider bills the company, whatever its plan's built-in reader. Before saving, Payvy checks the provider lists the model for the key and has it read a one-page sample invoice (about a cent on the key), then seals the key; it is never shown again. Replaces any key already set. Admin." },
+  "reader_key.models": { tier: "read", personOnly: false, summary: "The models a model key can use, as its provider lists them (a free lookup), with a hint on which to choose for reading invoices. Stores nothing." },
   "reader_key.remove": { tier: "routine", personOnly: true, summary: "Stop reading with this company's own model key and forget it. Reading then follows the plan again. Admin." },
   "agent_key.list": { tier: "read", personOnly: false, summary: "This company's agent API keys: id, the agent's name, when it was made and whether it is revoked. Never the key itself." },
   "agent_key.create": { tier: "routine", personOnly: true, summary: "Make an API key for an agent, for MCP (POST /mcp) or the command API, with Authorization: Bearer <key>. The agent prepares work and never signs off: approving, releasing, accepting payees and workflows stay with people. The key is in this result only; Payvy keeps a hash. name is what the agent's actions are recorded under (a-z 0-9 . _ -), not a person's name or one of Payvy's own." },
