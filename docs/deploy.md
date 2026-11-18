@@ -21,8 +21,9 @@ Kamal runs under the mise Ruby; if it reports `can't find gem kamal`:
 
 ## Frontend: Cloudflare Workers Builds
 
-`web/wrangler.jsonc` serves `web/dist` as a single-page app and sends only `/api/*`
-and `/auth/*` to `https://dev.payvy.com`. Session cookies stay on the host the app was opened on;
+`web/wrangler.jsonc` serves `web/dist` as a single-page app and sends only `/api/*`,
+`/auth/*` and `/mcp` to `https://dev.payvy.com`, so agents can use `https://app.payvy.com/mcp`
+(the address Settings → Agents shows). Session cookies stay on the host the app was opened on;
 the Worker streams requests and responses, disables API caching, and never retries
 commands. Rust still owns authentication, authorization, previews and confirmation.
 Keep `PAYVY_PUBLIC_URL=https://app.payvy.com` on the API so emailed links open the frontend.
