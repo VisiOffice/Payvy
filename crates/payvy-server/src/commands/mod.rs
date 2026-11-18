@@ -21,6 +21,7 @@ mod reading;
 pub(crate) use ledger::{JobOutcome, execute_job};
 pub(crate) use org::valid_name as valid_org_name;
 pub(crate) use people::valid_actor;
+mod agents;
 mod notifications;
 mod org;
 mod payee_invites;
@@ -328,6 +329,9 @@ async fn execute(cx: &mut Cx<'_>, name: &str, input: &Value) -> Result<Value, Co
         "inbox.get" => inbox::get(cx).await,
         "approval_rules.get" => approval_rules::get(cx).await,
         "approval_rules.set" => approval_rules::set(cx, parse(input)?).await,
+        "agent_key.list" => agents::list(cx).await,
+        "agent_key.create" => agents::create(cx, parse(input)?).await,
+        "agent_key.revoke" => agents::revoke(cx, parse(input)?).await,
         "person.list" => people::list(cx).await,
         "person.add" => people::add(cx, parse(input)?).await,
         "person.set_roles" => people::set_roles(cx, parse(input)?).await,

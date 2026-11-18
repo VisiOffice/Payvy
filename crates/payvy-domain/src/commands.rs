@@ -652,6 +652,31 @@ pub const COMMANDS: &[CommandSpec] = &[
         permission: Permission::Admin,
         input_schema: r#"{"type":"object","required":["actor"],"properties":{"actor":{"type":"string"}}}"#,
     },
+    // ── Agents ──────────────────────────────────────────────────────────────
+    CommandSpec {
+        name: "agent_key.list",
+        summary: "This company's agent API keys: id, the agent's name, when it was made and whether it is revoked. Never the key itself.",
+        tier: RiskTier::Read,
+        person_only: false,
+        permission: Permission::Admin,
+        input_schema: r#"{"type":"object","additionalProperties":false,"properties":{}}"#,
+    },
+    CommandSpec {
+        name: "agent_key.create",
+        summary: "Make an API key for an agent, for MCP (POST /mcp) or the command API, with Authorization: Bearer <key>. The agent prepares work and never signs off: approving, releasing, accepting payees and workflows stay with people. The key is in this result only; Payvy keeps a hash. name is what the agent's actions are recorded under (a-z 0-9 . _ -), not a person's name or one of Payvy's own.",
+        tier: RiskTier::Routine,
+        person_only: true,
+        permission: Permission::Admin,
+        input_schema: r#"{"type":"object","additionalProperties":false,"required":["name"],"properties":{"name":{"type":"string","description":"What the agent's actions are recorded under, e.g. quarry-agent"}}}"#,
+    },
+    CommandSpec {
+        name: "agent_key.revoke",
+        summary: "Revoke an agent key: its next call is refused. What the agent did stays on the record.",
+        tier: RiskTier::Routine,
+        person_only: true,
+        permission: Permission::Admin,
+        input_schema: r#"{"type":"object","additionalProperties":false,"required":["id"],"properties":{"id":{"type":"string","format":"uuid"}}}"#,
+    },
     // ── Organization ────────────────────────────────────────────────────────
     CommandSpec {
         name: "org.get",

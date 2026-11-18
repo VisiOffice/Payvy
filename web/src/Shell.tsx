@@ -28,6 +28,7 @@ export const SETTINGS: { title: string; items: { href: string; label: string; co
     items: [
       { href: '/settings/company', label: 'Company', command: 'org.update' },
       { href: '/settings/people', label: 'People' },
+      { href: '/settings/agents', label: 'Agents', command: 'agent_key.create' },
       { href: '/settings/billing', label: 'Billing', command: 'billing.checkout', hostedOnly: true },
       { href: '/settings/notifications', label: 'Notifications', command: 'notification.configure' },
     ],

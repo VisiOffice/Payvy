@@ -135,6 +135,94 @@ pub async fn live_agent_key(tx: &mut Tx, org: Uuid, key_id: Uuid) -> anyhow::Res
     Ok(row.is_some())
 }
 
+/// An agent's API key as Settings lists it: never the key or its hash.
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentKey {
+    pub id: Uuid,
+    pub actor: String,
+    pub created_at: DateTime<Utc>,
+    pub revoked_at: Option<DateTime<Utc>>,
+}
+
+fn agent_key_from(r: &sqlx::postgres::PgRow) -> AgentKey {
+    use sqlx::Row;
+    AgentKey {
+        id: r.get("id"),
+        actor: r.get("actor"),
+        created_at: r.get("created_at"),
+        revoked_at: r.get("revoked_at"),
+    }
+}
+
+/// This organization's agent keys, live first, newest first.
+/// `api_keys` has no row-level security, so the organization is an explicit predicate.
+pub async fn agent_keys(tx: &mut Tx, org: Uuid) -> anyhow::Result<Vec<AgentKey>> {
+    let rows = sqlx::query(
+        "SELECT id, actor, created_at, revoked_at FROM api_keys \
+         WHERE org_id = $1 AND kind = 'agent' \
+         ORDER BY revoked_at IS NOT NULL, created_at DESC",
+    )
+    .bind(org)
+    .fetch_all(&mut **tx)
+    .await?;
+    Ok(rows.iter().map(agent_key_from).collect())
+}
+
+/// Stores an agent key's hash inside the command's transaction, so the key
+/// and its event commit together.
+pub async fn insert_agent_key(
+    tx: &mut Tx,
+    org: Uuid,
+    id: Uuid,
+    actor: &str,
+    key_hash: &str,
+    at: DateTime<Utc>,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "INSERT INTO api_keys (id, org_id, actor, kind, key_hash, created_at) \
+         VALUES ($1, $2, $3, 'agent', $4, $5)",
+    )
+    .bind(id)
+    .bind(org)
+    .bind(actor)
+    .bind(key_hash)
+    .bind(at)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// Revokes one of this organization's agent keys. None when there is no such
+/// agent key; Some with `revoked_at` already set when it was revoked before.
+pub async fn revoke_agent_key(
+    tx: &mut Tx,
+    org: Uuid,
+    id: Uuid,
+    at: DateTime<Utc>,
+) -> anyhow::Result<Option<(AgentKey, bool)>> {
+    let row = sqlx::query(
+        "SELECT id, actor, created_at, revoked_at FROM api_keys \
+         WHERE id = $1 AND org_id = $2 AND kind = 'agent' FOR UPDATE",
+    )
+    .bind(id)
+    .bind(org)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let Some(row) = row else { return Ok(None) };
+    let mut key = agent_key_from(&row);
+    if key.revoked_at.is_some() {
+        return Ok(Some((key, false)));
+    }
+    sqlx::query("UPDATE api_keys SET revoked_at = $3 WHERE id = $1 AND org_id = $2")
+        .bind(id)
+        .bind(org)
+        .bind(at)
+        .execute(&mut **tx)
+        .await?;
+    key.revoked_at = Some(at);
+    Ok(Some((key, true)))
+}
+
 // ── Events and confirm tokens ───────────────────────────────────────────────
 
 pub async fn append_event(
