@@ -332,6 +332,7 @@ async fn execute(cx: &mut Cx<'_>, name: &str, input: &Value) -> Result<Value, Co
         "approval_rules.get" => approval_rules::get(cx).await,
         "approval_rules.set" => approval_rules::set(cx, parse(input)?).await,
         "reader_key.get" => reader_key::get(cx).await,
+        "reader_key.models" => reader_key::models(cx, parse(input)?).await,
         "reader_key.set" => reader_key::set(cx, parse(input)?).await,
         "reader_key.remove" => reader_key::remove(cx).await,
         "agent_key.list" => agents::list(cx).await,

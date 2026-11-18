@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::State,
     http::{HeaderMap, StatusCode},
     routing::{get, post},
 };
@@ -23,11 +23,25 @@ struct Fake {
     reads: Arc<Mutex<Vec<String>>>,
 }
 
-async fn model(Path(name): Path<String>, headers: HeaderMap) -> StatusCode {
+/// Anthropic's model list for a known key, or 401.
+async fn models(headers: HeaderMap) -> Result<Json<Value>, StatusCode> {
     match headers.get("x-api-key").and_then(|v| v.to_str().ok()) {
-        Some(GOOD) if name == "claude-sonnet-5-5" => StatusCode::OK,
-        Some(GOOD) => StatusCode::NOT_FOUND,
-        _ => StatusCode::UNAUTHORIZED,
+        Some(GOOD) => Ok(Json(json!({ "data": [
+            { "id": "claude-sonnet-5-5" }, { "id": "claude-haiku-5-5" }
+        ], "has_more": false }))),
+        _ => Err(StatusCode::UNAUTHORIZED),
+    }
+}
+
+/// An OpenAI-compatible list as Gemini gives it: "models/" prefixes, and
+/// models that can't read an invoice.
+async fn gemini_models(headers: HeaderMap) -> Result<Json<Value>, StatusCode> {
+    match headers.get("authorization").and_then(|v| v.to_str().ok()) {
+        Some("Bearer AIzaSy-gemini-test-key-000000000") => Ok(Json(json!({ "data": [
+            { "id": "models/gemini-9-flash" }, { "id": "models/text-embedding-9" },
+            { "id": "models/imagen-9" }
+        ] }))),
+        _ => Err(StatusCode::UNAUTHORIZED),
     }
 }
 
@@ -54,7 +68,8 @@ async fn messages(State(fake): State<Fake>, headers: HeaderMap) -> Json<Value> {
 async fn start() -> (Fake, String) {
     let fake = Fake::default();
     let app = Router::new()
-        .route("/v1/models/{name}", get(model))
+        .route("/v1/models", get(models))
+        .route("/models", get(gemini_models))
         .route("/v1/messages", post(messages))
         .with_state(fake.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -131,11 +146,15 @@ async fn a_company_key_turns_on_reading_on_a_bring_your_own_agent_plan() {
         ),
         (
             json!({"provider":"anthropic","api_key":GOOD,"model":"claude-nonexistent"}),
-            "doesn't offer",
+            "can't use the model",
         ),
         (
             json!({"provider":"openai","api_key":"sk-proj-an-openai-key-000000000000"}),
-            "name the OpenAI model",
+            "choose the OpenAI model",
+        ),
+        (
+            json!({"provider":"mistral","api_key":"sk-proj-an-openai-key-000000000000"}),
+            "provider is one of",
         ),
     ] {
         match commit(&state, &admin, "reader_key.set", input).await {
@@ -160,6 +179,38 @@ async fn a_company_key_turns_on_reading_on_a_bring_your_own_agent_plan() {
         .await,
         Err(CommandError::PersonOnly(_))
     ));
+
+    // The models each key can use, as its provider lists them.
+    let listed = commit(
+        &state,
+        &admin,
+        "reader_key.models",
+        json!({"provider":"anthropic","api_key":GOOD}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        listed["result"]["models"],
+        json!(["claude-haiku-5-5", "claude-sonnet-5-5"])
+    );
+    assert_eq!(listed["result"]["suggested"], "claude-sonnet-5-5");
+    let gemini = commit(
+        &state,
+        &admin,
+        "reader_key.models",
+        json!({"provider":"gemini","api_key":"AIzaSy-gemini-test-key-000000000"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        gemini["result"]["models"],
+        json!(["gemini-9-flash"]),
+        "prefix gone, non-readers left out"
+    );
+    assert!(
+        fake.reads.lock().unwrap().is_empty(),
+        "listing reads nothing"
+    );
 
     db.advance(1);
     let set = commit(
@@ -197,7 +248,8 @@ async fn a_company_key_turns_on_reading_on_a_bring_your_own_agent_plan() {
     )
     .await
     .unwrap();
-    assert_eq!(fake.reads.lock().unwrap().as_slice(), [GOOD]);
+    // One read of the sample invoice when the key was checked, one now.
+    assert_eq!(fake.reads.lock().unwrap().as_slice(), [GOOD, GOOD]);
     assert!(read.to_string().contains("company key"), "{read}");
 
     // The background reader reads what arrives after the key was set, not
@@ -206,7 +258,7 @@ async fn a_company_key_turns_on_reading_on_a_bring_your_own_agent_plan() {
     let newer = upload(&db, &state, "newer.pdf").await;
     payvy_server::extract_worker::tick(&state).await.unwrap();
     let reads = fake.reads.lock().unwrap().len();
-    assert!(reads >= 2, "the new invoice was read");
+    assert!(reads >= 3, "the new invoice was read");
     let doc = commit(
         &state,
         &admin,
@@ -223,7 +275,7 @@ async fn a_company_key_turns_on_reading_on_a_bring_your_own_agent_plan() {
         fake.reads.lock().unwrap().iter().all(|k| k == GOOD),
         "never Payvy's key"
     );
-    assert_eq!(reads, 2, "only the new invoice, not the backlog");
+    assert_eq!(reads, 3, "only the new invoice, not the backlog");
     let left = commit(
         &state,
         &admin,

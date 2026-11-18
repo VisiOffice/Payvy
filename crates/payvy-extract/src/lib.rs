@@ -24,6 +24,36 @@ use serde_json::{Value, json};
 /// The Claude API version these requests are written for.
 const ANTHROPIC_VERSION: &str = "2026-10-21";
 /// The default Claude model.
+/// A one-page invoice read when a company's key is checked.
+pub const SAMPLE_INVOICE: &[u8] = include_bytes!("sample-invoice.pdf");
+
+/// Whether a listed model could read an invoice: not one for embeddings,
+/// speech, image generation or moderation.
+fn can_read(id: &str) -> bool {
+    let id = id.to_ascii_lowercase();
+    ![
+        "embed",
+        "tts",
+        "whisper",
+        "dall-e",
+        "transcribe",
+        "moderation",
+        "realtime",
+        "audio",
+        "image-gen",
+        "imagen",
+        "veo",
+        "speech",
+        "search",
+        "babbage",
+        "davinci",
+        "aqa",
+        "rerank",
+    ]
+    .iter()
+    .any(|w| id.contains(w))
+}
+
 pub const DEFAULT_CLAUDE_MODEL: &str = "claude-sonnet-5-5";
 /// Timeout for a single model HTTP request, also used to treat stale pending
 /// usage attempts as unknown in `usage.summary`.
@@ -208,22 +238,16 @@ impl Extractor {
         &self.config.model
     }
 
-    /// Asks the provider about this model with this key: free, and it
-    /// answers whether the key works and the model exists, without reading
-    /// anything. Never echoes the provider's response body.
-    pub async fn check_key(&self) -> Result<(), ExtractError> {
+    /// The models this key can use, as the provider lists them (free).
+    /// Embedding, audio, image-generation and moderation models are left
+    /// out: they can't read an invoice. Never echoes the provider's body.
+    pub async fn models(&self) -> Result<Vec<String>, ExtractError> {
         let base = self.config.base_url.trim_end_matches('/');
-        let model = &self.config.model;
-        if model.contains(['/', '?', '#']) || model.chars().any(char::is_whitespace) {
-            return Err(ExtractError::Failed(format!(
-                "{model:?} isn't a model name"
-            )));
-        }
         let req = match self.config.provider {
             Provider::Anthropic => {
                 let r = self
                     .http
-                    .get(format!("{base}/v1/models/{model}"))
+                    .get(format!("{base}/v1/models?limit=1000"))
                     .header("anthropic-version", ANTHROPIC_VERSION);
                 match &self.config.api_key {
                     Some(k) => r.header("x-api-key", k),
@@ -231,7 +255,7 @@ impl Extractor {
                 }
             }
             Provider::OpenAiCompatible => {
-                let r = self.http.get(format!("{base}/models/{model}"));
+                let r = self.http.get(format!("{base}/models"));
                 match &self.config.api_key {
                     Some(k) => r.bearer_auth(k),
                     None => r,
@@ -246,19 +270,63 @@ impl Extractor {
                 ExtractError::Failed(format!("couldn't reach the provider: {}", e.without_url()))
             })?;
         match res.status().as_u16() {
-            200..=299 => Ok(()),
-            401 | 403 => Err(ExtractError::Failed(
-                "the provider refused this key: check it was copied whole and is active".into(),
-            )),
-            404 => Err(ExtractError::Failed(format!(
-                "the provider doesn't offer the model {model} to this key"
+            200..=299 => {}
+            401 | 403 => {
+                return Err(ExtractError::Failed(
+                    "the provider refused this key: check it was copied whole and is active".into(),
+                ));
+            }
+            429 => {
+                return Err(ExtractError::Failed(
+                    "the provider is rate-limiting this key, or it has no credit: try again shortly"
+                        .into(),
+                ));
+            }
+            s => {
+                return Err(ExtractError::Failed(format!(
+                    "the provider answered {s} when asked for its models: try again shortly"
+                )));
+            }
+        }
+        let body: Value = res.json().await.map_err(|_| {
+            ExtractError::Failed("the provider's list of models wasn't readable".into())
+        })?;
+        let mut ids: Vec<String> = body["data"]
+            .as_array()
+            .or_else(|| body["models"].as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|m| m["id"].as_str().or_else(|| m["name"].as_str()))
+            // Gemini lists "models/gemini-…" and takes the bare name.
+            .map(|id| id.strip_prefix("models/").unwrap_or(id).to_owned())
+            .filter(|id| can_read(id))
+            .collect();
+        ids.sort();
+        ids.dedup();
+        Ok(ids)
+    }
+
+    /// Before a company's key is saved: the provider lists this model for
+    /// the key, and the model reads a one-page sample invoice through this
+    /// API (PDF included). The read costs the key's owner about a cent and
+    /// catches a model or provider that can't read PDFs here.
+    pub async fn check(&self) -> Result<(), ExtractError> {
+        let models = self.models().await?;
+        if !models.iter().any(|m| m == &self.config.model) {
+            return Err(ExtractError::Failed(format!(
+                "this key can't use the model {}; choose one the provider lists for it",
+                self.config.model
+            )));
+        }
+        match self.read(SAMPLE_INVOICE, Kind::Pdf).await {
+            Ok(_) => Ok(()),
+            Err(ExtractError::Refused(_)) => Err(ExtractError::Failed(format!(
+                "{} declined to read a sample invoice; choose another model",
+                self.config.model
             ))),
-            429 => Err(ExtractError::Failed(
-                "the provider is rate-limiting this key, or it has no credit: try again shortly"
-                    .into(),
-            )),
-            s => Err(ExtractError::Failed(format!(
-                "the provider answered {s}: try again shortly"
+            Err(_) => Err(ExtractError::Failed(format!(
+                "{} couldn't read a sample PDF invoice through this provider's API; choose a model that reads PDFs and images",
+                self.config.model
             ))),
         }
     }

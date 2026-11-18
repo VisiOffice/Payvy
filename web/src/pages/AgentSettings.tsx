@@ -6,7 +6,7 @@
 // result only; Payvy keeps a hash, so this page shows it once and forgets it.
 import { useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router';
-import { SegmentedControl, SegmentedControlItem } from '@astryxdesign/core/SegmentedControl';
+import { Selector } from '@astryxdesign/core/Selector';
 import { Tab, TabList } from '@astryxdesign/core/TabList';
 import { AlertDialog } from '@astryxdesign/core/AlertDialog';
 import { Badge } from '@astryxdesign/core/Badge';
@@ -157,17 +157,33 @@ function McpTab() {
   );
 }
 
+type ProviderName = 'anthropic' | 'openai' | 'gemini' | 'xai' | 'meta';
+
+interface ProviderInfo {
+  name: ProviderName;
+  label: string;
+  hint: string;
+  default_model: string | null;
+}
+
 interface ReaderKey {
   configured: boolean;
-  provider?: 'anthropic' | 'openai';
+  provider?: ProviderName;
   model?: string;
   key_last4?: string;
   set_at?: string;
   set_by?: string;
-  default_models?: { anthropic: string };
+  providers?: ProviderInfo[];
 }
 
-const PROVIDERS = { anthropic: 'Anthropic (Claude)', openai: 'OpenAI' } as const;
+/** Where each provider's keys are made, for the hint under the key field. */
+const KEY_PAGES: Record<ProviderName, string> = {
+  anthropic: 'console.anthropic.com → API keys',
+  openai: 'platform.openai.com → API keys',
+  gemini: 'aistudio.google.com → Get API key',
+  xai: 'console.x.ai → API keys',
+  meta: 'dev.meta.ai → API keys',
+};
 
 function ReadingTab() {
   const toast = useToast();
@@ -175,9 +191,11 @@ function ReadingTab() {
   const [key, setKey] = useState<ReaderKey | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
-  const [provider, setProvider] = useState<'anthropic' | 'openai'>('anthropic');
+  const [provider, setProvider] = useState<ProviderName>('anthropic');
   const [apiKey, setApiKey] = useState('');
   const [model, setModel] = useState('');
+  const [models, setModels] = useState<string[] | null>(null);
+  const [listError, setListError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [removing, setRemoving] = useState(false);
 
@@ -191,6 +209,31 @@ function ReadingTab() {
   }, []);
   useEffect(() => { void load(); }, [load]);
 
+  const info = key?.providers?.find(p => p.name === provider);
+  const label = (name?: string) => key?.providers?.find(p => p.name === name)?.label ?? name ?? '';
+
+  function choose(p: ProviderName) {
+    setProvider(p);
+    setModels(null);
+    setModel('');
+    setListError(null);
+  }
+
+  /** The models this key can use, from the provider (free). */
+  async function listModels() {
+    setBusy(true);
+    setListError(null);
+    try {
+      const r = (await run<{ models: string[]; suggested: string | null }>('reader_key.models', { provider, api_key: apiKey.trim() })).result;
+      setModels(r.models);
+      setModel(r.suggested ?? (r.models.includes(model) ? model : ''));
+      if (r.models.length === 0) setListError("The provider listed no models this key can read with.");
+    } catch (e) {
+      setModels(null);
+      setListError(message(e));
+    } finally { setBusy(false); }
+  }
+
   /** The session's plan says whether Read buttons show; refresh it. */
   async function refreshPlan() {
     try {
@@ -202,9 +245,10 @@ function ReadingTab() {
   async function save() {
     setBusy(true);
     try {
-      await run('reader_key.set', { provider, api_key: apiKey.trim(), ...(model.trim() ? { model: model.trim() } : {}) });
+      await run('reader_key.set', { provider, api_key: apiKey.trim(), ...(model ? { model } : {}) });
       setApiKey('');
       setModel('');
+      setModels(null);
       setEditing(false);
       toast({ body: 'Key checked and saved. New invoices are read with it.' });
       await load();
@@ -228,21 +272,38 @@ function ReadingTab() {
   }
 
   const managed = !!me.plan?.hosted && me.plan.reader && !me.plan.own_reader_key;
+  const keyLooksWhole = apiKey.trim().length >= 20;
   const form = (
     <VStack gap={3}>
-      <SegmentedControl label="Provider" value={provider} onChange={(v) => setProvider(v as 'anthropic' | 'openai')}>
-        <SegmentedControlItem value="anthropic" label={PROVIDERS.anthropic} />
-        <SegmentedControlItem value="openai" label={PROVIDERS.openai} />
-      </SegmentedControl>
-      <TextInput label="API key" type="password" value={apiKey} onChange={setApiKey}
-        placeholder={provider === 'anthropic' ? 'sk-ant-…' : 'sk-…'}
-        description="Checked with the provider before it's saved (free), then sealed on the server. Payvy never shows it again." />
-      <TextInput label={provider === 'anthropic' ? 'Model (optional)' : 'Model'} value={model} onChange={setModel}
-        placeholder={provider === 'anthropic' ? key?.default_models?.anthropic ?? '' : 'A model that reads PDFs and images'}
-        description={provider === 'anthropic' ? "Leave empty for the model Payvy uses." : undefined} />
+      <Selector label="Provider" value={provider} onChange={(v) => choose(v as ProviderName)}
+        options={(key?.providers ?? []).map(p => ({ value: p.name, label: p.label }))} />
+      <TextInput label="API key" type="password" value={apiKey}
+        onChange={(v) => { setApiKey(v); setModels(null); setListError(null); }}
+        description={`Make one at ${KEY_PAGES[provider]}. It's sealed on the server and never shown again.`} />
+      <HStack gap={2} vAlign="end" wrap="wrap">
+        {models && models.length > 0 ? (
+          <div style={{ flex: '1 1 18rem', minWidth: 0 }}>
+            <Selector label="Model" placeholder="Choose a model" value={model} onChange={setModel}
+              options={models.map(m => ({ value: m, label: m === info?.default_model ? `${m} (recommended)` : m }))}
+              description={info?.hint} />
+          </div>
+        ) : (
+          <div style={{ flex: '1 1 18rem', minWidth: 0 }}>
+            <Text weight="semibold">Model</Text>
+            <Text type="supporting">{info?.hint}</Text>
+          </div>
+        )}
+        <Button label={models ? 'Refresh models' : 'Show models for this key'} variant="secondary"
+          clickAction={listModels} isDisabled={busy || !keyLooksWhole} />
+      </HStack>
+      {listError && <Banner status="error" title="Couldn't list models" description={listError} />}
+      <Text type="supporting">
+        Saving has the model read a one-page sample invoice first, about a cent on your key, so a model that
+        can't read PDFs is caught now rather than on your invoices.
+      </Text>
       <HStack gap={2}>
         <Button label="Check and save key" variant="primary" clickAction={save}
-          isDisabled={busy || !apiKey.trim() || (provider === 'openai' && !model.trim())} />
+          isDisabled={busy || !keyLooksWhole || !model} />
         {key?.configured && <Button label="Cancel" variant="ghost" onClick={() => setEditing(false)} />}
       </HStack>
     </VStack>
@@ -251,8 +312,8 @@ function ReadingTab() {
   return (
     <VStack gap={4}>
       <Text type="supporting">
-        Payvy reads each invoice as it arrives and drafts the bill. With your own Anthropic or OpenAI key, it
-        reads with that key and the provider bills the reading to you.
+        Payvy reads each invoice as it arrives and drafts the bill. With your own key from Anthropic, OpenAI,
+        Google Gemini, xAI Grok or Meta Muse, it reads with that key and the provider bills the reading to you.
         {managed ? ' Your plan already includes Payvy reading for you; a key of your own moves that cost to your provider account.' : ''}
       </Text>
       {error && <Banner status="error" title="Couldn't load the reading settings" description={error} />}
@@ -261,7 +322,7 @@ function ReadingTab() {
         <Card>
           <VStack gap={3}>
             <HStack gap={2} vAlign="center">
-              <Text weight="semibold">Reading with your {PROVIDERS[key.provider!]} key</Text>
+              <Text weight="semibold">Reading with your {label(key.provider)} key</Text>
               <Badge label="On" variant="success" />
             </HStack>
             <Text type="supporting">
@@ -269,7 +330,7 @@ function ReadingTab() {
               Invoices that arrive from then on are read automatically; read earlier ones from Documents.
             </Text>
             <HStack gap={2}>
-              <Button label="Replace key" variant="secondary" onClick={() => { setProvider(key.provider!); setEditing(true); }} />
+              <Button label="Replace key" variant="secondary" onClick={() => { choose(key.provider!); setEditing(true); }} />
               <Button label="Remove" variant="ghost" onClick={() => setRemoving(true)} />
             </HStack>
           </VStack>
