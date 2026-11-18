@@ -858,6 +858,19 @@ export interface PersonRemoveInput {
   actor: string;
 }
 
+export interface AgentKeyListInput {}
+
+export interface AgentKeyCreateInput {
+  /**
+   * What the agent's actions are recorded under, e.g. quarry-agent
+   */
+  name: string;
+}
+
+export interface AgentKeyRevokeInput {
+  id: string;
+}
+
 export interface OrgGetInput {}
 
 export interface BillingGetInput {}
@@ -1321,6 +1334,9 @@ export interface CommandInputs {
   "person.add": PersonAddInput;
   "person.set_roles": PersonSetRolesInput;
   "person.remove": PersonRemoveInput;
+  "agent_key.list": AgentKeyListInput;
+  "agent_key.create": AgentKeyCreateInput;
+  "agent_key.revoke": AgentKeyRevokeInput;
   "org.get": OrgGetInput;
   "billing.get": BillingGetInput;
   "billing.checkout": BillingCheckoutInput;
@@ -1448,6 +1464,9 @@ export const COMMANDS: Record<CommandName, { tier: Tier; personOnly: boolean; su
   "person.add": { tier: "routine", personOnly: true, summary: "Let someone sign in to the web app with a link sent to their email. They act as the person named by actor, with every right a person has: approving, releasing payments, accepting payees and workflows." },
   "person.set_roles": { tier: "routine", personOnly: true, summary: "Set a person's company roles. Admin only; roles combine. Cannot remove the last sign-in admin. Changes take effect on their next command, including an existing session or person API key. Audit records old and new roles." },
   "person.remove": { tier: "routine", personOnly: true, summary: "Stop someone signing in, and sign them out everywhere. Their past actions stay on the record. Refused for yourself (someone else removes you) and for the last person who can sign in." },
+  "agent_key.list": { tier: "read", personOnly: false, summary: "This company's agent API keys: id, the agent's name, when it was made and whether it is revoked. Never the key itself." },
+  "agent_key.create": { tier: "routine", personOnly: true, summary: "Make an API key for an agent, for MCP (POST /mcp) or the command API, with Authorization: Bearer <key>. The agent prepares work and never signs off: approving, releasing, accepting payees and workflows stay with people. The key is in this result only; Payvy keeps a hash. name is what the agent's actions are recorded under (a-z 0-9 . _ -), not a person's name or one of Payvy's own." },
+  "agent_key.revoke": { tier: "routine", personOnly: true, summary: "Revoke an agent key: its next call is refused. What the agent did stays on the record." },
   "org.get": { tier: "read", personOnly: false, summary: "This organization: its id, its name as people see it in the app and sign-in emails, and when it was created." },
   "billing.get": { tier: "read", personOnly: false, summary: "Hosted Payvy only: this company's subscription (plan, status, trial and period end) and its card-free trial (when it ends, and whether it is what the company runs on now) as the billing service last saw them, the plans on offer, and what its plan allows now. No links: opening Checkout or the portal is billing.checkout or billing.portal, for an Admin." },
   "billing.checkout": { tier: "routine", personOnly: true, summary: "Hosted Payvy only: a Stripe Checkout link to subscribe this company to a plan (byoa: bring your own agent, reader off; managed: Payvy reads invoices). A company that already subscribes gets the billing portal instead. The plan changes only when Stripe confirms the payment, never by opening the link. return_to says which page of the app Stripe sends the person back to: Settings > Billing (default) or the first-run checklist. Admin." },

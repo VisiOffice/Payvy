@@ -59,7 +59,8 @@ message?, others, anyone }`. `inbox.get` keeps a bill you can't approve in `bill
 - **Identity is the actor name.** Events, approvals and `created_by` all record a name, not a key,
   so the rules compare names. An agent key created with the same actor name as a person (for
   example `key create --actor robert --kind agent`) counts as that person for these rules. Treating
-  them as one is the safe direction; give agents their own names.
+  them as one is the safe direction; give agents their own names. Settings → Agents
+  (`agent_key.create`) refuses a person's name and the names Payvy's own workers use.
 - **Approvals given before this change still count.** `workflow::evaluate` is unchanged, so a bill
   someone already approved twice isn't sent back. The rules decide only who may approve next.
 - **Releasing isn't an approval.** The person who approved a bill (or entered it) may still release

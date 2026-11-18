@@ -66,7 +66,8 @@ entered a bill isn't the one who approves it ([docs/approvals.md](docs/approvals
 **Agents prepare, people sign off.** Every action is a command, served the same way over REST
 (`POST /api/commands/{name}`) and MCP (`POST /mcp`). Agent keys can read bills, enter them, file
 documents, signal events and propose workflows. Only a person can approve, release a payment or
-accept a workflow, and agents don't even see those tools. Anything that moves money previews
+accept a workflow, and agents don't even see those tools. An Admin makes and revokes agent keys in Settings →
+Agents (`agent_key.create`, `agent_key.revoke`); the key is shown once and only its hash is kept. Anything that moves money previews
 first and commits with a single-use token tied to exactly what was previewed.
 
 **Documents on your storage.** Original invoices go to any S3-compatible store: Cloudflare R2,
