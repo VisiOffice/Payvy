@@ -472,23 +472,21 @@ async fn main() -> anyhow::Result<()> {
                 }
                 _ => tracing::warn!("no inbound email domain configured; email intake is off"),
             }
+            // Workers start once the state is complete (below): one started
+            // here would hold a copy without the bank's sealer, and couldn't
+            // open a company's own model key.
+            let mut reading = false;
             match extract.extractor()? {
                 Some(extractor) => {
                     tracing::info!(model = extractor.model(), provider = %extractor.provider_label(), "document reading");
                     state = state.with_extractor(extractor);
-                    if extract_auto && state.storage.is_some() {
-                        tokio::spawn(payvy_server::extract_worker::run(state.clone()));
-                    }
-                    // Bills asked for from a file of several invoices are
-                    // read and made whether or not the background reader is on.
-                    if state.storage.is_some() {
-                        tokio::spawn(payvy_server::bill_batch_worker::run(state.clone()));
-                    }
+                    reading = true;
                 }
                 None => tracing::warn!(
                     "no extraction model configured; documents aren't read automatically"
                 ),
             }
+            let mut paying = false;
             match secrets_key {
                 Some(key) => {
                     let sealer = payvy_server::secrets::Sealer::from_hex(key)?;
@@ -531,12 +529,12 @@ async fn main() -> anyhow::Result<()> {
                         tracing::info!(%url, "Mercury webhooks");
                     }
                     state = state.with_bank(bank);
-                    tokio::spawn(payvy_server::payment_worker::run(state.clone()));
-                    tokio::spawn(payvy_server::ramp_worker::run(state.clone()));
+                    paying = true;
                     tracing::info!("paying through connected banks");
                 }
                 None => tracing::warn!("PAYVY_SECRETS_KEY not set; bills are paid outside Payvy"),
             }
+            let mut notifying = false;
             match &web.public_url {
                 Some(url) => {
                     if mailer.is_log() {
@@ -546,7 +544,7 @@ async fn main() -> anyhow::Result<()> {
                     }
                     tracing::info!(%url, "web sign-in");
                     state = state.with_auth(payvy_server::auth::Auth::new(url, mailer));
-                    tokio::spawn(payvy_server::notification_worker::run(state.clone()));
+                    notifying = true;
                 }
                 None => {
                     tracing::warn!("PAYVY_PUBLIC_URL not set; nobody can sign in to the web app")
@@ -555,6 +553,21 @@ async fn main() -> anyhow::Result<()> {
             // Queued ledger posts drain whether or not anyone can sign
             // in; without this they would pile up silently.
             tokio::spawn(payvy_server::ledger_worker::run(state.clone()));
+            if reading && state.storage.is_some() {
+                if extract_auto {
+                    tokio::spawn(payvy_server::extract_worker::run(state.clone()));
+                }
+                // Bills asked for from a file of several invoices are read
+                // and made whether or not the background reader is on.
+                tokio::spawn(payvy_server::bill_batch_worker::run(state.clone()));
+            }
+            if paying {
+                tokio::spawn(payvy_server::payment_worker::run(state.clone()));
+                tokio::spawn(payvy_server::ramp_worker::run(state.clone()));
+            }
+            if notifying {
+                tokio::spawn(payvy_server::notification_worker::run(state.clone()));
+            }
             if let Some(dir) = &web.web_dir {
                 anyhow::ensure!(
                     dir.join("index.html").is_file(),
