@@ -307,6 +307,10 @@ pub struct Facts<'a> {
     /// someone other than the overrider must release it — so the bill is
     /// never ready_to_pay and no payment worker ever picks it up.
     pub payable_by_override: bool,
+    /// A live "paid outside Payvy" declaration concerns (or ambiguously may
+    /// concern) this bill. Even an automatic pay step then waits for a person
+    /// with this reason, so the payment worker never picks it up.
+    pub declared_paid_outside: Option<String>,
     /// The most an automatic pay step may pay without a person. A bill over
     /// it waits for a release, whatever its workflow says.
     pub auto_pay_limit: AutoPayLimit,
@@ -601,6 +605,12 @@ pub fn evaluate(workflow: &Workflow, facts: &Facts) -> Progress {
                                     .into(),
                             ),
                         },
+                        Release::Auto if facts.declared_paid_outside.is_some() => {
+                            Status::AwaitingRelease {
+                                by: by.clone(),
+                                reason: facts.declared_paid_outside.clone(),
+                            }
+                        }
                         Release::Auto if !facts.auto_pay_limit.allows(facts.amount_cents) => {
                             Status::AwaitingRelease {
                                 by: by.clone(),
@@ -661,6 +671,7 @@ mod tests {
             released_at: None,
             release_by_person: false,
             payable_by_override: false,
+            declared_paid_outside: None,
             auto_pay_limit: AutoPayLimit::effective(None, None),
             now: t(now),
         }
