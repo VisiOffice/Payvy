@@ -29,6 +29,28 @@ export interface PoAmounts {
   progress: string;
 }
 
+export interface OutsidePayment {
+  id: string;
+  po_id: string;
+  vendor_id: string;
+  amount_cents: number;
+  method: 'card' | 'check' | 'ach' | 'wire' | 'cash' | 'other';
+  paid_on: string;
+  reference: string | null;
+  note: string;
+  invoice_number: string | null;
+  declared_by: string;
+  declared_by_source: boolean;
+  declared_at: string;
+  status: 'declared' | 'confirmed' | 'withdrawn';
+  confirmed_by: string | null;
+  confirmed_at: string | null;
+  withdrawn_by: string | null;
+  withdrawn_at: string | null;
+  withdrawn_reason: string | null;
+  bill_id: string | null;
+}
+
 export interface PurchaseOrder extends Record<string, unknown> {
   id: string;
   vendor_id: string;
@@ -47,7 +69,23 @@ export interface PurchaseOrder extends Record<string, unknown> {
   revision: { revision: number; authorized_cents: number; allowance_cents: number } | null;
   lines: { description: string; amount_cents: number }[];
   allocations: { id: string; bill_id: string | null; amount_cents: number; state: string; kind: string }[];
+  outside_payments: OutsidePayment[];
 }
+
+const OUTSIDE_STATUS_BADGE: Record<OutsidePayment['status'], { label: string; variant: 'info' | 'success' | 'neutral' }> = {
+  declared: { label: 'Declared', variant: 'info' },
+  confirmed: { label: 'Confirmed', variant: 'success' },
+  withdrawn: { label: 'Withdrawn', variant: 'neutral' },
+};
+
+const OUTSIDE_METHOD_LABEL: Record<OutsidePayment['method'], string> = {
+  card: 'Card',
+  check: 'Check',
+  ach: 'ACH',
+  wire: 'Wire',
+  cash: 'Cash',
+  other: 'Other',
+};
 
 const STATUS_BADGE: Record<PurchaseOrder['status'], { label: string; variant: 'success' | 'neutral' | 'warning' }> = {
   draft: { label: 'Draft', variant: 'neutral' },
@@ -100,11 +138,15 @@ export function PurchaseOrders() {
 }
 
 function PurchaseOrderList() {
+  const { me } = useSession();
+  const can = useCan();
   const [pos, setPos] = useState<PurchaseOrder[] | null>(null);
   const [selected, setSelected] = useState<PurchaseOrder | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [ending, setEnding] = useState<'po.close' | 'po.cancel' | 'po.suspend' | null>(null);
+  const [declaring, setDeclaring] = useState(false);
+  const [withdrawing, setWithdrawing] = useState<OutsidePayment | null>(null);
   const [revise, setRevise] = useState('');
   const toast = useToast();
 
@@ -246,6 +288,80 @@ function PurchaseOrderList() {
               <Button label="Revise" variant="secondary" onClick={() => doRevise(selected)} />
             </HStack>
           )}
+          <VStack gap={2}>
+            <HStack gap={2} hAlign="between" vAlign="center" wrap="wrap">
+              <Text weight="semibold">Paid outside Payvy</Text>
+              {(selected.status === 'active' || selected.status === 'suspended') && can('po.declare_paid') && (
+                <Button
+                  label="Record a payment made outside Payvy…"
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => setDeclaring(true)}
+                />
+              )}
+            </HStack>
+            {selected.outside_payments.length === 0 ? (
+              <Text type="supporting">No outside payments declared on this PO.</Text>
+            ) : (
+              <VStack gap={2}>
+                {selected.outside_payments.map((d) => (
+                  <VStack key={d.id} gap={1} padding={3}>
+                    <HStack gap={2} vAlign="center" hAlign="between" wrap="wrap">
+                      <HStack gap={2} vAlign="center" wrap="wrap">
+                        <Text weight="semibold" hasTabularNumbers>{money(d.amount_cents)}</Text>
+                        <Text>{OUTSIDE_METHOD_LABEL[d.method] ?? d.method}</Text>
+                        <Text type="supporting">{d.paid_on}</Text>
+                        <Badge
+                          label={d.bill_id ? 'Paid' : OUTSIDE_STATUS_BADGE[d.status].label}
+                          variant={d.bill_id ? 'success' : OUTSIDE_STATUS_BADGE[d.status].variant}
+                        />
+                      </HStack>
+                      <HStack gap={2}>
+                        {d.status === 'declared' && can('po.confirm_paid') && d.declared_by !== me.person.actor && (
+                          <Button
+                            label="Confirm"
+                            variant="primary"
+                            size="sm"
+                            clickAction={async () => {
+                              try {
+                                const r = await run<{ purchase_order: PurchaseOrder }>('po.confirm_paid', { declaration_id: d.id });
+                                setSelected(r.result.purchase_order);
+                                toast({ body: 'Outside payment confirmed' });
+                                load();
+                              } catch (e) {
+                                toast({ body: e instanceof Error ? e.message : String(e), type: 'error' });
+                              }
+                            }}
+                          />
+                        )}
+                        {d.status !== 'withdrawn' && !d.bill_id && can('po.withdraw_paid') && (
+                          <Button
+                            label="Withdraw…"
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setWithdrawing(d)}
+                          />
+                        )}
+                      </HStack>
+                    </HStack>
+                    <Text type="supporting">
+                      Declared by {d.declared_by}
+                      {d.reference ? ` · ref ${d.reference}` : ''}
+                      {d.invoice_number ? ` · invoice ${d.invoice_number}` : ''}
+                      {d.confirmed_by ? ` · confirmed by ${d.confirmed_by}` : ''}
+                      {d.withdrawn_by ? ` · withdrawn by ${d.withdrawn_by} (${d.withdrawn_reason ?? ''})` : ''}
+                    </Text>
+                    <Text>{d.note}</Text>
+                    {d.bill_id && (
+                      <Text type="supporting">
+                        Settled bill <Link href={`/bills/${d.bill_id}`}>{d.bill_id.slice(0, 8)}</Link>
+                      </Text>
+                    )}
+                  </VStack>
+                ))}
+              </VStack>
+            )}
+          </VStack>
         </VStack>
       )}
 
@@ -255,6 +371,36 @@ function PurchaseOrderList() {
           onSaved={(po) => {
             setCreating(false);
             setSelected(po);
+            load();
+          }}
+        />
+      )}
+      {declaring && selected && (
+        <DeclarePaidDialog
+          po={selected}
+          onClose={() => setDeclaring(false)}
+          onSaved={(po) => {
+            setDeclaring(false);
+            setSelected(po);
+            toast({ body: `Recorded outside payment on ${po.po_number}` });
+            load();
+          }}
+        />
+      )}
+      {withdrawing && selected && (
+        <ReasonDialog
+          title={`Withdraw ${money(withdrawing.amount_cents)} declaration on ${selected.po_number}`}
+          actionLabel="Withdraw"
+          isRequired
+          onClose={() => setWithdrawing(null)}
+          onSubmit={async (reason) => {
+            const r = await run<{ purchase_order: PurchaseOrder }>('po.withdraw_paid', {
+              declaration_id: withdrawing.id,
+              reason,
+            });
+            setSelected(r.result.purchase_order);
+            setWithdrawing(null);
+            toast({ body: 'Declaration withdrawn' });
             load();
           }}
         />
@@ -333,6 +479,110 @@ function CreatePoDialog({ onClose, onSaved }: { onClose: () => void; onSaved: (p
         {error && <Banner status="error" title="Couldn't create it" description={error} />}
         <HStack gap={2}>
           <Button label="Create draft" variant="primary" onClick={save} isDisabled={busy || !vendorId || !number.trim() || cents === null} />
+          <Button label="Cancel" variant="ghost" onClick={onClose} isDisabled={busy} />
+        </HStack>
+      </VStack>
+    </Dialog>
+  );
+}
+
+function DeclarePaidDialog({
+  po,
+  onClose,
+  onSaved,
+}: {
+  po: PurchaseOrder;
+  onClose: () => void;
+  onSaved: (po: PurchaseOrder) => void;
+}) {
+  const [amount, setAmount] = useState('');
+  const [method, setMethod] = useState<OutsidePayment['method']>('card');
+  const [paidOn, setPaidOn] = useState(() => new Date().toISOString().slice(0, 10));
+  const [reference, setReference] = useState('');
+  const [invoiceNumber, setInvoiceNumber] = useState('');
+  const [note, setNote] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const cents = amount.trim() === '' ? null : toCents(amount);
+
+  async function save() {
+    if (cents === null || !paidOn.trim() || !note.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await run<{ purchase_order: PurchaseOrder }>('po.declare_paid', {
+        po_id: po.id,
+        amount_cents: cents,
+        method,
+        paid_on: paidOn.trim(),
+        note: note.trim(),
+        ...(reference.trim() ? { reference: reference.trim() } : {}),
+        ...(invoiceNumber.trim() ? { invoice_number: invoiceNumber.trim() } : {}),
+      });
+      onSaved(r.result.purchase_order);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog isOpen onOpenChange={(o) => !o && !busy && onClose()} width={480} purpose="form">
+      <DialogHeader
+        title={`Record payment made outside Payvy`}
+        subtitle={`${po.po_number} · ${po.vendor_name}`}
+        onOpenChange={(o) => !o && !busy && onClose()}
+      />
+      <VStack gap={4} padding={4}>
+        <Text type="supporting">
+          This blocks Payvy from paying matching bills on this PO. Someone else confirms it before the bill is marked paid.
+        </Text>
+        <TextInput label="Amount ($)" value={amount} onChange={setAmount} isRequired isDisabled={busy} />
+        <Selector
+          label="Method"
+          value={method}
+          onChange={(v) => setMethod(v as OutsidePayment['method'])}
+          options={[
+            { value: 'card', label: 'Card' },
+            { value: 'check', label: 'Check' },
+            { value: 'ach', label: 'ACH' },
+            { value: 'wire', label: 'Wire' },
+            { value: 'cash', label: 'Cash' },
+            { value: 'other', label: 'Other' },
+          ]}
+        />
+        <TextInput label="Paid on (YYYY-MM-DD)" value={paidOn} onChange={setPaidOn} isRequired isDisabled={busy} />
+        <TextInput
+          label="Reference (optional)"
+          value={reference}
+          onChange={setReference}
+          placeholder="Check number, auth code, or bank trace (max 64 chars; never a card or account number)"
+          isDisabled={busy}
+        />
+        <TextInput
+          label="Invoice number (optional)"
+          value={invoiceNumber}
+          onChange={setInvoiceNumber}
+          placeholder="Vendor invoice number, if known"
+          isDisabled={busy}
+        />
+        <TextInput
+          label="Note"
+          value={note}
+          onChange={setNote}
+          placeholder="What it paid for and who agreed to it"
+          isRequired
+          isDisabled={busy}
+        />
+        {error && <Banner status="error" title="Couldn't record declaration" description={error} />}
+        <HStack gap={2}>
+          <Button
+            label="Record payment"
+            variant="primary"
+            onClick={save}
+            isDisabled={busy || cents === null || !paidOn.trim() || !note.trim()}
+          />
           <Button label="Cancel" variant="ghost" onClick={onClose} isDisabled={busy} />
         </HStack>
       </VStack>

@@ -57,6 +57,24 @@ interface Detail {
     created_at: string;
     external_ref?: string | null;
   }[];
+  outside_payment?: {
+    state: 'awaiting_confirmation' | 'awaiting_release' | 'paid' | 'live_payment_conflict' | 'ambiguous';
+    po_number: string;
+    effective?: boolean;
+    message?: string | null;
+    declaration?: {
+      id: string;
+      po_id: string;
+      amount_cents: number;
+      method: string;
+      paid_on: string;
+      reference: string | null;
+      note: string;
+      declared_by: string;
+      status: string;
+    };
+    declarations?: { id: string; amount_cents: number; method: string; paid_on: string; declared_by: string }[];
+  } | null;
   purchase_orders: {
     /** Purchase orders are on for the company; off hides this section. */
     enabled: boolean;
@@ -190,6 +208,12 @@ export function BillPage() {
         <HStack gap={2} vAlign="center" wrap="wrap">
           <Heading level={1}>{b.vendor_name}</Heading>
           <Badge label={badge.label} variant={badge.variant} />
+          {detail.outside_payment && (
+            <Badge
+              label="Paid outside Payvy"
+              variant={detail.outside_payment.state === 'paid' ? 'success' : detail.outside_payment.state === 'ambiguous' || detail.outside_payment.state === 'live_payment_conflict' ? 'warning' : 'info'}
+            />
+          )}
         </HStack>
         <Text type="supporting">
           Invoice {b.invoice_number} · <Link href={`/vendors/${b.vendor_id}`}>Vendor details</Link>
@@ -205,8 +229,42 @@ export function BillPage() {
         </Text>
       </VStack>
 
-      {typeof p === 'object' && typeof p?.reason === 'string' && (
+      {typeof p === 'object' && typeof p?.reason === 'string' && !detail.outside_payment && (
         <Banner status="info" title={p.reason} description="Its workflow pays automatically, but a person releases bills over the limit." />
+      )}
+
+      {detail.outside_payment && (
+        <Banner
+          status={
+            detail.outside_payment.state === 'paid'
+              ? 'success'
+              : detail.outside_payment.state === 'ambiguous' || detail.outside_payment.state === 'live_payment_conflict'
+                ? 'warning'
+                : 'info'
+          }
+          title={
+            detail.outside_payment.state === 'awaiting_confirmation'
+              ? `Paid outside Payvy per declaration on ${detail.outside_payment.po_number} — waiting for confirmation`
+              : detail.outside_payment.state === 'awaiting_release'
+                ? `Paid outside Payvy per declaration on ${detail.outside_payment.po_number} — waiting for release`
+                : detail.outside_payment.state === 'paid'
+                  ? `Paid outside Payvy per declaration on ${detail.outside_payment.po_number} — paid`
+                  : detail.outside_payment.state === 'live_payment_conflict'
+                    ? `Paid outside Payvy declaration on ${detail.outside_payment.po_number} — bank payment in flight`
+                    : `Unmatched paid-outside declaration on ${detail.outside_payment.po_number}`
+          }
+          description={
+            detail.outside_payment.state === 'awaiting_confirmation'
+              ? 'Releasing this bill sends no payment. Once another person confirms the declaration on the PO, Payvy marks the bill paid.'
+              : detail.outside_payment.state === 'awaiting_release'
+                ? 'Releasing this bill sends no payment and marks it paid immediately.'
+                : detail.outside_payment.state === 'paid'
+                  ? `Settled via ${detail.outside_payment.declaration?.method ?? 'outside payment'} on ${detail.outside_payment.declaration?.paid_on ?? ''}${detail.outside_payment.declaration?.reference ? ` (ref ${detail.outside_payment.declaration.reference})` : ''}; no bank transfer was sent.`
+                  : detail.outside_payment.state === 'live_payment_conflict'
+                    ? (detail.outside_payment.message ?? 'A bank payment is already in flight or sent for this bill; resolve manually.')
+                    : 'Automatic payment is blocked because an unmatched outside-payment declaration exists on this PO; review the PO to resolve it.'
+          }
+        />
       )}
 
       {detail.invoice_review_pages_changed && <Banner status="warning" title="Pages changed after line review" description="The source pages changed after this review was saved. The reviewed lines and bill amounts are unchanged. Check the current pages and page-change history before approving." />}

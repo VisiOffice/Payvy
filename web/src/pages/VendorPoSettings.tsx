@@ -32,6 +32,7 @@ interface VendorPolicy {
   version: number;
   over_period: 'flag_only' | 'require_full_cover';
   quantity_matching: 'flag_only' | 'enforce';
+  paid_outside: 'person_confirms' | 'accept_from_source';
   updated_by: string | null;
 }
 
@@ -180,6 +181,13 @@ export function VendorPoSettings({ vendorId }: { vendorId: string }) {
                 changeAction={(v: boolean) => void savePolicy({ quantity_matching: v ? 'enforce' : 'flag_only' })}
                 description="Off: billing more than the ordered quantity, or at a different rate than the PO line's, is flagged beside the bill. On: it blocks payment until the allocation is reversed or a person permits it."
               />
+              <Switch
+                label="Accept paid-outside declarations from the PO source without confirming"
+                value={policy.paid_outside === 'accept_from_source'}
+                isDisabled={busy || !canPolicy}
+                changeAction={(v: boolean) => void savePolicy({ paid_outside: v ? 'accept_from_source' : 'person_confirms' })}
+                description="Off: a paid-outside declaration needs another person to confirm it before a released bill is marked paid. On: a declaration from the standing-authorization PO source key is effective at once; anyone else's still needs confirming."
+              />
               <Text type="supporting">
                 Policy version {policy.version === 0 ? '0 (the defaults; nobody has set a policy)' : policy.version}
                 {policy.updated_by ? `, set by ${policy.updated_by}` : ''}. Every bill keeps the policy version
@@ -194,7 +202,7 @@ export function VendorPoSettings({ vendorId }: { vendorId: string }) {
     </section>
   );
 
-  async function savePolicy(patch: Partial<Pick<VendorPolicy, 'over_period' | 'quantity_matching'>>) {
+  async function savePolicy(patch: Partial<Pick<VendorPolicy, 'over_period' | 'quantity_matching' | 'paid_outside'>>) {
     setBusy(true);
     try {
       const r = await run<VendorPolicy>('po.policy_set', { vendor_id: vendorId, ...patch });

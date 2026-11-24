@@ -18,6 +18,7 @@ interface BillRow extends Record<string, unknown> {
   status: string;
   sent: string | null;
   revised: boolean;
+  outsideState: string | null;
 }
 
 export interface Listed {
@@ -34,6 +35,7 @@ export interface Listed {
   received_count?: number;
   /** A revised copy's amount while it awaits a person's decision. */
   pending_revision_amount_cents?: number | null;
+  outside_payment?: { state: string; po_number: string } | null;
 }
 
 /** Open bills' progress is a status object, closed ones have none. */
@@ -55,6 +57,29 @@ const COLUMNS: TableColumn<BillRow>[] = [
         <Link href={`/bills/${row.id}`}>{row.invoice}</Link>
         {row.sent && <> <Badge label={row.sent} variant="info" /></>}
         {row.revised && <> <Badge label="Revised" variant="warning" /></>}
+        {row.outsideState && (
+          <>
+            {' '}
+            <Badge
+              label={
+                row.outsideState === 'paid'
+                  ? 'Paid outside Payvy'
+                  : row.outsideState === 'awaiting_confirmation'
+                    ? 'Paid outside · confirm'
+                    : row.outsideState === 'awaiting_release'
+                      ? 'Paid outside · release'
+                      : 'Paid outside · review'
+              }
+              variant={
+                row.outsideState === 'paid'
+                  ? 'success'
+                  : row.outsideState === 'ambiguous' || row.outsideState === 'live_payment_conflict'
+                    ? 'warning'
+                    : 'info'
+              }
+            />
+          </>
+        )}
       </>
     ),
   },
@@ -110,6 +135,7 @@ export function rows(bills: Listed[]): BillRow[] {
     status: statusOf(l),
     sent: l.received_count && l.received_count > 1 ? `Sent ${l.received_count}×` : null,
     revised: l.pending_revision_amount_cents != null,
+    outsideState: l.outside_payment?.state ?? null,
   }));
 }
 

@@ -22,9 +22,18 @@ interface Plan {
   then: string;
 }
 
+interface OutsidePlan {
+  po_number: string;
+  amount_cents: number;
+  method: string;
+  paid_on: string;
+  reference: string | null;
+  effective: boolean;
+}
+
 type State =
   | { kind: 'loading' }
-  | { kind: 'ready'; token: string; plan: Plan | null }
+  | { kind: 'ready'; token: string; plan: Plan | null; outsidePlan: OutsidePlan | null }
   | { kind: 'needs_payee'; message: string }
   | { kind: 'ramp_setup' }
   | { kind: 'error'; message: string };
@@ -48,12 +57,17 @@ export function ReleaseDialog({
 
   useEffect(() => {
     setState({ kind: 'loading' });
-    preview<{ payment_plan?: Plan }>('bill.release', {
+    preview<{ payment_plan?: Plan; outside_declaration_plan?: OutsidePlan }>('bill.release', {
       bill_id: bill.id,
       ...(payElsewhere ? { pay_elsewhere: true } : {}),
     })
       .then((p) =>
-        setState({ kind: 'ready', token: p.confirm_token!, plan: p.result.payment_plan ?? null }),
+        setState({
+          kind: 'ready',
+          token: p.confirm_token!,
+          plan: p.result.payment_plan ?? null,
+          outsidePlan: p.result.outside_declaration_plan ?? null,
+        }),
       )
       .catch((e: unknown) => {
         const message = e instanceof Error ? e.message : String(e);
@@ -82,6 +96,10 @@ export function ReleaseDialog({
           ? `Sent to Mercury for approval: ${money(bill.amount_cents)} to ${bill.vendor_name}`
           : status === 'failed'
             ? `The bank refused the payment to ${bill.vendor_name}; it's back in your inbox`
+            : state.outsidePlan
+              ? state.outsidePlan.effective
+                ? `Marked paid per outside-payment declaration on ${state.outsidePlan.po_number}; no payment was sent`
+                : `Released without sending payment; waiting for declaration confirmation on ${state.outsidePlan.po_number}`
             : state.plan
               ? `Paying ${money(bill.amount_cents)} to ${bill.vendor_name}`
               : `Released. Mark it paid once you've paid it.`,
@@ -133,6 +151,13 @@ export function ReleaseDialog({
                 <MetadataListItem label="From">{state.plan.from_account}</MetadataListItem>
                 <MetadataListItem label="Then">{state.plan.then}</MetadataListItem>
               </MetadataList>
+            ) : state.outsidePlan ? (
+              <Text>
+                Paid outside Payvy per declaration on {state.outsidePlan.po_number}. Releasing sends no payment
+                {state.outsidePlan.effective
+                  ? ' and marks this bill paid immediately.'
+                  : '; Payvy will mark it paid once someone confirms the declaration.'}
+              </Text>
             ) : (
               <Text>
                 Payvy won't send this payment. Pay it however you normally do, then mark it paid.
