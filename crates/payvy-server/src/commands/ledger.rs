@@ -1303,6 +1303,7 @@ async fn bill_posture(cx: &mut Cx<'_>, bill: &store::Bill) -> Result<Posture, Co
             released_at: bill.released_at,
             release_by_person: bill.release_by_person,
             payable_by_override: false,
+            declared_paid_outside: None,
             auto_pay_limit: limits.for_vendor(bill.vendor_id),
             now: cx.now,
         },
