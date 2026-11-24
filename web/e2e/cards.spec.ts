@@ -29,7 +29,8 @@ test('a person links the card a vendor keeps, then matches and dismisses its cha
     await page.getByRole('combobox', { name: 'Card at the bank' }).click();
     await page.getByRole('option', { name: /••4242 · Bins/ }).click();
     await page.getByRole('button', { name: 'Link card' }).click();
-    await expect(page.getByText('••4242 · Bins · credit')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Link card' })).toHaveCount(0);
+    await expect(page.getByRole('definition').filter({ hasText: '••4242 · Bins · credit' })).toBeVisible();
     await expect(page.getByText(/Releasing a bill sends no payment/)).toBeVisible();
 
     // Two bills of $750: a $750 charge could be either, so a person says which.
