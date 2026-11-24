@@ -285,7 +285,7 @@ function ConnectMercury({ outboundIps, onConnected, onCancel }: { outboundIps: s
         <RadioListItem
           value="request"
           label="Approve each one in Mercury (recommended)"
-          description="Payvy asks Mercury to pay; a Mercury admin approves it there. Use a Custom token with the RequestSendMoney scope."
+          description="Payvy asks Mercury to pay; a Mercury admin approves it there. Use a new Custom token with read access to accounts, transactions and recipients, plus RequestSendMoney (and webhooks, if offered). Mercury can't add scopes to a token later."
         />
         <RadioListItem
           value="direct"
