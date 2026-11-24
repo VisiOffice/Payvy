@@ -696,6 +696,8 @@ export interface PoSourceAuthorizeInput {
   owner: string;
 }
 
+export interface PoSourceListInput {}
+
 export interface PoSourceRevokeInput {
   authorization_id: string;
 }
@@ -1334,6 +1336,7 @@ export interface CommandInputs {
   "po.list": PoListInput;
   "po.upsert": PoUpsertInput;
   "po.source_authorize": PoSourceAuthorizeInput;
+  "po.source_list": PoSourceListInput;
   "po.source_revoke": PoSourceRevokeInput;
   "po.import": PoImportInput;
   "po.vendor_settings": PoVendorSettingsInput;
@@ -1468,6 +1471,7 @@ export const COMMANDS: Record<CommandName, { tier: Tier; personOnly: boolean; su
   "po.list": { tier: "read", personOnly: false, summary: "Purchase orders, optionally for one vendor, each with authorized/reserved/consumed/available (none on a closed or canceled PO) and billing progress." },
   "po.upsert": { tier: "routine", personOnly: false, summary: "Create or update a purchase order by external source/id. Only the key on the standing authorization can create a PO for that source, and only for a vendor on it. Only that key can change a draft, or revise an active or suspended PO. A revision is a decrease that still covers reserved and consumed amounts, a period or address change, or an increase within the limit. Anyone else's change is left for a person. A decrease under amounts already reserved or consumed, an increase above the limit, or any change after a person has edited the PO, is refused. Vendor, number and currency cannot change. A closed or cancelled PO is refused. The same body changes nothing, including while a person hold is set, and an omitted owner leaves the stored owner. The authorization activates a new or draft PO within its per-PO limit; activated_by is the person who granted it. Over the limit, the PO stays a draft." },
   "po.source_authorize": { tier: "routine", personOnly: true, summary: "Authorize one agent key, by its key id, to create, revise, activate, and externally close or cancel purchase orders for one source and named vendors, up to a per-PO amount. The source is stored here. The owner is the person recorded on those POs when the sync names none, and activated_by is the admin who grants this. Over the limit, a PO stays a draft. Another key with the same actor name is not this grant. Revoke with po.source_revoke. An operator key cannot grant it." },
+  "po.source_list": { tier: "read", personOnly: false, summary: "List standing purchase-order authorizations (po.source_authorize): source, agent key, named vendors, per-PO limit, owner, who granted it, and whether it or its key was revoked. Standing ones first." },
   "po.source_revoke": { tier: "routine", personOnly: true, summary: "Revoke a standing purchase-order authorization. Later syncs stop activating POs under it. POs already activated stay as they are." },
   "po.import": { tier: "routine", personOnly: false, summary: "Import a purchase order from another system by external source/id (idempotent). Always lands as a draft: a person activates it with po.activate. opening_consumed_cents records amounts already billed in the source system and is not counted twice on a re-import. Once a source has a standing authorization, only that key can import an id under it." },
   "po.vendor_settings": { tier: "read", personOnly: false, summary: "A vendor's purchase-order settings: whether its bills require a PO, and its overage caps (dollar and/or percentage in basis points). Caps are pinned onto each PO revision when it is made." },

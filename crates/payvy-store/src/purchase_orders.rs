@@ -1042,6 +1042,74 @@ pub async fn insert_source_auth(
     Ok(id)
 }
 
+/// A standing authorization as Settings > Purchase orders lists it.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SourceAuthListing {
+    pub id: Uuid,
+    pub source: String,
+    pub key_id: Uuid,
+    /// The key's actor, and whether the key itself was revoked since.
+    pub key_actor: Option<String>,
+    pub key_revoked: bool,
+    pub vendors: Vec<SourceAuthVendor>,
+    pub max_cents: Cents,
+    pub owner: String,
+    pub authorized_by: String,
+    pub created_at: DateTime<Utc>,
+    pub revoked_at: Option<DateTime<Utc>>,
+    pub revoked_by: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SourceAuthVendor {
+    pub id: Uuid,
+    pub name: String,
+}
+
+/// Every authorization, standing ones first, newest first.
+pub async fn list_source_auths(tx: &mut Tx) -> anyhow::Result<Vec<SourceAuthListing>> {
+    let rows = sqlx::query(
+        "SELECT a.id, a.source, a.key_id, k.actor AS key_actor, \
+                (k.id IS NULL OR k.revoked_at IS NOT NULL) AS key_revoked, \
+                a.max_cents, a.owner, a.authorized_by, a.created_at, a.revoked_at, a.revoked_by, \
+                coalesce(array_agg(vd.id ORDER BY vd.name) FILTER (WHERE vd.id IS NOT NULL), '{}') AS vendor_ids, \
+                coalesce(array_agg(vd.name ORDER BY vd.name) FILTER (WHERE vd.id IS NOT NULL), '{}') AS vendor_names \
+         FROM po_source_authorizations a \
+         LEFT JOIN api_keys k ON k.id = a.key_id \
+         LEFT JOIN po_source_authorization_vendors v ON v.authorization_id = a.id \
+         LEFT JOIN vendors vd ON vd.id = v.vendor_id \
+         GROUP BY a.id, k.id \
+         ORDER BY (a.revoked_at IS NULL) DESC, a.created_at DESC, a.id",
+    )
+    .fetch_all(&mut **tx)
+    .await?;
+    Ok(rows
+        .iter()
+        .map(|r| {
+            let ids: Vec<Uuid> = r.get("vendor_ids");
+            let names: Vec<String> = r.get("vendor_names");
+            SourceAuthListing {
+                id: r.get("id"),
+                source: r.get("source"),
+                key_id: r.get("key_id"),
+                key_actor: r.get("key_actor"),
+                key_revoked: r.get("key_revoked"),
+                vendors: ids
+                    .into_iter()
+                    .zip(names)
+                    .map(|(id, name)| SourceAuthVendor { id, name })
+                    .collect(),
+                max_cents: r.get("max_cents"),
+                owner: r.get("owner"),
+                authorized_by: r.get("authorized_by"),
+                created_at: r.get("created_at"),
+                revoked_at: r.get("revoked_at"),
+                revoked_by: r.get("revoked_by"),
+            }
+        })
+        .collect())
+}
+
 /// `Ok(Some(true))` when this call revoked it. `Ok(Some(false))` when it was already revoked.
 /// `Ok(None)` when the id is unknown.
 pub async fn revoke_source_auth(

@@ -411,6 +411,7 @@ async fn execute(cx: &mut Cx<'_>, name: &str, input: &Value) -> Result<Value, Co
         "po.upsert" => purchase_orders::upsert(cx, parse(input)?).await,
         "po.source_authorize" => purchase_orders::source_authorize(cx, parse(input)?).await,
         "po.source_revoke" => purchase_orders::source_revoke(cx, parse(input)?).await,
+        "po.source_list" => purchase_orders::source_list(cx, parse(input)?).await,
         "po.vendor_settings" => purchase_orders::vendor_settings(cx, parse(input)?).await,
         "po.set_vendor_settings" => purchase_orders::set_vendor_settings(cx, parse(input)?).await,
         "po.policy_get" => purchase_orders::policy_get(cx, parse(input)?).await,

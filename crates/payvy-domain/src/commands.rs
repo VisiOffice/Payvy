@@ -506,6 +506,14 @@ pub const COMMANDS: &[CommandSpec] = &[
         input_schema: r#"{"type":"object","required":["source","key_id","vendor_ids","max_cents","owner"],"properties":{"source":{"type":"string"},"key_id":{"type":"string","format":"uuid","description":"id of the agent key"},"vendor_ids":{"type":"array","minItems":1,"items":{"type":"string","format":"uuid"}},"max_cents":{"type":"integer","minimum":1},"owner":{"type":"string"}}}"#,
     },
     CommandSpec {
+        name: "po.source_list",
+        summary: "List standing purchase-order authorizations (po.source_authorize): source, agent key, named vendors, per-PO limit, owner, who granted it, and whether it or its key was revoked. Standing ones first.",
+        tier: RiskTier::Read,
+        person_only: false,
+        permission: Permission::Admin,
+        input_schema: r#"{"type":"object","properties":{}}"#,
+    },
+    CommandSpec {
         name: "po.source_revoke",
         summary: "Revoke a standing purchase-order authorization. Later syncs stop activating POs under it. POs already activated stay as they are.",
         tier: RiskTier::Routine,

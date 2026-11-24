@@ -2434,6 +2434,12 @@ pub async fn source_authorize(
     }))
 }
 
+/// The standing authorizations, for Settings > Purchase orders.
+pub async fn source_list(cx: &mut Cx<'_>, _input: NoInput) -> Result<Value, CommandError> {
+    let authorizations = po_store::list_source_auths(&mut cx.tx).await?;
+    Ok(json!({ "authorizations": authorizations }))
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SourceRevoke {

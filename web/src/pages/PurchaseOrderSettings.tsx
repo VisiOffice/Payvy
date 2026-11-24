@@ -12,6 +12,7 @@ import { VStack } from '@astryxdesign/core/VStack';
 import { useToast } from '@astryxdesign/core/Toast';
 import { Page } from '../Page';
 import { run } from '../api/client';
+import { PoSourceGrants } from './PoSourceGrants';
 
 interface Settings { enabled: boolean; updated_by: string | null; updated_at: string | null }
 
@@ -41,6 +42,7 @@ export function PurchaseOrderSettings() {
         description="When on, vendors can require a PO, and bills for those vendors can't be paid until they're matched to one or someone permits the exception." /></Card>
       <Text type="supporting">Whether a vendor requires a PO, and how far a bill may run over, is set on each vendor and applies at once, including to bills already waiting. Whoever prepared a bill can't permit its exception, and whoever permits it can't release that bill.</Text>
       <Text type="supporting">Turning purchase orders off hides them and lifts the payment check; nothing is deleted. Rejecting or voiding a bill still returns what it reserved.</Text>
+      {data.enabled && <PoSourceGrants />}
       {data.updated_by && <Text type="supporting">Last changed by {data.updated_by}{data.updated_at ? ` · ${new Date(data.updated_at).toLocaleString()}` : ''}</Text>}
     </VStack>}
   </Page>;
