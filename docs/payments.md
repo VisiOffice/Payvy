@@ -14,11 +14,28 @@ and Airwallex fit the same shape (`payvy-pay`).
 
    | Mode | Mercury token | What happens on release |
    |---|---|---|
-   | `request` (default) | Custom token with the **RequestSendMoney** scope | The payment waits in Mercury until a Mercury admin approves it. The approver can't be the person who made the token. No IP allowlist needed. |
+   | `request` (default) | Custom token: read **accounts**, **transactions** and **recipients**, plus **RequestSendMoney** (and webhooks if offered). See the scopes below. | The payment waits in Mercury until a Mercury admin approves it. The approver can't be the person who made the token. No IP allowlist needed. |
    | `direct` | Read & Write token | Mercury sends it at once. Mercury requires the server's IP address on the token's allowlist. |
 
    Request mode gives a second sign-off in the bank itself; direct mode is for teams that want
    Payvy's approval workflow to be the only one.
+
+   What Payvy calls in Mercury, so a Custom token can be scoped to it (Mercury names its scopes on
+   the token screen; scopes marked with an asterisk are writes and need an IP allowlist, except
+   RequestSendMoney):
+
+   | Payvy | Mercury endpoints | Needed |
+   |---|---|---|
+   | Read accounts | `GET /accounts` | Always: connecting reads them first, and fails with "You must have a token with access to this endpoint" without it |
+   | Read transactions | `GET /account/{id}/transactions`, `/transaction/{id}`, `/transactions` | Always: whether a payment went, and marking the bill paid |
+   | Request payments | `POST /account/{id}/request-send-money`, `GET /request-send-money/{id}` | Request mode (RequestSendMoney) |
+   | Read recipients | `GET /recipients`, `/recipient/{id}` | Linking vendors to Mercury payees |
+   | Webhooks | `POST /webhooks` | Optional: without it the payment worker checks every five minutes |
+   | Create recipients | `POST /recipients` | Optional: `vendor.create_recipient` (needs an allowlist) |
+   | Invite recipients | `POST /recipients/invites` | Optional: `vendor.invite_payee` (needs an allowlist) |
+
+   Mercury can't change a Custom token's scopes after it's made: make a new token. It also lowers
+   a token's permissions to what it has used in the last 45 days and deletes one unused for 45 days.
 
    For direct mode, set `PAYVY_OUTBOUND_IP` to the public address this server calls Mercury from
    (several are separated by commas). Settings → Bank then shows it with a Copy button, on the

@@ -280,7 +280,7 @@ pub async fn connect(cx: &mut Cx<'_>, input: Connect) -> Result<Value, CommandEr
     let client = Mercury::new(base, token)?;
     let accounts = client.accounts().await.map_err(|e| match e {
         BankError::Unauthorized(m) | BankError::Refused(m) => {
-            CommandError::Invalid(format!("Mercury refused this token: {m}"))
+            CommandError::Invalid(format!("Mercury refused this token: {m}. Payvy first reads the accounts, so the token needs read access to accounts (and transactions and recipients); for approval in Mercury, a Custom token with those plus RequestSendMoney. Mercury can't add scopes to a Custom token later: make a new one"))
         }
         e => e.into(),
     })?;
@@ -344,7 +344,7 @@ pub async fn connect(cx: &mut Cx<'_>, input: Connect) -> Result<Value, CommandEr
     let c = store::get_connection(&mut cx.tx, c.id).await?.unwrap_or(c);
     let how = match mode {
         Mode::Request => {
-            "Payments wait in Mercury for approval by a Mercury admin other than the token's creator. The token needs the RequestSendMoney scope."
+            "Payments wait in Mercury for approval by a Mercury admin other than the token's creator. The token needs read access to accounts, transactions and recipients, plus RequestSendMoney."
         }
         Mode::Direct => {
             "Mercury sends payments as soon as a person releases them in Payvy. The token must allow this server's IP address."
