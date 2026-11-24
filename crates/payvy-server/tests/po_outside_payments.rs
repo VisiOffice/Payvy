@@ -1270,6 +1270,10 @@ async fn validation_repeat_lifecycle_amount_and_future_date() {
     .await
     .unwrap_err();
     assert!(matches!(dup, CommandError::Conflict(_)), "{dup}");
+    assert!(
+        dup.to_string().starts_with("po_already_declared:"),
+        "expected po_already_declared: prefix, got: {dup}"
+    );
 
     // Suspended PO is allowed.
     commit(
@@ -1289,7 +1293,7 @@ async fn validation_repeat_lifecycle_amount_and_future_date() {
     .await
     .unwrap();
 
-    // Closed PO refused.
+    // Closed PO refused (and must not carry the repeat token).
     commit(
         &db.state,
         &person("robert"),
@@ -1298,15 +1302,21 @@ async fn validation_repeat_lifecycle_amount_and_future_date() {
     )
     .await
     .unwrap();
+    let closed_err = commit(
+        &db.state,
+        &person("robert"),
+        "po.declare_paid",
+        json!({ "po_id": po_id, "amount_cents": 5_000, "method": "cash", "paid_on": "2026-11-01", "note": "closed" }),
+    )
+    .await
+    .unwrap_err();
     assert!(
-        commit(
-            &db.state,
-            &person("robert"),
-            "po.declare_paid",
-            json!({ "po_id": po_id, "amount_cents": 5_000, "method": "cash", "paid_on": "2026-11-01", "note": "closed" }),
-        )
-        .await
-        .is_err()
+        matches!(closed_err, CommandError::Conflict(_)),
+        "{closed_err}"
+    );
+    assert!(
+        !closed_err.to_string().contains("po_already_declared:"),
+        "closed-PO refusal must not carry po_already_declared:, got: {closed_err}"
     );
     assert!(bank.transfers().is_empty());
 }

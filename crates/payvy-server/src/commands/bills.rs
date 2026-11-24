@@ -1186,8 +1186,13 @@ pub async fn release(cx: &mut Cx<'_>, input: Release) -> Result<Value, CommandEr
         payments::submit(cx, &bill, c, payee, payments::Authority::Person).await?;
     }
     // Outside-payment declaration is effective: paid now.
-    if let Some((_, decl)) = &outside_decl {
-        settle_by_declaration(cx, bill.id, decl).await?;
+    if let Some((po_number, decl)) = &outside_decl
+        && !settle_by_declaration(cx, bill.id, decl).await?
+    {
+        return Err(CommandError::Conflict(format!(
+            "outside-payment declaration ({}) on PO {} could not settle this bill; nothing was released",
+            decl.id, po_number
+        )));
     }
     // Charged before it was released: paid now.
     if card_plan.is_some() {

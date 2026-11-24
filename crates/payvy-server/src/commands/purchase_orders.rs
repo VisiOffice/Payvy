@@ -2777,7 +2777,8 @@ pub async fn declare_paid(cx: &mut Cx<'_>, input: DeclarePaid) -> Result<Value, 
     .await?
     {
         return Err(CommandError::Conflict(
-            "an identical outside-payment declaration already exists on this PO".into(),
+            "po_already_declared: an identical outside-payment declaration already exists on this PO"
+                .into(),
         ));
     }
     let decl = po_store::insert_outside_payment(

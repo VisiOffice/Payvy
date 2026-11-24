@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type ComponentProps } from 'react';
 import { Badge } from '@astryxdesign/core/Badge';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
+import { DateInput } from '@astryxdesign/core/DateInput';
 import { Dialog, DialogHeader } from '@astryxdesign/core/Dialog';
 import { EmptyState } from '@astryxdesign/core/EmptyState';
 import { HStack } from '@astryxdesign/core/HStack';
@@ -486,6 +487,8 @@ function CreatePoDialog({ onClose, onSaved }: { onClose: () => void; onSaved: (p
   );
 }
 
+type ISODate = NonNullable<ComponentProps<typeof DateInput>['value']>;
+
 function DeclarePaidDialog({
   po,
   onClose,
@@ -495,9 +498,10 @@ function DeclarePaidDialog({
   onClose: () => void;
   onSaved: (po: PurchaseOrder) => void;
 }) {
+  const today = new Date().toISOString().slice(0, 10) as ISODate;
   const [amount, setAmount] = useState('');
   const [method, setMethod] = useState<OutsidePayment['method']>('card');
-  const [paidOn, setPaidOn] = useState(() => new Date().toISOString().slice(0, 10));
+  const [paidOn, setPaidOn] = useState<string>(today);
   const [reference, setReference] = useState('');
   const [invoiceNumber, setInvoiceNumber] = useState('');
   const [note, setNote] = useState('');
@@ -552,7 +556,15 @@ function DeclarePaidDialog({
             { value: 'other', label: 'Other' },
           ]}
         />
-        <TextInput label="Paid on (YYYY-MM-DD)" value={paidOn} onChange={setPaidOn} isRequired isDisabled={busy} />
+        <DateInput
+          label="Paid on"
+          format="date"
+          value={/^\d{4}-\d{2}-\d{2}$/.test(paidOn) ? (paidOn as ISODate) : undefined}
+          max={today}
+          onChange={(v) => setPaidOn(v ?? '')}
+          isRequired
+          isDisabled={busy}
+        />
         <TextInput
           label="Reference (optional)"
           value={reference}
