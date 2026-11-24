@@ -2711,6 +2711,7 @@ pub async fn declare_paid(cx: &mut Cx<'_>, input: DeclarePaid) -> Result<Value, 
     if input.po_id.is_some() && cx.actor.kind != store::ActorKind::Person {
         return Err(CommandError::PersonOnly("po.declare_paid"));
     }
+    po_store::lock_outside_payments(&mut cx.tx, cx.org).await?;
     let by_external = input.po_id.is_none();
     let mut po = match (
         input.po_id,
@@ -2732,7 +2733,6 @@ pub async fn declare_paid(cx: &mut Cx<'_>, input: DeclarePaid) -> Result<Value, 
         .into_iter()
         .next()
         .ok_or(CommandError::NotFound("purchase order"))?;
-    po_store::lock_outside_payments(&mut cx.tx, cx.org).await?;
     let declared_by_source = if by_external {
         let source = po.external_source.as_deref().unwrap_or("");
         let allowed = match cx.actor.key_id {
@@ -2836,6 +2836,7 @@ pub struct ConfirmPaid {
 
 pub async fn confirm_paid(cx: &mut Cx<'_>, input: ConfirmPaid) -> Result<Value, CommandError> {
     ensure_enabled(cx).await?;
+    po_store::lock_outside_payments(&mut cx.tx, cx.org).await?;
     let decl = po_store::lock_outside_payment(&mut cx.tx, input.declaration_id)
         .await?
         .ok_or(CommandError::NotFound("outside payment declaration"))?;
@@ -2891,6 +2892,7 @@ pub async fn withdraw_paid(cx: &mut Cx<'_>, input: WithdrawPaid) -> Result<Value
     ensure_enabled(cx).await?;
     let reason = text(Some(input.reason))
         .ok_or_else(|| CommandError::Invalid("a reason is required".into()))?;
+    po_store::lock_outside_payments(&mut cx.tx, cx.org).await?;
     let decl = po_store::lock_outside_payment(&mut cx.tx, input.declaration_id)
         .await?
         .ok_or(CommandError::NotFound("outside payment declaration"))?;
@@ -3096,14 +3098,10 @@ pub(super) async fn bill_outside_payment(
     Ok(BillOutsidePayment::None)
 }
 
-/// Reason string for `workflow::Facts::declared_paid_outside`, blocking
-/// automatic payment whenever a live declaration concerns (or ambiguously
-/// may concern) this bill.
-pub(super) async fn bill_outside_payment_reason(
-    cx: &mut Cx<'_>,
-    bill: &store::Bill,
-) -> Result<Option<String>, CommandError> {
-    Ok(match bill_outside_payment(cx, bill).await? {
+/// Pure helper turning an already-computed `BillOutsidePayment` into the
+/// reason string for `workflow::Facts::declared_paid_outside`.
+pub(super) fn outside_payment_reason_from(state: &BillOutsidePayment) -> Option<String> {
+    match state {
         BillOutsidePayment::Paired {
             po_number,
             declaration,
@@ -3112,7 +3110,7 @@ pub(super) async fn bill_outside_payment_reason(
             "paid outside Payvy per declaration on PO {} ({}, {}); a person releases it",
             po_number,
             payvy_domain::workflow::dollars(declaration.amount_cents),
-            if effective {
+            if *effective {
                 "effective"
             } else {
                 "waiting for confirmation"
@@ -3123,7 +3121,18 @@ pub(super) async fn bill_outside_payment_reason(
             po_number
         )),
         BillOutsidePayment::None | BillOutsidePayment::Settled { .. } => None,
-    })
+    }
+}
+
+/// Reason string for `workflow::Facts::declared_paid_outside`, blocking
+/// automatic payment whenever a live declaration concerns (or ambiguously
+/// may concern) this bill.
+pub(super) async fn bill_outside_payment_reason(
+    cx: &mut Cx<'_>,
+    bill: &store::Bill,
+) -> Result<Option<String>, CommandError> {
+    let state = bill_outside_payment(cx, bill).await?;
+    Ok(outside_payment_reason_from(&state))
 }
 
 /// Checked under `lock_outside_payments` in `payments::submit` so a race with
@@ -3169,12 +3178,21 @@ pub(super) fn outside_payment_plan(
     })
 }
 
-pub(super) async fn bill_outside_payment_view(
-    cx: &mut Cx<'_>,
-    bill: &store::Bill,
+pub(super) fn outside_payment_ambiguous_warning(po_number: &str, count: usize) -> Value {
+    json!({
+        "po_number": po_number,
+        "count": count,
+        "message": format!(
+            "an unmatched outside-payment declaration on PO {po_number} may concern this bill"
+        ),
+    })
+}
+
+pub(super) fn bill_outside_payment_view_from(
+    state: &BillOutsidePayment,
     payments: &[store::PaymentRow],
-) -> Result<Value, CommandError> {
-    Ok(match bill_outside_payment(cx, bill).await? {
+) -> Value {
+    match state {
         BillOutsidePayment::None => Value::Null,
         BillOutsidePayment::Settled {
             po_number,
@@ -3217,14 +3235,15 @@ pub(super) async fn bill_outside_payment_view(
             "po_number": po_number,
             "declarations": declarations,
         }),
-    })
+    }
 }
 
-pub(super) async fn bill_outside_payment_summary(
+pub(super) async fn bill_outside_payment_summary_from(
     cx: &mut Cx<'_>,
     bill: &store::Bill,
+    state: &BillOutsidePayment,
 ) -> Result<Value, CommandError> {
-    match bill_outside_payment(cx, bill).await? {
+    match state {
         BillOutsidePayment::None => Ok(Value::Null),
         BillOutsidePayment::Settled {
             po_number,

@@ -497,6 +497,32 @@ async fn default_policy_blocks_until_other_person_confirms_and_person_releases()
     .await
     .unwrap_err();
     assert!(matches!(err, CommandError::Conflict(_)), "{err}");
+
+    // Release is refused while the paired declaration is unconfirmed (including pay_elsewhere: true).
+    let rel_unconfirmed = confirm(
+        &db.state,
+        &person("robert"),
+        "bill.release",
+        json!({ "bill_id": bill_id }),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(rel_unconfirmed, CommandError::Conflict(_)),
+        "{rel_unconfirmed}"
+    );
+    let rel_elsewhere = confirm(
+        &db.state,
+        &person("robert"),
+        "bill.release",
+        json!({ "bill_id": bill_id, "pay_elsewhere": true }),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(rel_elsewhere, CommandError::Conflict(_)),
+        "{rel_elsewhere}"
+    );
     assert!(bank.transfers().is_empty());
 
     // Declarer (robert) cannot confirm his own declaration.
@@ -634,7 +660,7 @@ async fn accept_from_source_policy_applies_only_to_source_key() {
     assert_eq!(rel1["result"]["bill"]["state"], "paid");
 
     // Person declares for bill2 -> still requires confirmation even under accept_from_source.
-    commit(
+    let d2 = commit(
         &db.state,
         &person("robert"),
         "po.declare_paid",
@@ -648,6 +674,30 @@ async fn accept_from_source_policy_applies_only_to_source_key() {
     )
     .await
     .unwrap();
+    let d2_id = d2["result"]["declaration"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // Release is refused while the person's declaration is unconfirmed.
+    let rel2_err = confirm(
+        &db.state,
+        &person("robert"),
+        "bill.release",
+        json!({ "bill_id": bill2 }),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(rel2_err, CommandError::Conflict(_)), "{rel2_err}");
+
+    // Once Alice confirms, release settles bill2 immediately (mapping cash -> other on the bill).
+    commit(
+        &db.state,
+        &person("alice"),
+        "po.confirm_paid",
+        json!({ "declaration_id": d2_id }),
+    )
+    .await
+    .unwrap();
     let rel2 = confirm(
         &db.state,
         &person("robert"),
@@ -656,9 +706,8 @@ async fn accept_from_source_policy_applies_only_to_source_key() {
     )
     .await
     .unwrap();
-    // Released without sending money, NOT yet paid because person declaration isn't confirmed.
-    assert_eq!(rel2["result"]["bill"]["state"], "open");
-    assert_eq!(rel2["result"]["progress"]["status"], "released");
+    assert_eq!(rel2["result"]["bill"]["state"], "paid");
+    assert_eq!(rel2["result"]["bill"]["paid_method"], "other");
     assert!(bank.transfers().is_empty());
 }
 
@@ -960,6 +1009,26 @@ async fn cent_off_or_two_same_amount_bills_never_pair_and_block_auto_pay() {
         assert_eq!(vw["outside_payment"]["state"], "ambiguous");
         assert_eq!(vw["bill"]["state"], "open");
     }
+    // Releasing an ambiguous bill warns on the preview naming the PO and unmatched declaration.
+    let preview = payvy_server::commands::run(
+        &db.state,
+        &person("robert"),
+        "bill.release",
+        json!({ "bill_id": b1 }),
+        payvy_server::commands::Mode::Preview,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        preview["result"]["outside_declaration_warning"]["po_number"],
+        "PO-602"
+    );
+    assert!(
+        preview["result"]["outside_declaration_warning"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("unmatched outside-payment declaration on PO PO-602")
+    );
     assert!(bank.transfers().is_empty());
 }
 
@@ -1059,6 +1128,60 @@ async fn withdraw_before_paid_unblocks_and_refused_after_paid() {
     .unwrap_err();
     assert!(matches!(err, CommandError::Conflict(_)), "{err}");
     assert!(bank.transfers().is_empty());
+
+    // After withdrawing a declaration on a manual-release bill, release proceeds
+    // and pays normally through the fake bank.
+    let v_man = setup_vendor_with_payee(&db, "Withdrawn Pay Vendor", false).await;
+    let src_man = authorize_source(&db, &v_man, "orders").await;
+    let po_man = upsert_active_po(&db, &src_man, &v_man, "PO-702", "ext-702", 100_000).await;
+    let bill_pay =
+        create_and_match_bill(&db, &v_man, &po_man, "INV-702", 45_000, "2026-11-01").await;
+    let d3 = commit(
+        &db.state,
+        &src_man,
+        "po.declare_paid",
+        json!({
+            "external_source": "orders",
+            "external_id": "ext-702",
+            "amount_cents": 45_000,
+            "method": "card",
+            "paid_on": "2026-11-01",
+            "note": "Mistaken declaration to withdraw",
+        }),
+    )
+    .await
+    .unwrap();
+    let d3_id = d3["result"]["declaration"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        confirm(
+            &db.state,
+            &person("robert"),
+            "bill.release",
+            json!({ "bill_id": bill_pay }),
+        )
+        .await
+        .is_err()
+    );
+    commit(
+        &db.state,
+        &person("robert"),
+        "po.withdraw_paid",
+        json!({ "declaration_id": d3_id, "reason": "entered in error" }),
+    )
+    .await
+    .unwrap();
+    confirm(
+        &db.state,
+        &person("robert"),
+        "bill.release",
+        json!({ "bill_id": bill_pay }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(bank.transfers().len(), 1);
 }
 
 /// Test 8: Repeat declaration (including without reference) is an error;

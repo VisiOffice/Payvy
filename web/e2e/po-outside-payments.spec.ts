@@ -33,20 +33,20 @@ async function confirmPersonCommand<T = unknown>(page: Page, command: string, in
 test('agent declares outside payment, person confirms and releases bill with no transfer sent', async ({ page }) => {
   await personCommand(page, 'po.configure', { enabled: true });
   const vendorId = await vendor('Outside Paid Vendor');
-  await personCommand(page, 'workflow.propose', {
+  const proposed = await agent<{ proposal_id: string }>('workflow.propose', {
     vendor_id: vendorId,
-    steps: [{ id: 'pay', type: 'pay', release: 'manual' }],
-  }).then(async (wf) => {
-    const id = (wf as { id: string }).id;
-    await personCommand(page, 'workflow.accept', { workflow_id: id });
+    workflow: { steps: [{ id: 'pay', type: 'pay', release: 'manual' }] },
+    reason: 'Manual release for outside-payment test',
   });
+  await personCommand(page, 'workflow.accept', { proposal_id: proposed.proposal_id });
 
   // Create an agent key, authorize it as the PO source, upsert an active PO, and declare outside payment.
-  const key = await personCommand<{ id: string; key: string }>(page, 'agent.create_key', {
-    actor: 'orders-sync',
+  const key = await personCommand<{ id: string; key: string }>(page, 'agent_key.create', {
+    name: 'orders-sync',
   });
-  const me = await page.request.get('/api/me', { headers: { 'x-payvy-client': 'web' } }).then((r) => r.json());
-  const ownerActor = (me as { person: { actor: string } }).person.actor;
+  const meRes = await page.request.get('/auth/session', { headers: { 'x-payvy-client': 'web' } });
+  expect(meRes.ok(), await meRes.text()).toBeTruthy();
+  const ownerActor = ((await meRes.json()) as { person: { actor: string } }).person.actor;
 
   await personCommand(page, 'po.source_authorize', {
     source: 'orders',

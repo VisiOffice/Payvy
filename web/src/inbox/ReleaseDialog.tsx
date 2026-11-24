@@ -31,9 +31,21 @@ interface OutsidePlan {
   effective: boolean;
 }
 
+interface OutsideWarning {
+  po_number: string;
+  count: number;
+  message: string;
+}
+
 type State =
   | { kind: 'loading' }
-  | { kind: 'ready'; token: string; plan: Plan | null; outsidePlan: OutsidePlan | null }
+  | {
+      kind: 'ready';
+      token: string;
+      plan: Plan | null;
+      outsidePlan: OutsidePlan | null;
+      outsideWarning: OutsideWarning | null;
+    }
   | { kind: 'needs_payee'; message: string }
   | { kind: 'ramp_setup' }
   | { kind: 'error'; message: string };
@@ -57,7 +69,11 @@ export function ReleaseDialog({
 
   useEffect(() => {
     setState({ kind: 'loading' });
-    preview<{ payment_plan?: Plan; outside_declaration_plan?: OutsidePlan }>('bill.release', {
+    preview<{
+      payment_plan?: Plan;
+      outside_declaration_plan?: OutsidePlan;
+      outside_declaration_warning?: OutsideWarning;
+    }>('bill.release', {
       bill_id: bill.id,
       ...(payElsewhere ? { pay_elsewhere: true } : {}),
     })
@@ -67,6 +83,7 @@ export function ReleaseDialog({
           token: p.confirm_token!,
           plan: p.result.payment_plan ?? null,
           outsidePlan: p.result.outside_declaration_plan ?? null,
+          outsideWarning: p.result.outside_declaration_warning ?? null,
         }),
       )
       .catch((e: unknown) => {
@@ -97,9 +114,7 @@ export function ReleaseDialog({
           : status === 'failed'
             ? `The bank refused the payment to ${bill.vendor_name}; it's back in your inbox`
             : state.outsidePlan
-              ? state.outsidePlan.effective
-                ? `Marked paid per outside-payment declaration on ${state.outsidePlan.po_number}; no payment was sent`
-                : `Released without sending payment; waiting for declaration confirmation on ${state.outsidePlan.po_number}`
+              ? `Marked paid per outside-payment declaration on ${state.outsidePlan.po_number}; no payment was sent`
             : state.plan
               ? `Paying ${money(bill.amount_cents)} to ${bill.vendor_name}`
               : `Released. Mark it paid once you've paid it.`,
@@ -134,6 +149,13 @@ export function ReleaseDialog({
         )}
         {state.kind === 'ready' && (
           <VStack gap={4}>
+            {state.outsideWarning && (
+              <Banner
+                status="warning"
+                title={`Unmatched outside-payment declaration on ${state.outsideWarning.po_number}`}
+                description={`${state.outsideWarning.message}. Review the PO before sending money so this bill isn't paid twice.`}
+              />
+            )}
             {state.plan ? (
               <MetadataList>
                 <MetadataListItem label="Amount">
@@ -153,10 +175,7 @@ export function ReleaseDialog({
               </MetadataList>
             ) : state.outsidePlan ? (
               <Text>
-                Paid outside Payvy per declaration on {state.outsidePlan.po_number}. Releasing sends no payment
-                {state.outsidePlan.effective
-                  ? ' and marks this bill paid immediately.'
-                  : '; Payvy will mark it paid once someone confirms the declaration.'}
+                Paid outside Payvy per declaration on {state.outsidePlan.po_number}. Releasing sends no payment and marks this bill paid immediately.
               </Text>
             ) : (
               <Text>

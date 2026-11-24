@@ -129,12 +129,14 @@ Conventions follow Visirent (`~/Code/visirent`).
   strictly one-to-one with an open bill allocated to that PO by exact amount (and normalized
   `invoice_number` when given, `payvy_domain::purchase_orders::plain_outside_matches`). Paired and
   ambiguous bills evaluate to `awaiting_release` at automatic pay steps (`workflow::Facts`),
-  `bill.release` sends no transfer for a paired bill, and `payments::submit` re-checks under an
-  advisory lock. The bill is marked paid (via `on_outside_payment`, `via: "declaration"`, skipping
-  if a live bank payment exists) only once the bill is released by a person and the declaration is
-  effective — confirmed by someone else (`po.confirm_paid`, person-only) or immediately for the
-  source key under the pinned `paid_outside: accept_from_source` policy. `po.withdraw_paid`
-  (person-only) withdraws before settlement. See `docs/purchase-orders.md`.
+  `bill.release` refuses a paired bill while its declaration is not yet effective (even with
+  `pay_elsewhere`), sends no transfer and settles immediately once effective, warns on ambiguous
+  POs, and `payments::submit` re-checks under an advisory lock. A bill already `Released` before
+  the declaration settles when the declaration becomes effective (skipping if a live bank payment
+  exists). Settlement goes through `on_outside_payment` (`via: "declaration"`), and effectiveness
+  requires confirmation by someone else (`po.confirm_paid`, person-only) or the source key under
+  the pinned `paid_outside: accept_from_source` policy. `po.withdraw_paid` (person-only) withdraws
+  before settlement. See `docs/purchase-orders.md`.
 - **Quantity matching is cumulative, exact, and policy-gated** (`payvy-domain/src/quantity.rs`).
   Bill lines carry quantity/unit/unit-price as printed (extraction details, invoice review,
   or `bill.create`); a bill line maps to a PO line by normalized description (+unit when

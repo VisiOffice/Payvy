@@ -270,13 +270,16 @@ From the moment of declaration, in either `declared` or `confirmed` status:
 - At an automatic pay step, the bill evaluates to `awaiting_release` (via `workflow::Facts`), never
   `ready_to_pay`, so `bill.auto_pay` never runs on it. This also holds when an unpaired live
   declaration on the PO *might* concern the bill.
-- `bill.release` sends no bank transfer for a paired bill, and `payments::submit` re-checks under an
+- `bill.release` is refused while a paired declaration is not yet effective (even with
+  `pay_elsewhere: true`): confirm or withdraw the declaration first. Once effective, `bill.release`
+  sends no bank transfer and marks the bill paid immediately. `payments::submit` re-checks under an
   advisory lock so a race cannot send money.
-- The bill is marked paid only when two things are true: the declaration is **effective** and the
-  bill has been released by a person. Whichever happens second settles it — releasing a bill whose
-  declaration is already effective, or a declaration becoming effective for a bill already
-  `Released` (for example one released to be paid elsewhere). If a live bank payment is already in
-  flight or sent for the bill, the declaration does not mark it paid; a person resolves it.
+- If a bill was already `Released` before the declaration existed (for example, released to be paid
+  elsewhere), it is marked paid the moment the declaration becomes effective. If a live bank
+  payment is already in flight or sent for the bill, the declaration does not mark it paid; a person
+  resolves it.
+- When a person releases a bill with an ambiguous (unmatched) declaration on its PO, `bill.release`
+  returns a warning naming the PO so the person knows an outside payment may concern it.
 - Settling marks the bill paid with `paid_on` floored at the invoice date, emits `bill.paid` with
   `via: "declaration"` and `declaration_id`, and queues the ledger through `on_outside_payment`. A
   `cash` declaration is kept as `cash` on the declaration and recorded as `other` on the bill to

@@ -255,7 +255,7 @@ export function BillPage() {
           }
           description={
             detail.outside_payment.state === 'awaiting_confirmation'
-              ? 'Releasing this bill sends no payment. Once another person confirms the declaration on the PO, Payvy marks the bill paid.'
+              ? 'Release is blocked until another person confirms or withdraws the declaration on the PO.'
               : detail.outside_payment.state === 'awaiting_release'
                 ? 'Releasing this bill sends no payment and marks it paid immediately.'
                 : detail.outside_payment.state === 'paid'
