@@ -259,6 +259,10 @@ pub struct Create {
     document_id: Option<Uuid>,
     extraction_id: Option<Uuid>,
     review_id: Option<Uuid>,
+    /// The PO number the invoice prints; from the extraction when left out.
+    po_number: Option<String>,
+    /// Where the work was done; from the extraction when left out.
+    service_address: Option<String>,
     /// Only these pages of the document (the original's page numbers, in
     /// this order): they are split into a new document filed with the bill.
     pages: Option<Vec<u32>>,
@@ -368,6 +372,14 @@ pub async fn create(cx: &mut Cx<'_>, mut input: Create) -> Result<Value, Command
         }
         None => None,
     };
+    // What ties the invoice to a PO, kept on the bill for automatic
+    // matching now and when a PO arrives later.
+    let (read_po, read_address) = match input.extraction_id {
+        Some(id) => printed_po_hints(cx, id).await?,
+        None => (None, None),
+    };
+    let po_reference = text(input.po_number.take()).or(read_po);
+    let service_address = text(input.service_address.take()).or(read_address);
     let key = rules::invoice_key(&invoice_number);
     let external_ref = text(input.external_ref);
     let memo = text(input.memo);
@@ -412,6 +424,8 @@ pub async fn create(cx: &mut Cx<'_>, mut input: Create) -> Result<Value, Command
         received_at: cx.now,
         arrangement_id,
         policy_version_id,
+        po_reference: po_reference.as_deref(),
+        service_address: service_address.as_deref(),
     };
     let id = match store::insert_bill(&mut cx.tx, cx.org, &new, input.allow_duplicate).await? {
         InsertBill::Inserted(id) => id,
@@ -463,7 +477,25 @@ pub async fn create(cx: &mut Cx<'_>, mut input: Create) -> Result<Value, Command
         "none",
     )
     .await?;
-    detail(cx, id).await
+    let matched = super::purchase_orders::auto_match_bill(cx, id).await?;
+    let mut result = detail(cx, id).await?;
+    if let Some(m) = matched {
+        result["auto_matched"] = m;
+    }
+    Ok(result)
+}
+
+/// The PO number and service address an extraction read, if any.
+async fn printed_po_hints(
+    cx: &mut Cx<'_>,
+    extraction_id: Uuid,
+) -> Result<(Option<String>, Option<String>), CommandError> {
+    let draft = store::get_extraction(&mut cx.tx, extraction_id)
+        .await?
+        .and_then(|r| r.draft)
+        .unwrap_or_default();
+    let field = |k: &str| draft[k].as_str().map(str::to_owned);
+    Ok((text(field("po_number")), text(field("service_address"))))
 }
 
 /// A copy of an invoice that is already a bill: it stacks on that bill

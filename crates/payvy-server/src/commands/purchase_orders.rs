@@ -453,10 +453,9 @@ pub async fn activate(cx: &mut Cx<'_>, input: PoId) -> Result<Value, CommandErro
     .await?;
     cx.emit("po.activated", po.id, json!({ "po_number": po.po_number }))
         .await?;
-    {
-        let fresh = must_po(cx, po.id).await?;
-        view(cx, &fresh).await
-    }
+    let fresh = must_po(cx, po.id).await?;
+    let result = view(cx, &fresh).await?;
+    and_auto_match(cx, result).await
 }
 
 #[derive(Deserialize)]
@@ -613,10 +612,9 @@ pub async fn reactivate(cx: &mut Cx<'_>, input: PoId) -> Result<Value, CommandEr
         json!({ "po_number": po.po_number }),
     )
     .await?;
-    {
-        let fresh = must_po(cx, po.id).await?;
-        view(cx, &fresh).await
-    }
+    let fresh = must_po(cx, po.id).await?;
+    let result = view(cx, &fresh).await?;
+    and_auto_match(cx, result).await
 }
 
 pub async fn get(cx: &mut Cx<'_>, input: PoId) -> Result<Value, CommandError> {
@@ -1856,6 +1854,172 @@ pub async fn release_bill_allocations(
     Ok(())
 }
 
+// ── Automatic matching ──────────────────────────────────────────────────────
+
+/// What automatic matching is recorded under: Payvy's own agent, the one
+/// the payment worker runs as. The caller whose command set it off is in
+/// the event's payload.
+pub const AUTO_MATCHER: &str = "workflow";
+
+/// Reserve a bill against the one PO it plainly belongs to
+/// (`payvy_domain::purchase_orders::auto_match`): its printed PO number, or
+/// its service address and period, name exactly one active PO of the
+/// vendor that covers the whole bill from what is unbilled. Nothing
+/// happens when POs are off, the bill is released, closed or already has
+/// an allocation, or the answer isn't plain; the caller's command never
+/// fails for not matching. Like `po.match_apply` this only reserves:
+/// approval and release are unchanged.
+pub async fn auto_match_bill(
+    cx: &mut Cx<'_>,
+    bill_id: Uuid,
+) -> Result<Option<Value>, CommandError> {
+    place_bill(cx, bill_id, true).await
+}
+
+/// `wait` false: skip the bill when another transaction holds one of the
+/// vendor's POs, rather than wait while this one holds a PO already.
+async fn place_bill(
+    cx: &mut Cx<'_>,
+    bill_id: Uuid,
+    wait: bool,
+) -> Result<Option<Value>, CommandError> {
+    if !enabled(cx).await? {
+        return Ok(None);
+    }
+    let Some(bill) = store::get_bill(&mut cx.tx, bill_id).await? else {
+        return Ok(None);
+    };
+    if bill.state != payvy_domain::bills::State::Open
+        || bill.released_at.is_some()
+        || (bill.po_reference.is_none() && bill.service_address.is_none())
+        || !po_store::allocations_for_bill(&mut cx.tx, bill.id)
+            .await?
+            .is_empty()
+    {
+        return Ok(None);
+    }
+    let ids: Vec<Uuid> = po_store::list_pos(&mut cx.tx, Some(bill.vendor_id))
+        .await?
+        .into_iter()
+        .filter(|p| p.status == "active")
+        .map(|p| p.id)
+        .collect();
+    if ids.is_empty() {
+        return Ok(None);
+    }
+    let locked = if wait {
+        po_store::lock_pos(&mut cx.tx, &ids).await?
+    } else {
+        match po_store::try_lock_pos(&mut cx.tx, &ids).await? {
+            Some(locked) => locked,
+            None => return Ok(None),
+        }
+    };
+    let locked: Vec<_> = locked
+        .into_iter()
+        .filter(|p| p.status == "active" && p.vendor_id == bill.vendor_id && p.revision.is_some())
+        .collect();
+    let mut unbilled = Vec::with_capacity(locked.len());
+    for po in &locked {
+        let a = po_store::amounts(&mut cx.tx, po).await?;
+        unbilled.push((a.authorized_cents - a.committed_cents()).max(0));
+    }
+    let candidates: Vec<_> = locked
+        .iter()
+        .zip(&unbilled)
+        .map(|(po, &left)| payvy_domain::purchase_orders::AutoCandidate {
+            po_number: &po.po_number,
+            vendor_reference: po.vendor_reference.as_deref(),
+            service_address: po.service_address.as_deref(),
+            unbilled_cents: left,
+            in_period: !payvy_domain::purchase_orders::outside_period(
+                po.period_start,
+                po.period_end,
+                bill.invoice_date,
+            ),
+        })
+        .collect();
+    let Some((i, rule)) = payvy_domain::purchase_orders::auto_match(
+        bill.amount_cents,
+        bill.po_reference.as_deref(),
+        bill.service_address.as_deref(),
+        &candidates,
+    ) else {
+        return Ok(None);
+    };
+    let po = &locked[i];
+    let rev = po
+        .revision
+        .as_ref()
+        .expect("filtered to POs with a revision");
+    let id = po_store::insert_allocation(
+        &mut cx.tx,
+        cx.org,
+        po.id,
+        rev.id,
+        Some(bill.id),
+        bill.amount_cents,
+        "reserved",
+        "match",
+        AUTO_MATCHER,
+        None,
+        None,
+        None,
+        cx.now,
+    )
+    .await?;
+    let triggered_by = cx.actor.name.clone();
+    cx.emit_as(
+        AUTO_MATCHER,
+        "po.match_applied",
+        po.id,
+        json!({ "bill_id": bill.id, "allocation_id": id, "amount_cents": bill.amount_cents,
+                "automatic": true, "rule": rule.as_str(), "triggered_by": triggered_by }),
+    )
+    .await?;
+    Ok(Some(json!({
+        "po_id": po.id, "po_number": po.po_number, "allocation_id": id,
+        "amount_cents": bill.amount_cents, "rule": rule.as_str(),
+    })))
+}
+
+/// After a PO becomes active or changes: place the vendor's open bills
+/// that have no PO yet, each by `auto_match_bill`'s rule. What was placed.
+/// The caller holds a PO already, so nothing here waits on a lock: a bill
+/// or PO another write holds is skipped and placed by a person, or at the
+/// next PO change.
+pub async fn auto_match_vendor(
+    cx: &mut Cx<'_>,
+    vendor_id: Uuid,
+) -> Result<Vec<Value>, CommandError> {
+    if !enabled(cx).await? {
+        return Ok(Vec::new());
+    }
+    let mut placed = Vec::new();
+    for bill_id in po_store::unmatched_open_bills(&mut cx.tx, vendor_id).await? {
+        if let Some(mut m) = place_bill(cx, bill_id, false).await? {
+            m["bill_id"] = json!(bill_id);
+            placed.push(m);
+        }
+    }
+    Ok(placed)
+}
+
+/// A PO command's result, with the bills it placed when the PO is active.
+async fn and_auto_match(cx: &mut Cx<'_>, mut result: Value) -> Result<Value, CommandError> {
+    if result["status"] == "active"
+        && let Some(vendor) = result["vendor_id"]
+            .as_str()
+            .and_then(|v| v.parse::<Uuid>().ok())
+    {
+        let placed = auto_match_vendor(cx, vendor).await?;
+        if !placed.is_empty() {
+            result["auto_matched"] = json!(placed);
+        }
+    }
+    Ok(result)
+}
+
 // ── External PO feed: upsert, standing authorization ───────────────────────────
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -2280,7 +2444,14 @@ async fn apply_existing(
     with_outcome(cx, po.id, outcome).await
 }
 
+/// `po.upsert`, then any of the vendor's open bills the PO now plainly
+/// covers are placed on it (an unchanged resend places nothing new).
 pub async fn upsert(cx: &mut Cx<'_>, input: Upsert) -> Result<Value, CommandError> {
+    let result = upsert_po(cx, input).await?;
+    and_auto_match(cx, result).await
+}
+
+async fn upsert_po(cx: &mut Cx<'_>, input: Upsert) -> Result<Value, CommandError> {
     ensure_enabled(cx).await?;
     let prepared = prepare_upsert(input)?;
     store::get_vendor(&mut cx.tx, prepared.vendor_id)

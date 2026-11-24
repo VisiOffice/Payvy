@@ -465,6 +465,14 @@ export interface BillCreateInput {
    */
   extraction_id?: string;
   /**
+   * The purchase order number printed on the invoice. Left out, it is taken from the extraction, if any. With purchase orders on, a bill whose PO number names one active PO of its vendor that covers it is reserved against that PO automatically.
+   */
+  po_number?: string;
+  /**
+   * Where the work was done, as the invoice prints it. Left out, it is taken from the extraction, if any. With no PO number, a bill whose address is that of exactly one active PO of its vendor in period that covers it is reserved against that PO automatically.
+   */
+  service_address?: string;
+  /**
    * Only these pages of document_id (page numbers of the original, in this order) are this bill: they are split into a new document filed with the bill, in the same change, and the rest stays in the inbox. Naming every visible page files the whole document.
    *
    * @minItems 1
@@ -1075,6 +1083,10 @@ export interface DocumentSubmitReadingInput {
      * Purchase order number, if printed
      */
     po_number: string | null;
+    /**
+     * Where the work was done or the goods delivered (job site, service or delivery address), one line, if printed; not the vendor's or the bill-to address
+     */
+    service_address: string | null;
     /**
      * Amount before tax, exactly as printed
      */

@@ -539,15 +539,21 @@ impl<'a> Cx<'a> {
         entity: Uuid,
         payload: Value,
     ) -> Result<(), CommandError> {
-        store::append_event(
-            &mut self.tx,
-            self.org,
-            kind,
-            Some(entity),
-            &self.actor.name,
-            &payload,
-        )
-        .await?;
+        let actor = self.actor.name.clone();
+        self.emit_as(&actor, kind, entity, payload).await
+    }
+
+    /// An event recorded under another actor than the caller: Payvy's own
+    /// `workflow` agent, for what Payvy does by rule inside a caller's
+    /// command (automatic PO matching). The payload names the caller.
+    pub async fn emit_as(
+        &mut self,
+        actor: &str,
+        kind: &str,
+        entity: Uuid,
+        payload: Value,
+    ) -> Result<(), CommandError> {
+        store::append_event(&mut self.tx, self.org, kind, Some(entity), actor, &payload).await?;
         self.events.push(kind.to_owned());
         Ok(())
     }
