@@ -186,15 +186,22 @@ async fn a_release_waits_for_the_allocation_lock_and_then_sees_the_reversal() {
         "the release must wait while its allocations are locked"
     );
 
-    drop(hold);
-    commit(
-        &db.state,
-        &robert,
-        "po.allocation_reverse",
-        json!({ "allocation_id": allocation, "reason": "wrong PO" }),
+    // The held transaction itself reverses and commits, as in the PO test
+    // above. Dropping the lock and reversing in a new command instead let
+    // the waiting release take the freed lock first now and then: a
+    // correct release before the reversal, and a flaky test.
+    let reversed = payvy_store::purchase_orders::reverse_allocations_for_bill(
+        &mut hold,
+        bill_id,
+        "robert",
+        "wrong PO",
+        chrono::Utc::now(),
     )
     .await
     .unwrap();
+    assert_eq!(reversed.len(), 1);
+    assert_eq!(reversed[0].id.to_string(), allocation);
+    hold.commit().await.unwrap();
     let e = release.await.unwrap().unwrap_err();
     assert!(e.to_string().contains("no_po"), "{e}");
     db.drop().await;
