@@ -48,7 +48,8 @@ test('a person links the card a vendor keeps, then matches and dismisses its cha
     await page.getByRole('combobox', { name: 'Bill this charge paid' }).click();
     await page.getByRole('option', { name: /CARD-1/ }).click();
     await page.getByRole('button', { name: 'Match', exact: true }).click();
-    await expect(page.getByRole('link', { name: 'CARD-1' })).toBeVisible();
+    // Not released yet: the charge waits on the bill's release.
+    await expect(page.getByText(/charged before the bill was released/)).toBeVisible();
 
     await page.getByRole('button', { name: 'Dismiss…' }).click();
     await page.getByLabel('Why it pays no bill').fill('late fee, disputed');
