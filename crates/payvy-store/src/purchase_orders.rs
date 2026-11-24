@@ -625,6 +625,8 @@ pub struct PolicyVersion {
     pub over_period: String,
     /// flag_only | enforce (payvy-domain::purchase_orders::QuantityMatching)
     pub quantity_matching: String,
+    /// person_confirms | accept_from_source (payvy-domain::purchase_orders::PaidOutside)
+    pub paid_outside: String,
     pub reason: Option<String>,
     pub created_by: String,
     pub created_at: DateTime<Utc>,
@@ -638,6 +640,7 @@ fn policy_version(r: &PgRow) -> PolicyVersion {
         status: r.get("status"),
         over_period: r.get("over_period"),
         quantity_matching: r.get("quantity_matching"),
+        paid_outside: r.get("paid_outside"),
         reason: r.get("reason"),
         created_by: r.get("created_by"),
         created_at: r.get("created_at"),
@@ -646,7 +649,7 @@ fn policy_version(r: &PgRow) -> PolicyVersion {
 
 macro_rules! policy_cols {
     () => {
-        "id, vendor_id, version, status, over_period, quantity_matching, reason, created_by, created_at"
+        "id, vendor_id, version, status, over_period, quantity_matching, paid_outside, reason, created_by, created_at"
     };
 }
 
@@ -685,6 +688,7 @@ pub async fn set_policy(
     vendor_id: Uuid,
     over_period: &str,
     quantity_matching: &str,
+    paid_outside: &str,
     reason: Option<&str>,
     by: &str,
     now: DateTime<Utc>,
@@ -711,9 +715,9 @@ pub async fn set_policy(
     .get("v");
     let id = Uuid::new_v4();
     sqlx::query(
-        "INSERT INTO vendor_po_policies (id, org_id, vendor_id, version, status, over_period, quantity_matching, reason, created_by, created_at) VALUES ($1,$2,$3,$4,'active',$5,$6,$7,$8,$9)",
+        "INSERT INTO vendor_po_policies (id, org_id, vendor_id, version, status, over_period, quantity_matching, paid_outside, reason, created_by, created_at) VALUES ($1,$2,$3,$4,'active',$5,$6,$7,$8,$9,$10)",
     )
-    .bind(id).bind(org).bind(vendor_id).bind(version).bind(over_period).bind(quantity_matching).bind(reason).bind(by).bind(now)
+    .bind(id).bind(org).bind(vendor_id).bind(version).bind(over_period).bind(quantity_matching).bind(paid_outside).bind(reason).bind(by).bind(now)
     .execute(&mut **tx)
     .await?;
     policy_by_id(tx, id)
@@ -1228,4 +1232,294 @@ pub async fn unmatched_open_bills(tx: &mut Tx, vendor_id: Uuid) -> anyhow::Resul
     .fetch_all(&mut **tx)
     .await?;
     Ok(rows.iter().map(|r| r.get("id")).collect())
+}
+
+// ── Paid outside Payvy declarations ─────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+pub struct OutsidePayment {
+    pub id: Uuid,
+    pub po_id: Uuid,
+    pub vendor_id: Uuid,
+    pub amount_cents: Cents,
+    pub method: String,
+    pub paid_on: NaiveDate,
+    pub reference: Option<String>,
+    pub note: String,
+    pub invoice_number: Option<String>,
+    pub declared_by: String,
+    pub declared_by_source: bool,
+    pub declared_at: DateTime<Utc>,
+    pub status: String,
+    pub confirmed_by: Option<String>,
+    pub confirmed_at: Option<DateTime<Utc>>,
+    pub withdrawn_by: Option<String>,
+    pub withdrawn_at: Option<DateTime<Utc>>,
+    pub withdrawn_reason: Option<String>,
+    pub bill_id: Option<Uuid>,
+}
+
+macro_rules! outside_payment_cols {
+    () => {
+        "id, po_id, vendor_id, amount_cents, method, paid_on, reference, note, invoice_number, \
+         declared_by, declared_by_source, declared_at, status, confirmed_by, confirmed_at, \
+         withdrawn_by, withdrawn_at, withdrawn_reason, bill_id"
+    };
+}
+
+fn outside_payment(r: &PgRow) -> OutsidePayment {
+    OutsidePayment {
+        id: r.get("id"),
+        po_id: r.get("po_id"),
+        vendor_id: r.get("vendor_id"),
+        amount_cents: r.get("amount_cents"),
+        method: r.get("method"),
+        paid_on: r.get("paid_on"),
+        reference: r.get("reference"),
+        note: r.get("note"),
+        invoice_number: r.get("invoice_number"),
+        declared_by: r.get("declared_by"),
+        declared_by_source: r.get("declared_by_source"),
+        declared_at: r.get("declared_at"),
+        status: r.get("status"),
+        confirmed_by: r.get("confirmed_by"),
+        confirmed_at: r.get("confirmed_at"),
+        withdrawn_by: r.get("withdrawn_by"),
+        withdrawn_at: r.get("withdrawn_at"),
+        withdrawn_reason: r.get("withdrawn_reason"),
+        bill_id: r.get("bill_id"),
+    }
+}
+
+pub struct NewOutsidePayment<'a> {
+    pub po_id: Uuid,
+    pub vendor_id: Uuid,
+    pub amount_cents: Cents,
+    pub method: &'a str,
+    pub paid_on: NaiveDate,
+    pub reference: Option<&'a str>,
+    pub note: &'a str,
+    pub invoice_number: Option<&'a str>,
+    pub declared_by: &'a str,
+    pub declared_by_source: bool,
+    pub declared_at: DateTime<Utc>,
+}
+
+/// Lock outside-payment declarations per org so a concurrent `po.declare_paid`
+/// and `payments::submit` cannot race.
+pub async fn lock_outside_payments(tx: &mut Tx, org: Uuid) -> anyhow::Result<()> {
+    sqlx::query(
+        "SELECT pg_advisory_xact_lock(hashtextextended('payvy.po_outside_payments.' || $1::text, 0))",
+    )
+    .bind(org)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+pub async fn insert_outside_payment(
+    tx: &mut Tx,
+    org_id: Uuid,
+    new: &NewOutsidePayment<'_>,
+) -> anyhow::Result<OutsidePayment> {
+    let row = sqlx::query(concat!(
+        "INSERT INTO po_outside_payments (id, org_id, po_id, vendor_id, amount_cents, method, \
+         paid_on, reference, note, invoice_number, declared_by, declared_by_source, declared_at, status) \
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'declared') RETURNING ",
+        outside_payment_cols!()
+    ))
+    .bind(Uuid::new_v4())
+    .bind(org_id)
+    .bind(new.po_id)
+    .bind(new.vendor_id)
+    .bind(new.amount_cents)
+    .bind(new.method)
+    .bind(new.paid_on)
+    .bind(new.reference)
+    .bind(new.note)
+    .bind(new.invoice_number)
+    .bind(new.declared_by)
+    .bind(new.declared_by_source)
+    .bind(new.declared_at)
+    .fetch_one(&mut **tx)
+    .await?;
+    Ok(outside_payment(&row))
+}
+
+pub async fn lock_outside_payment(tx: &mut Tx, id: Uuid) -> anyhow::Result<Option<OutsidePayment>> {
+    let row = sqlx::query(concat!(
+        "SELECT ",
+        outside_payment_cols!(),
+        " FROM po_outside_payments WHERE id = $1 FOR UPDATE"
+    ))
+    .bind(id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(row.as_ref().map(outside_payment))
+}
+
+pub async fn outside_payments_for_po(
+    tx: &mut Tx,
+    po_id: Uuid,
+) -> anyhow::Result<Vec<OutsidePayment>> {
+    let rows = sqlx::query(concat!(
+        "SELECT ",
+        outside_payment_cols!(),
+        " FROM po_outside_payments WHERE po_id = $1 ORDER BY declared_at, id"
+    ))
+    .bind(po_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    Ok(rows.iter().map(outside_payment).collect())
+}
+
+pub async fn live_outside_payments_for_po(
+    tx: &mut Tx,
+    po_id: Uuid,
+) -> anyhow::Result<Vec<OutsidePayment>> {
+    let rows = sqlx::query(concat!(
+        "SELECT ",
+        outside_payment_cols!(),
+        " FROM po_outside_payments \
+         WHERE po_id = $1 AND status IN ('declared', 'confirmed') AND bill_id IS NULL \
+         ORDER BY declared_at, id"
+    ))
+    .bind(po_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    Ok(rows.iter().map(outside_payment).collect())
+}
+
+pub async fn outside_payment_for_bill(
+    tx: &mut Tx,
+    bill_id: Uuid,
+) -> anyhow::Result<Option<OutsidePayment>> {
+    let row = sqlx::query(concat!(
+        "SELECT ",
+        outside_payment_cols!(),
+        " FROM po_outside_payments WHERE bill_id = $1"
+    ))
+    .bind(bill_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(row.as_ref().map(outside_payment))
+}
+
+pub async fn has_duplicate_outside_payment(
+    tx: &mut Tx,
+    po_id: Uuid,
+    amount_cents: Cents,
+    method: &str,
+    paid_on: NaiveDate,
+    reference: Option<&str>,
+) -> anyhow::Result<bool> {
+    let row = sqlx::query(
+        "SELECT 1 FROM po_outside_payments \
+         WHERE po_id = $1 AND amount_cents = $2 AND method = $3 AND paid_on = $4 \
+           AND reference IS NOT DISTINCT FROM $5 AND status <> 'withdrawn' \
+         LIMIT 1",
+    )
+    .bind(po_id)
+    .bind(amount_cents)
+    .bind(method)
+    .bind(paid_on)
+    .bind(reference)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(row.is_some())
+}
+
+pub async fn confirm_outside_payment(
+    tx: &mut Tx,
+    id: Uuid,
+    by: &str,
+    now: DateTime<Utc>,
+) -> anyhow::Result<OutsidePayment> {
+    let row = sqlx::query(concat!(
+        "UPDATE po_outside_payments \
+         SET status = 'confirmed', confirmed_by = $2, confirmed_at = $3 \
+         WHERE id = $1 RETURNING ",
+        outside_payment_cols!()
+    ))
+    .bind(id)
+    .bind(by)
+    .bind(now)
+    .fetch_one(&mut **tx)
+    .await?;
+    Ok(outside_payment(&row))
+}
+
+pub async fn withdraw_outside_payment(
+    tx: &mut Tx,
+    id: Uuid,
+    by: &str,
+    reason: &str,
+    now: DateTime<Utc>,
+) -> anyhow::Result<OutsidePayment> {
+    let row = sqlx::query(concat!(
+        "UPDATE po_outside_payments \
+         SET status = 'withdrawn', withdrawn_by = $2, withdrawn_at = $3, withdrawn_reason = $4 \
+         WHERE id = $1 RETURNING ",
+        outside_payment_cols!()
+    ))
+    .bind(id)
+    .bind(by)
+    .bind(now)
+    .bind(reason)
+    .fetch_one(&mut **tx)
+    .await?;
+    Ok(outside_payment(&row))
+}
+
+pub async fn set_outside_payment_bill(
+    tx: &mut Tx,
+    id: Uuid,
+    bill_id: Uuid,
+) -> anyhow::Result<OutsidePayment> {
+    let row = sqlx::query(concat!(
+        "UPDATE po_outside_payments SET bill_id = $2 WHERE id = $1 RETURNING ",
+        outside_payment_cols!()
+    ))
+    .bind(id)
+    .bind(bill_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    Ok(outside_payment(&row))
+}
+
+/// Open bills of the PO's vendor that have a live (reserved or consumed)
+/// allocation on `po_id`, for outside-payment pairing.
+#[derive(Debug, Clone)]
+pub struct PoOpenBill {
+    pub bill_id: Uuid,
+    pub amount_cents: Cents,
+    pub invoice_number: String,
+}
+
+pub async fn open_bills_on_po(
+    tx: &mut Tx,
+    po_id: Uuid,
+    vendor_id: Uuid,
+) -> anyhow::Result<Vec<PoOpenBill>> {
+    let rows = sqlx::query(
+        "SELECT DISTINCT b.id AS bill_id, b.amount_cents, b.invoice_number \
+         FROM bills b \
+         JOIN po_allocations a ON a.bill_id = b.id \
+         WHERE a.po_id = $1 AND a.state <> 'released' \
+           AND b.vendor_id = $2 AND b.state = 'open' \
+           AND NOT EXISTS (SELECT 1 FROM po_outside_payments op WHERE op.bill_id = b.id) \
+         ORDER BY b.id",
+    )
+    .bind(po_id)
+    .bind(vendor_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| PoOpenBill {
+            bill_id: r.get("bill_id"),
+            amount_cents: r.get("amount_cents"),
+            invoice_number: r.get("invoice_number"),
+        })
+        .collect())
 }
