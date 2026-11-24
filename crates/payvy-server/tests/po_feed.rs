@@ -986,3 +986,163 @@ async fn two_upserts_racing_create_one_po_and_a_vendor_links_once() {
     assert!(matches!(e, CommandError::PersonOnly(_)), "{e}");
     db.drop().await;
 }
+
+async fn bill_at(db: &TestDb, v: &str, number: &str, cents: i64, extra: Value) -> Value {
+    let mut input = json!({ "vendor_id": v, "invoice_number": number,
+                            "invoice_date": "2027-01-15", "amount_cents": cents });
+    for (k, val) in extra.as_object().unwrap() {
+        input[k] = val.clone();
+    }
+    commit(&db.state, &agent("email"), "bill.create", input)
+        .await
+        .unwrap()["result"]
+        .clone()
+}
+
+async fn allocations(db: &TestDb, bill_id: &str) -> Vec<Value> {
+    let got = commit(
+        &db.state,
+        &person("robert"),
+        "bill.get",
+        json!({ "bill_id": bill_id }),
+    )
+    .await
+    .unwrap();
+    got["result"]["purchase_orders"]["allocations"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+}
+
+#[tokio::test]
+async fn a_bill_goes_against_the_one_po_it_plainly_belongs_to_whichever_arrives_first() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    po_on(&db).await;
+    let robert = person("robert");
+    let v = vendor(&db.state, &robert, "Local Bin").await;
+    let grant = authorize(&db, &v, 200_000).await;
+    let feed = quarry(grant.key_id);
+
+    // Bill first: an invoice for 8932 Beverlywood arrives before its PO.
+    let early = bill_at(
+        &db,
+        &v,
+        "BEV-1",
+        75_000,
+        json!({ "service_address": "8932 BEVERLYWOOD ST." }),
+    )
+    .await;
+    let early_id = early["bill"]["id"].as_str().unwrap().to_owned();
+    assert!(early.get("auto_matched").is_none(), "no PO yet: {early}");
+
+    // The PO arrives: active within the grant, and the waiting bill is
+    // reserved against it, recorded as Payvy's workflow agent.
+    let mut po = body(&v, "Q-BEV", "order-2495", 75_000);
+    po["service_address"] = json!("8932 Beverlywood Street, Los Angeles, CA, 90034");
+    po["vendor_reference"] = Value::Null;
+    let sent = commit(&db.state, &feed, "po.upsert", po.clone())
+        .await
+        .unwrap();
+    assert_eq!(sent["result"]["status"], "active");
+    let placed = sent["result"]["auto_matched"].as_array().unwrap();
+    assert_eq!(placed.len(), 1, "{sent}");
+    assert_eq!(placed[0]["bill_id"], json!(early_id));
+    assert_eq!(placed[0]["rule"], "service_address");
+    let a = allocations(&db, &early_id).await;
+    assert_eq!(a.len(), 1, "{a:?}");
+    assert_eq!(a[0]["state"], "reserved");
+    assert_eq!(a[0]["amount_cents"], 75_000);
+    let mut tx = db
+        .state
+        .store
+        .begin(payvy_store::DEFAULT_ORG)
+        .await
+        .unwrap();
+    let events = payvy_store::list_events(&mut tx, None, 200).await.unwrap();
+    tx.rollback().await.unwrap();
+    let ev = serde_json::to_value(&events).unwrap();
+    let applied: Vec<&Value> = ev
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["kind"] == "po.match_applied")
+        .collect();
+    assert_eq!(applied.len(), 1);
+    assert_eq!(applied[0]["actor"], "workflow");
+    assert_eq!(applied[0]["payload"]["automatic"], true);
+    assert_eq!(applied[0]["payload"]["triggered_by"], "quarry");
+
+    // Sending the same PO again places nothing more.
+    let again = commit(&db.state, &feed, "po.upsert", po).await.unwrap();
+    assert!(again["result"].get("auto_matched").is_none(), "{again}");
+
+    // PO first: a PO at 1500 Harwood, then its invoice.
+    let mut harwood = body(&v, "Q-HAR", "order-2600", 40_000);
+    harwood["service_address"] = json!("1500 Harwood St, Los Angeles");
+    harwood["vendor_reference"] = Value::Null;
+    commit(&db.state, &feed, "po.upsert", harwood)
+        .await
+        .unwrap();
+    let on_time = bill_at(
+        &db,
+        &v,
+        "HAR-1",
+        40_000,
+        json!({ "service_address": "1500 Harwood Street" }),
+    )
+    .await;
+    assert_eq!(on_time["auto_matched"]["po_number"], "Q-HAR", "{on_time}");
+
+    // More than the PO has left is a person's choice.
+    let over = bill_at(
+        &db,
+        &v,
+        "HAR-2",
+        1_000,
+        json!({ "service_address": "1500 Harwood Street" }),
+    )
+    .await;
+    assert!(over.get("auto_matched").is_none(), "{over}");
+
+    // A printed PO number decides, and one that names no PO matches
+    // nothing, even at a known address.
+    let mut numbered = body(&v, "Q-ELM", "order-2700", 30_000);
+    numbered["service_address"] = json!("9 Elm St");
+    numbered["vendor_reference"] = Value::Null;
+    commit(&db.state, &feed, "po.upsert", numbered)
+        .await
+        .unwrap();
+    let unknown = bill_at(
+        &db,
+        &v,
+        "ELM-1",
+        10_000,
+        json!({ "po_number": "Q-NOPE", "service_address": "9 Elm St" }),
+    )
+    .await;
+    assert!(unknown.get("auto_matched").is_none(), "{unknown}");
+    let named = bill_at(&db, &v, "ELM-2", 10_000, json!({ "po_number": "q elm" })).await;
+    assert_eq!(named["auto_matched"]["rule"], "po_number", "{named}");
+
+    // Two open POs at one address: nobody guesses.
+    let mut twin = body(&v, "Q-ELM-2", "order-2701", 30_000);
+    twin["service_address"] = json!("9 Elm Street");
+    twin["vendor_reference"] = Value::Null;
+    commit(&db.state, &feed, "po.upsert", twin).await.unwrap();
+    let twice = bill_at(
+        &db,
+        &v,
+        "ELM-3",
+        5_000,
+        json!({ "service_address": "9 Elm St" }),
+    )
+    .await;
+    assert!(twice.get("auto_matched").is_none(), "{twice}");
+
+    // A bill with nothing printed to go on is never matched.
+    let bare = bill_at(&db, &v, "BARE-1", 5_000, json!({})).await;
+    assert!(bare.get("auto_matched").is_none(), "{bare}");
+    db.drop().await;
+}

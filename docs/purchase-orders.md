@@ -78,6 +78,40 @@ about the bill changing, so an override permits the shortfall either way it is
 labelled today. Its fingerprint binds to the family name `uncovered`, which also
 keeps overrides written before `over_available` existed valid.
 
+## Automatic matching
+
+A bill is reserved against a PO without anyone choosing it only when the
+answer is plain (`payvy_domain::purchase_orders::auto_match`):
+
+- the invoice prints a PO number (`bills.po_reference`) that names exactly
+  one active PO of the bill's vendor, by its number or the vendor's
+  reference for it (case, spaces, `#` and dashes don't count); or
+- it prints no PO number, and its service address (`bills.service_address`)
+  is that of exactly one active PO of the vendor whose period holds the
+  invoice date. Addresses compare by house number and street name
+  ("8932 Beverlywood Street, Los Angeles" = "8932 BEVERLYWOOD ST."); an
+  address with no house number never matches;
+- and that PO's unbilled amount (authorized less reserved and consumed,
+  never the overage allowance) covers the whole bill, and the bill is open,
+  unreleased and has no allocation yet.
+
+A printed PO number that names no PO matches nothing, even at a known
+address. Two candidates, a partial cover or nothing printed is left for a
+person, exactly as before.
+
+It runs when a bill is created (`bill.create`, which takes `po_number` and
+`service_address`, or reads them from the extraction) and whenever a PO
+becomes active or is sent again (`po.activate`, `po.reactivate`,
+`po.upsert`), for the vendor's open bills with no PO yet, so an invoice
+that arrives before its PO is placed when the PO comes. Results carry
+`auto_matched`. Like `po.match_apply` it only reserves: approval, release
+and every exception are unchanged, and `po.allocation_reverse` undoes it.
+It is recorded as `po.match_applied` by Payvy's `workflow` agent, with
+`automatic`, the `rule` and the caller in `triggered_by`.
+
+Bills from before this change kept no PO number or address, so they are
+matched by a person as before.
+
 ## Quantity matching
 
 Bill lines carry the quantity, unit and unit price as printed (from extraction's

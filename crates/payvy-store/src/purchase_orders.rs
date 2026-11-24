@@ -166,6 +166,30 @@ pub async fn lock_pos(tx: &mut Tx, ids: &[Uuid]) -> anyhow::Result<Vec<PurchaseO
     Ok(out)
 }
 
+/// `lock_pos` without waiting: None when another transaction holds any of
+/// them. For work that can be skipped and done at the next chance, taken
+/// while already holding another PO, where waiting could deadlock.
+pub async fn try_lock_pos(tx: &mut Tx, ids: &[Uuid]) -> anyhow::Result<Option<Vec<PurchaseOrder>>> {
+    let mut sorted = ids.to_vec();
+    sorted.sort();
+    sorted.dedup();
+    let mut out = Vec::new();
+    for id in sorted {
+        let locked =
+            sqlx::query("SELECT id FROM purchase_orders WHERE id = $1 FOR UPDATE SKIP LOCKED")
+                .bind(id)
+                .fetch_optional(&mut **tx)
+                .await?;
+        if locked.is_none() {
+            return Ok(None);
+        }
+        if let Some(p) = get_po(tx, id).await? {
+            out.push(p);
+        }
+    }
+    Ok(Some(out))
+}
+
 pub struct NewPo<'a> {
     pub vendor_id: Uuid,
     pub po_number: &'a str,
@@ -1186,4 +1210,22 @@ pub async fn insert_vendor_link(
     .execute(&mut **tx)
     .await?;
     Ok(())
+}
+
+/// A vendor's bills that automatic matching may still place: open, not yet
+/// released, and with no live allocation. Oldest first, locked; a bill
+/// another transaction holds is skipped (it is being changed now, and
+/// waiting on it while holding a PO could deadlock with `po.match_apply`).
+pub async fn unmatched_open_bills(tx: &mut Tx, vendor_id: Uuid) -> anyhow::Result<Vec<Uuid>> {
+    let rows = sqlx::query(
+        "SELECT b.id FROM bills b
+         WHERE b.vendor_id = $1 AND b.state = 'open' AND b.released_at IS NULL
+           AND NOT EXISTS (SELECT 1 FROM po_allocations a WHERE a.bill_id = b.id AND a.state <> 'released')
+         ORDER BY b.created_at
+         FOR UPDATE OF b SKIP LOCKED",
+    )
+    .bind(vendor_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    Ok(rows.iter().map(|r| r.get("id")).collect())
 }

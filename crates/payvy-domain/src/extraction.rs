@@ -50,6 +50,10 @@ pub struct Read {
     /// ISO 4217, e.g. USD.
     pub currency: Option<String>,
     pub po_number: Option<String>,
+    /// Where the work was done or goods delivered, one line, if printed.
+    /// Older answers don't have it.
+    #[serde(default)]
+    pub service_address: Option<String>,
     pub subtotal: Option<String>,
     pub tax: Option<String>,
     /// What the document says is owed.
@@ -229,6 +233,10 @@ pub fn schema() -> Value {
         ("terms", "Payment terms as printed, e.g. Net 30"),
         ("currency", "ISO 4217 code, e.g. USD"),
         ("po_number", "Purchase order number, if printed"),
+        (
+            "service_address",
+            "Where the work was done or the goods delivered (job site, service or delivery address), one line, if printed; not the vendor's or the bill-to address",
+        ),
         ("subtotal", "Amount before tax, exactly as printed"),
         ("tax", "Total tax, exactly as printed"),
         (
@@ -349,6 +357,8 @@ pub struct Draft {
     pub due_date: Option<NaiveDate>,
     pub currency: Option<String>,
     pub po_number: Option<String>,
+    #[serde(default)]
+    pub service_address: Option<String>,
     pub subtotal_cents: Option<Cents>,
     pub tax_cents: Option<Cents>,
     pub total_cents: Option<Cents>,
@@ -455,6 +465,7 @@ pub fn interpret(read: &Read) -> (Draft, Vec<Check>) {
         due_date,
         currency: clean(&read.currency).map(|c| c.to_uppercase()),
         po_number: clean(&read.po_number),
+        service_address: clean(&read.service_address),
         subtotal_cents: subtotal,
         tax_cents: tax,
         total_cents: total,
@@ -824,6 +835,31 @@ mod tests {
         assert!(parse_money("about 40").is_err());
         assert!(parse_money("").is_err());
         assert!(parse_money("99999999999999999999").is_err());
+    }
+
+    #[test]
+    fn the_service_address_is_carried_and_old_answers_lack_it() {
+        let mut read = invoice();
+        read.service_address = s("  8932 Beverlywood St  ");
+        let (draft, _) = interpret(&read);
+        assert_eq!(
+            draft.service_address.as_deref(),
+            Some("8932 Beverlywood St")
+        );
+        let old: Read = serde_json::from_value(json!({
+            "kind": "invoice", "vendor_name": null, "vendor_email": null, "vendor_address": null,
+            "account_number": null, "invoice_number": null, "invoice_date": null, "due_date": null,
+            "terms": null, "currency": null, "po_number": null, "subtotal": null, "tax": null,
+            "total": null, "lines": [], "notes": null
+        }))
+        .unwrap();
+        assert_eq!(old.service_address, None);
+        assert!(
+            schema()["required"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("service_address"))
+        );
     }
 
     #[test]

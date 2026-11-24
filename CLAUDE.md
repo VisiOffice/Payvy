@@ -105,6 +105,13 @@ Conventions follow Visirent (`~/Code/visirent`).
   evaluates to `awaiting_release` with a reason, never `ready_to_pay`, at any
   workflow's automatic pay step — so the payment worker never picks it up and no
   retry loop exists. Someone other than the overrider releases it (`bill.release`).
+- **Automatic PO matching takes only a plain answer** (`purchase_orders::auto_match`,
+  `auto_match_bill`). A bill's printed PO number, else its service address in
+  period, must name exactly one active PO of its vendor whose unbilled amount
+  (never the allowance) covers the whole bill. It runs on `bill.create` and when
+  a PO becomes active or is resent, reserves only, and is recorded as agent
+  `workflow`. Never widen it to guess (fuzzy text, partial cover, nearest
+  address); anything less plain stays for a person. See `docs/purchase-orders.md`.
 - **Quantity matching is cumulative, exact, and policy-gated** (`payvy-domain/src/quantity.rs`).
   Bill lines carry quantity/unit/unit-price as printed (extraction details, invoice review,
   or `bill.create`); a bill line maps to a PO line by normalized description (+unit when

@@ -661,13 +661,18 @@ pub struct Bill {
     /// The vendor PO policy version in force when this bill was created;
     /// None reads the registry defaults (every bill before 0025).
     pub policy_version_id: Option<Uuid>,
+    /// The PO number the invoice printed, as read or entered.
+    pub po_reference: Option<String>,
+    /// Where the work was done, as the invoice printed it.
+    pub service_address: Option<String>,
 }
 
 macro_rules! bill_cols {
     () => {
         "b.id, b.vendor_id, v.name AS vendor_name, b.workflow_id, b.invoice_number, b.invoice_date,
     b.due_date, b.amount_cents, b.memo, b.external_ref, b.state, b.received_at, b.released_at, b.released_by,
-    b.release_by_person, b.paid_on, b.paid_method, b.paid_reference, b.closed_reason, b.created_by, b.arrangement_id, b.policy_version_id"
+    b.release_by_person, b.paid_on, b.paid_method, b.paid_reference, b.closed_reason, b.created_by, b.arrangement_id, b.policy_version_id,
+    b.po_reference, b.service_address"
     };
 }
 
@@ -696,6 +701,8 @@ fn bill(r: &PgRow) -> anyhow::Result<Bill> {
         created_by: r.get("created_by"),
         arrangement_id: r.get("arrangement_id"),
         policy_version_id: r.get("policy_version_id"),
+        po_reference: r.get("po_reference"),
+        service_address: r.get("service_address"),
     })
 }
 
@@ -714,6 +721,8 @@ pub struct NewBill<'a> {
     pub received_at: DateTime<Utc>,
     pub arrangement_id: Option<Uuid>,
     pub policy_version_id: Option<Uuid>,
+    pub po_reference: Option<&'a str>,
+    pub service_address: Option<&'a str>,
 }
 
 #[derive(Debug)]
@@ -757,8 +766,9 @@ pub async fn insert_bill(
     let id = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO bills (id, org_id, vendor_id, workflow_id, invoice_number, invoice_key, invoice_date, due_date,
-                            amount_cents, memo, external_ref, created_by, received_at, arrangement_id, policy_version_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
+                            amount_cents, memo, external_ref, created_by, received_at, arrangement_id, policy_version_id,
+                            po_reference, service_address)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)",
     )
     .bind(id)
     .bind(org_id)
@@ -775,6 +785,8 @@ pub async fn insert_bill(
     .bind(new.received_at)
     .bind(new.arrangement_id)
     .bind(new.policy_version_id)
+    .bind(new.po_reference)
+    .bind(new.service_address)
     .execute(&mut **tx)
     .await?;
     for (i, line) in new.lines.iter().enumerate() {

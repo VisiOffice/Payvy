@@ -170,9 +170,225 @@ impl Amounts {
     }
 }
 
+/// One active PO of the bill's vendor, as automatic matching sees it.
+#[derive(Debug, Clone)]
+pub struct AutoCandidate<'a> {
+    pub po_number: &'a str,
+    pub vendor_reference: Option<&'a str>,
+    pub service_address: Option<&'a str>,
+    /// Authorized less reserved and consumed: the overage allowance is
+    /// never used automatically.
+    pub unbilled_cents: Cents,
+    /// The bill's invoice date is inside the PO's service period (or the
+    /// PO has none).
+    pub in_period: bool,
+}
+
+/// Why a bill went against a PO without a person choosing it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutoRule {
+    /// The invoice prints this PO's number (or the vendor's reference for it).
+    PoNumber,
+    /// The invoice's service address is this PO's, and no other open PO's.
+    ServiceAddress,
+}
+
+impl AutoRule {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AutoRule::PoNumber => "po_number",
+            AutoRule::ServiceAddress => "service_address",
+        }
+    }
+}
+
+/// A PO number as compared: case, spaces, `#` and dashes don't count.
+fn reference_key(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+/// The street part of an address as compared: house number and street
+/// name, lowercased, with the street type and punctuation dropped, so
+/// "8932 Beverlywood Street, Los Angeles, CA" and "8932 BEVERLYWOOD ST."
+/// agree. None unless it starts with a house number: a street name alone
+/// is too loose to match on.
+pub fn street_key(address: &str) -> Option<String> {
+    const TYPES: [&str; 26] = [
+        "street",
+        "st",
+        "avenue",
+        "ave",
+        "av",
+        "road",
+        "rd",
+        "boulevard",
+        "blvd",
+        "drive",
+        "dr",
+        "lane",
+        "ln",
+        "way",
+        "court",
+        "ct",
+        "place",
+        "pl",
+        "parkway",
+        "pkwy",
+        "circle",
+        "cir",
+        "terrace",
+        "ter",
+        "highway",
+        "hwy",
+    ];
+    let first = address.split([',', '\n']).next()?;
+    let words: Vec<String> = first
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_lowercase)
+        .filter(|w| !TYPES.contains(&w.as_str()))
+        .collect();
+    let number = words.first()?;
+    if !number.chars().next()?.is_ascii_digit() || words.len() < 2 {
+        return None;
+    }
+    Some(words.join(" "))
+}
+
+/// The one PO a bill goes against without a person choosing, or None.
+/// Only when exactly one answer is plain: the PO number printed on the
+/// invoice names one candidate, or (with no PO number printed) exactly one
+/// candidate in period has the invoice's service address. That PO must
+/// cover the whole bill from its unbilled amount. A printed PO number that
+/// names no candidate matches nothing rather than falling back to the
+/// address. Anything else is left for a person.
+pub fn auto_match(
+    bill_cents: Cents,
+    po_reference: Option<&str>,
+    service_address: Option<&str>,
+    candidates: &[AutoCandidate<'_>],
+) -> Option<(usize, AutoRule)> {
+    let reference = po_reference.map(reference_key).filter(|r| !r.is_empty());
+    let (found, rule): (Vec<usize>, _) = if let Some(r) = reference {
+        let hits = candidates
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| {
+                reference_key(c.po_number) == r
+                    || c.vendor_reference.map(reference_key).as_deref() == Some(r.as_str())
+            })
+            .map(|(i, _)| i)
+            .collect();
+        (hits, AutoRule::PoNumber)
+    } else {
+        let key = street_key(service_address?)?;
+        let hits = candidates
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| {
+                c.in_period && c.service_address.and_then(street_key) == Some(key.clone())
+            })
+            .map(|(i, _)| i)
+            .collect();
+        (hits, AutoRule::ServiceAddress)
+    };
+    let [one] = found[..] else {
+        return None;
+    };
+    let c = &candidates[one];
+    (c.in_period && bill_cents > 0 && c.unbilled_cents >= bill_cents).then_some((one, rule))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cand<'a>(number: &'a str, address: Option<&'a str>, unbilled: Cents) -> AutoCandidate<'a> {
+        AutoCandidate {
+            po_number: number,
+            vendor_reference: None,
+            service_address: address,
+            unbilled_cents: unbilled,
+            in_period: true,
+        }
+    }
+
+    #[test]
+    fn street_keys() {
+        assert_eq!(
+            street_key("8932 Beverlywood Street, Los Angeles, CA, 90034").as_deref(),
+            Some("8932 beverlywood")
+        );
+        assert_eq!(
+            street_key("8932 BEVERLYWOOD ST.").as_deref(),
+            Some("8932 beverlywood")
+        );
+        assert_eq!(street_key("Beverlywood Street"), None, "no house number");
+        assert_eq!(street_key("8932"), None, "no street");
+        assert_ne!(
+            street_key("8932 Beverlywood St"),
+            street_key("8934 Beverlywood St")
+        );
+    }
+
+    #[test]
+    fn auto_match_takes_only_a_plain_single_answer() {
+        let bev = "8932 Beverlywood Street, Los Angeles, CA, 90034";
+        let pos = [
+            cand("Q-1", Some(bev), 75_000),
+            cand("Q-2", Some("1500 Harwood St, LA"), 75_000),
+        ];
+        // The address names one PO that covers the bill.
+        assert_eq!(
+            auto_match(75_000, None, Some("8932 Beverlywood St"), &pos),
+            Some((0, AutoRule::ServiceAddress))
+        );
+        // More than the PO has left: a person decides.
+        assert_eq!(
+            auto_match(75_001, None, Some("8932 Beverlywood St"), &pos),
+            None
+        );
+        // No address, or one no PO has: nothing.
+        assert_eq!(auto_match(75_000, None, None, &pos), None);
+        assert_eq!(auto_match(75_000, None, Some("1 Elm St"), &pos), None);
+        // The printed PO number wins, however it's punctuated.
+        assert_eq!(
+            auto_match(10_000, Some("q 2"), Some("8932 Beverlywood St"), &pos),
+            Some((1, AutoRule::PoNumber))
+        );
+        // A printed number that names no PO never falls back to the address.
+        assert_eq!(
+            auto_match(10_000, Some("Q-9"), Some("8932 Beverlywood St"), &pos),
+            None
+        );
+
+        // Two POs at the address: only the one whose period holds the
+        // invoice date counts; two in period is a choice for a person.
+        let mut periods = [
+            cand("P-OCT", Some(bev), 50_000),
+            cand("P-NOV", Some(bev), 50_000),
+        ];
+        periods[0].in_period = false;
+        assert_eq!(
+            auto_match(40_000, None, Some(bev), &periods),
+            Some((1, AutoRule::ServiceAddress))
+        );
+        periods[0].in_period = true;
+        assert_eq!(auto_match(40_000, None, Some(bev), &periods), None);
+
+        // The vendor's own reference for a PO matches too, but not out of period.
+        let mut referenced = [cand("Q-3", None, 20_000)];
+        referenced[0].vendor_reference = Some("LB-778");
+        assert_eq!(
+            auto_match(20_000, Some("LB 778"), None, &referenced),
+            Some((0, AutoRule::PoNumber))
+        );
+        referenced[0].in_period = false;
+        assert_eq!(auto_match(20_000, Some("LB-778"), None, &referenced), None);
+    }
 
     #[test]
     fn periods_and_shortfalls() {
