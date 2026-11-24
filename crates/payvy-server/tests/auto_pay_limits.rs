@@ -103,6 +103,7 @@ async fn db() -> Option<(TestDb, Fake)> {
         rho_production: base.clone(),
         rho_sandbox: base,
         webhook_base: None,
+        outbound_ips: Vec::new(),
     });
     commit(
         &db.state,

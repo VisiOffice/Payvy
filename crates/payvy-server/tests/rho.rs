@@ -134,6 +134,7 @@ async fn db() -> Option<TestDb> {
         rho_production: rho_base.clone(),
         rho_sandbox: rho_base,
         webhook_base: None,
+        outbound_ips: Vec::new(),
     });
     Some(db)
 }

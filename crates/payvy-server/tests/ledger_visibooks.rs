@@ -111,6 +111,7 @@ async fn setup(db: TestDb, origin: &str, post_when: &str) -> Fx {
             rho_production: "https://rho.invalid".into(),
             rho_sandbox: "http://127.0.0.1:9".into(),
             webhook_base: None,
+            outbound_ips: Vec::new(),
         })
         .with_auth(Auth::new(
             "https://app.payvy.example",

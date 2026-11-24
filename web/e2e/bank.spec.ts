@@ -19,6 +19,15 @@ test('a person connects Rho to read and Mercury to pay, then disconnects', async
   await expect(page.getByText('Cash (Checking)')).toBeVisible();
   await expect(page.getByText('$117,263.53')).toBeVisible();
 
+  // Sending at once needs Payvy's address on the token's allowlist, so the
+  // form shows it to copy; approving in Mercury needs none and shows none.
+  await expect(page.getByLabel("Payvy's IP address")).toHaveCount(0);
+  await page.getByRole('radio', { name: /Send at once/ }).check();
+  await expect(page.getByLabel("Payvy's IP address")).toHaveText('203.0.113.7');
+  await expect(page.getByText(/add this address to its IP allowlist/)).toBeVisible();
+  await page.getByRole('radio', { name: /Approve each one in Mercury/ }).check();
+  await expect(page.getByLabel("Payvy's IP address")).toHaveCount(0);
+
   // Mercury: the token reaches two accounts, so Payvy asks which pays bills.
   await page.getByLabel('Mercury API token').fill('merc-good');
   await page.getByRole('checkbox', { name: 'Sandbox account' }).first().check();

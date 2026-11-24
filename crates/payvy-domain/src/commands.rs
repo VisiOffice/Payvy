@@ -809,7 +809,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "bank.get",
-        summary: "The selected bank and all live connections, with capabilities (pay, read_only, setup). Ramp includes connection health, retry time and recovery actions; setup never enables payments.",
+        summary: "The selected bank and all live connections, with capabilities (pay, read_only, setup). Ramp includes connection health, retry time and recovery actions; setup never enables payments. outbound_ips are the addresses to allow on a Mercury token used in direct mode (empty when the server wasn't told its address).",
         tier: RiskTier::Read,
         person_only: false,
         permission: Permission::Read,

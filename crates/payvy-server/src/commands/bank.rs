@@ -382,9 +382,13 @@ pub async fn get(cx: &mut Cx<'_>) -> Result<Value, CommandError> {
             .cloned()
     });
 
-    Ok(
-        json!({ "connection": paying, "connections": connections, "ramp_available": cx.bank().ok().is_some_and(|b| b.ramp.is_some()) }),
-    )
+    let bank = cx.bank().ok();
+    Ok(json!({
+        "connection": paying,
+        "connections": connections,
+        "ramp_available": bank.is_some_and(|b| b.ramp.is_some()),
+        "outbound_ips": bank.map(|b| b.outbound_ips.clone()).unwrap_or_default(),
+    }))
 }
 
 #[derive(Deserialize, Default)]

@@ -19,6 +19,12 @@ and Airwallex fit the same shape (`payvy-pay`).
 
    Request mode gives a second sign-off in the bank itself; direct mode is for teams that want
    Payvy's approval workflow to be the only one.
+
+   For direct mode, set `PAYVY_OUTBOUND_IP` to the public address this server calls Mercury from
+   (several are separated by commas). Settings → Bank then shows it with a Copy button, on the
+   connect form and on a connected direct-mode bank, and `bank.get` returns it as `outbound_ips`.
+   The server doesn't work the address out itself: behind NAT or a proxy it can't see it. Unset,
+   the form says the address isn't known.
 3. A person connects it:
    ```
    bank.connect { "provider": "mercury", "token": "secret-token:…", "mode": "request" }

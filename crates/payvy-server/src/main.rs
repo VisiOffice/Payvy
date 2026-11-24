@@ -70,6 +70,11 @@ enum Command {
         /// {url}/webhooks/mercury/… so payment updates arrive at once.
         #[arg(long, env = "PAYVY_WEBHOOK_URL")]
         webhook_url: Option<String>,
+        /// The public address this server's requests to a bank come from,
+        /// or several separated by commas. Settings > Bank shows it so a
+        /// person can add it to a Mercury token's IP allowlist (direct mode).
+        #[arg(long, env = "PAYVY_OUTBOUND_IP")]
+        outbound_ip: Option<String>,
         #[command(flatten)]
         web: WebArgs,
     },
@@ -408,6 +413,7 @@ async fn main() -> anyhow::Result<()> {
             ref mercury_sandbox_url,
             ref rho_sandbox_url,
             ref webhook_url,
+            ref outbound_ip,
             ref web,
         } => {
             let api_key = api_key.clone();
@@ -527,6 +533,9 @@ async fn main() -> anyhow::Result<()> {
                         );
                         bank.webhook_base = Some(url.trim_end_matches('/').to_owned());
                         tracing::info!(%url, "Mercury webhooks");
+                    }
+                    if let Some(value) = outbound_ip {
+                        bank.outbound_ips = payvy_server::parse_outbound_ips(value)?;
                     }
                     state = state.with_bank(bank);
                     paying = true;
