@@ -91,8 +91,8 @@ The core's words describe the product only. What the operator wants a new compan
 as trial or plan terms, goes in `org.create`'s optional `welcome_note`:
 
 ```json
-{ "input": { "idempotency_key": "signup-8f2c", "name": "Quarry Rentals",
-             "admin_email": "robert@example.com", "admin_name": "Robert",
+{ "input": { "idempotency_key": "signup-8f2c", "name": "Acme Rentals",
+             "admin_email": "dana@example.com", "admin_name": "Dana",
              "send_sign_in_link": true,
              "welcome_note": "Your 14-day trial has started, no card needed." } }
 ```

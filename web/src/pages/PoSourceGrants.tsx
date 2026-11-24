@@ -137,7 +137,7 @@ export function PoSourceGrants() {
         {keys.length === 0
           ? <Text type="supporting">First make an agent key for the system in <Link to="/settings/agents">Settings › Agents</Link>.</Text>
           : <>
-            <TextInput label="Source name" value={source} onChange={setSource} placeholder="quarry"
+            <TextInput label="Source name" value={source} onChange={setSource} placeholder="acme-ops"
               description="The name the system sends as external_source on each PO. Each of its orders is one PO." />
             <Selector label="Agent key" placeholder="Choose a key" value={keyId} onChange={setKeyId}
               options={keys.map(k => ({ value: k.id, label: k.actor }))}

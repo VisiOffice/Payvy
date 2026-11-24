@@ -48,7 +48,7 @@ company's default.
 A bill posts only for a **linked** vendor (`vendor_unlinked` otherwise).
 `ledger.vendor_matches` suggests each vendor's ledger vendor: the same id
 in another system, matched by source and id together (VisiBooks writes
-Quarry's vendor 9 as `quarry_vendor_9` with source `quarry`; an id with no
+Acme Ops' vendor 9 as `acme_vendor_9` with source `acme`; an id with no
 source never matches), else a unique same name. A person links it
 (`ledger.link_vendor`, person-only Admin); the ledger vendor must be
 synced, not archived and not linked to another vendor. Once one of the
