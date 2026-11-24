@@ -817,6 +817,62 @@
       "tier": "routine"
     },
     {
+      "input_schema": "{\"type\":\"object\",\"properties\":{}}",
+      "name": "bank.cards",
+      "permission": "read",
+      "person_only": false,
+      "summary": "The company's cards at the connected Mercury account (last four, nickname, debit or credit, status) and which vendor each is on file with. Never a card number. Needs a token allowed to read cards.",
+      "tier": "read"
+    },
+    {
+      "input_schema": "{\"type\":\"object\",\"required\":[\"vendor_id\",\"card_id\"],\"properties\":{\"vendor_id\":{\"type\":\"string\",\"format\":\"uuid\"},\"card_id\":{\"type\":\"string\",\"description\":\"The card's id at the bank, from bank.cards\"},\"charges_from\":{\"type\":\"string\",\"format\":\"date\",\"description\":\"Match charges from this day on; default 30 days ago\"},\"reason\":{\"type\":\"string\"}}}",
+      "name": "vendor.link_card",
+      "permission": "pay",
+      "person_only": true,
+      "summary": "Record that this vendor keeps one of the company's cards on file and charges it (see bank.cards). From then on releasing its bills sends no payment: the vendor charges the card, and Payvy reads the card's charges and marks a bill paid when one plainly pays it. Replaces the vendor's previous card. One card per vendor.",
+      "tier": "routine"
+    },
+    {
+      "input_schema": "{\"type\":\"object\",\"required\":[\"vendor_id\",\"reason\"],\"properties\":{\"vendor_id\":{\"type\":\"string\",\"format\":\"uuid\"},\"reason\":{\"type\":\"string\"}}}",
+      "name": "vendor.unlink_card",
+      "permission": "pay",
+      "person_only": true,
+      "summary": "Stop treating a card as this vendor's card on file. Charges already seen stay; releasing its bills pays its payee again, if it has one.",
+      "tier": "routine"
+    },
+    {
+      "input_schema": "{\"type\":\"object\",\"properties\":{}}",
+      "name": "card.sync",
+      "permission": "pay",
+      "person_only": false,
+      "summary": "Read the charges on every card on file from the bank, record them, pair each with a bill when exactly one open bill of that vendor has the same amount near the charge date, and mark cleared bills paid. Payvy does this on its own every few minutes.",
+      "tier": "routine"
+    },
+    {
+      "input_schema": "{\"type\":\"object\",\"properties\":{\"vendor_id\":{\"type\":\"string\",\"format\":\"uuid\"},\"open\":{\"type\":\"boolean\"},\"limit\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":500}}}",
+      "name": "card.charges",
+      "permission": "read",
+      "person_only": false,
+      "summary": "Charges seen on cards on file, newest first, with the bill each pays. open: only those a person still has to look at (paying no bill, or paying one charged before it was released).",
+      "tier": "read"
+    },
+    {
+      "input_schema": "{\"type\":\"object\",\"required\":[\"charge_id\",\"bill_id\"],\"properties\":{\"charge_id\":{\"type\":\"string\",\"format\":\"uuid\"},\"bill_id\":{\"type\":\"string\",\"format\":\"uuid\"}}}",
+      "name": "card.match_charge",
+      "permission": "pay",
+      "person_only": true,
+      "summary": "Say which bill a card charge paid, when Payvy couldn't tell (two bills for the same amount, say). Same vendor and exact amount. The bill is marked paid once it is released and the charge has posted.",
+      "tier": "routine"
+    },
+    {
+      "input_schema": "{\"type\":\"object\",\"required\":[\"charge_id\",\"reason\"],\"properties\":{\"charge_id\":{\"type\":\"string\",\"format\":\"uuid\"},\"reason\":{\"type\":\"string\"}}}",
+      "name": "card.dismiss_charge",
+      "permission": "pay",
+      "person_only": true,
+      "summary": "Set aside a card charge that pays no bill (a fee, a mistake the vendor refunded), with the reason.",
+      "tier": "routine"
+    },
+    {
       "input_schema": "{\"type\":\"object\",\"required\":[\"filename\",\"content_base64\"],\"properties\":{\"filename\":{\"type\":\"string\"},\"content_base64\":{\"type\":\"string\",\"description\":\"The file, base64-encoded (standard alphabet)\"}}}",
       "name": "document.upload",
       "permission": "prepare",

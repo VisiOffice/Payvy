@@ -2,7 +2,8 @@
 // talk to something real over HTTP. The server reaches them only through
 // sandbox connections in debug builds (PAYVY_MERCURY_SANDBOX_URL,
 // PAYVY_RHO_SANDBOX_URL). A token of "bad" is refused, like an expired one.
-// /mercury/test/* lets a test look inside or move an invitation along.
+// /mercury/test/* lets a test look inside or move an invitation along, or
+// put a charge on a card.
 import http from 'node:http';
 
 /** A Mercury token that reaches two accounts, so Payvy must ask which pays. */
@@ -24,6 +25,12 @@ const RHO_TRANSACTIONS = [
     status: 'settled', amount: { amount: -7000, currency: 'USD' }, counterparty_name: 'Green Grounds Landscaping',
     initiated_at: '2026-10-14T08:00:48Z', posted_at: '2026-10-15T08:00:00Z',
   },
+];
+
+/** The company's cards. Only the last four ever reach Payvy. */
+const MERCURY_CARDS = [
+  { id: 'card-bins', lastFour: '4242', nickname: 'Bins', nameOnCard: 'Ops', kind: 'credit', status: 'active', type: 'virtual' },
+  { id: 'card-fuel', lastFour: '1111', nickname: 'Fuel', nameOnCard: 'Ops', kind: 'debit', status: 'active', type: 'physical' },
 ];
 
 /** The recipient an invitation turns into once the vendor completes it. */
@@ -51,6 +58,7 @@ export function startFakeBank(port: number): Promise<http.Server> {
   let rampTokenTtl = 3600;
   let rampTokenRequests = 0;
   let rampWrites = 0;
+  const cardTransactions: Record<string, unknown>[] = [];
 
   const server = http.createServer(async (req, res) => {
     const path = new URL(req.url ?? '/', 'http://bank').pathname;
@@ -90,6 +98,16 @@ export function startFakeBank(port: number): Promise<http.Server> {
 
     // Test controls: how many invitations were sent; complete them all.
     if (path === '/mercury/test/posts') return send(res, 200, { posts, recipientPosts });
+    if (path === '/mercury/test/charge') {
+      const charge = await json(req);
+      const at = String(charge.at ?? new Date().toISOString());
+      cardTransactions.push({
+        id: charge.id, cardId: charge.cardId, amount: charge.amount, status: charge.status ?? 'sent',
+        kind: 'creditCardTransaction', counterpartyName: 'CARD VENDOR', createdAt: at,
+        postedAt: charge.status === 'pending' ? null : at,
+      });
+      return send(res, 200, {});
+    }
     if (path === '/mercury/test/complete') {
       for (const invite of invites.values()) Object.assign(invite, { status: 'completed', recipientId: INVITED_RECIPIENT.id });
       return send(res, 200, {});
@@ -103,6 +121,11 @@ export function startFakeBank(port: number): Promise<http.Server> {
       const accounts =
         req.headers.authorization === `Bearer ${TWO_ACCOUNT_TOKEN}` ? MERCURY_ACCOUNTS : MERCURY_ACCOUNTS.slice(0, 1);
       return send(res, 200, { accounts });
+    }
+    if (path === '/mercury/cards') return send(res, 200, { cards: MERCURY_CARDS, page: {} });
+    if (path === '/mercury/transactions') {
+      const cards = new URL(req.url ?? '/', 'http://bank').searchParams.getAll('cardId');
+      return send(res, 200, { transactions: cardTransactions.filter((t) => cards.includes(String(t.cardId))), page: {} });
     }
     if (path === '/mercury/recipients' && req.method === 'POST') {
       const body = await json(req);

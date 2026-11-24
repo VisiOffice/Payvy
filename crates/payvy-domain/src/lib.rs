@@ -3,6 +3,7 @@
 
 pub mod ai_usage;
 pub mod bills;
+pub mod cards;
 pub mod commands;
 pub mod documents;
 pub mod duties;

@@ -112,6 +112,16 @@ Conventions follow Visirent (`~/Code/visirent`).
   a PO becomes active or is resent, reserves only, and is recorded as agent
   `workflow`. Never widen it to guess (fuzzy text, partial cover, nearest
   address); anything less plain stays for a person. See `docs/purchase-orders.md`.
+- **A card on file is charged by the vendor, never paid by Payvy** (`commands/cards.rs`,
+  `payvy_domain::cards`). A person links one of the company's cards to a vendor
+  (`vendor.link_card`; Payvy keeps the bank's card id and last four, never a number;
+  one card per vendor, one vendor per card). Releasing that vendor's bills sends no
+  transfer, even with a payee. `card.sync` (worker, agent `bank`) records the card's
+  charges and pairs a posted charge with a bill only when exactly one open bill of
+  that vendor has the same amount near the charge date and no other charge fits it;
+  the bill is marked paid (method `card`, the bank's transaction id) once released.
+  A reversed charge reopens its bill. Never widen the match; a person decides the
+  rest (`card.match_charge`, `card.dismiss_charge`). See `docs/cards.md`.
 - **Quantity matching is cumulative, exact, and policy-gated** (`payvy-domain/src/quantity.rs`).
   Bill lines carry quantity/unit/unit-price as printed (extraction details, invoice review,
   or `bill.create`); a bill line maps to a PO line by normalized description (+unit when

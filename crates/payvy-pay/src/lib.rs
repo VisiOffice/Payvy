@@ -671,6 +671,85 @@ impl Mercury {
         }
     }
 
+    /// Every card in the organization, following Mercury's pages. Needs a
+    /// token allowed to read cards.
+    pub async fn cards(&self) -> Result<Vec<Card>, BankError> {
+        let mut out = Vec::new();
+        let mut after: Option<String> = None;
+        for _ in 0..50 {
+            let path = match &after {
+                Some(a) => format!("/cards?limit=500&start_after={a}"),
+                None => "/cards?limit=500".to_owned(),
+            };
+            let body = self.get(&path).await?;
+            let page: Vec<Card> = body["cards"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Card::from_mercury)
+                .collect();
+            let last = page.last().map(|c| c.id.clone());
+            let next = body["page"]["nextPage"].as_str().map(str::to_owned);
+            out.extend(page);
+            match (next, last) {
+                (Some(_), Some(l)) if after.as_deref() != Some(l.as_str()) => after = Some(l),
+                _ => return Ok(out),
+            }
+        }
+        Ok(out)
+    }
+
+    /// Charges and refunds on these cards created on or after `since`
+    /// (YYYY-MM-DD),
+    /// across every account (a credit card's charges are on the credit
+    /// account, not checking).
+    pub async fn card_transactions(
+        &self,
+        card_ids: &[String],
+        since: &str,
+    ) -> Result<Vec<CardTransaction>, BankError> {
+        if card_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut out: Vec<CardTransaction> = Vec::new();
+        let mut after: Option<String> = None;
+        for _ in 0..50 {
+            let mut url = reqwest::Url::parse(&format!("{}/transactions", self.base))
+                .map_err(|_| BankError::Refused("invalid Mercury URL".into()))?;
+            {
+                let mut q = url.query_pairs_mut();
+                for id in card_ids {
+                    q.append_pair("cardId", id);
+                }
+                q.append_pair("start", since);
+                q.append_pair("limit", "1000");
+                q.append_pair("order", "asc");
+                if let Some(a) = &after {
+                    q.append_pair("start_after", a);
+                }
+            }
+            let (status, body) = self.call(self.http.get(url)).await?;
+            if !(200..300).contains(&status) {
+                return Err(Self::error(status, &body));
+            }
+            let page: Vec<&Value> = body["transactions"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .collect();
+            let last = page
+                .last()
+                .and_then(|t| t["id"].as_str())
+                .map(str::to_owned);
+            out.extend(page.into_iter().filter_map(CardTransaction::from_mercury));
+            match (body["page"]["nextPage"].as_str(), last) {
+                (Some(_), Some(l)) if after.as_deref() != Some(l.as_str()) => after = Some(l),
+                _ => return Ok(out),
+            }
+        }
+        Ok(out)
+    }
+
     /// Where a payment stands now. In request mode, once approved, the
     /// transaction is found by the request's id.
     pub async fn status(
@@ -713,6 +792,118 @@ impl Mercury {
                 None => request,
             },
         )
+    }
+}
+
+/// Exact signed cents from a dollar amount as JSON sends it (`-710.5`,
+/// `710`, `"710.50"`), without passing through a float. None for anything
+/// that isn't a whole number of cents.
+pub fn exact_cents(amount: &Value) -> Option<i64> {
+    let text = match amount {
+        Value::Number(n) => n.to_string(),
+        Value::String(s) => s.trim().to_owned(),
+        _ => return None,
+    };
+    let (negative, digits) = match text.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, text.as_str()),
+    };
+    let (whole, frac) = digits.split_once('.').unwrap_or((digits, ""));
+    let frac = frac.trim_end_matches('0');
+    if whole.is_empty()
+        || !whole.bytes().all(|b| b.is_ascii_digit())
+        || frac.len() > 2
+        || !frac.bytes().all(|b| b.is_ascii_digit())
+    {
+        return None;
+    }
+    let cents = whole
+        .parse::<i64>()
+        .ok()?
+        .checked_mul(100)?
+        .checked_add(format!("{frac:0<2}").parse::<i64>().ok()?)?;
+    Some(if negative { -cents } else { cents })
+}
+
+/// A card in the bank. Only the last four digits of its number leave this
+/// crate; Mercury's API doesn't return more.
+#[derive(Debug, Clone, Serialize)]
+pub struct Card {
+    pub id: String,
+    pub last_four: String,
+    pub nickname: Option<String>,
+    pub name_on_card: Option<String>,
+    /// debit or credit
+    pub kind: String,
+    /// active, frozen, cancelled, …
+    pub status: String,
+    /// virtual or physical
+    pub card_type: Option<String>,
+}
+
+impl Card {
+    fn from_mercury(c: &Value) -> Option<Self> {
+        let id = c["id"].as_str().filter(|s| !s.is_empty())?.to_owned();
+        let last_four: String = c["lastFour"]
+            .as_str()
+            .unwrap_or_default()
+            .chars()
+            .filter(char::is_ascii_digit)
+            .collect();
+        let last_four = last_four[last_four.len().saturating_sub(4)..].to_owned();
+        let kind = match c["kind"].as_str() {
+            Some("credit") => "credit",
+            _ => "debit",
+        };
+        let text = |k: &str| {
+            c[k].as_str()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+        };
+        Some(Card {
+            id,
+            last_four,
+            nickname: text("nickname"),
+            name_on_card: text("nameOnCard"),
+            kind: kind.into(),
+            status: text("status").unwrap_or_else(|| "unknown".into()),
+            card_type: text("type"),
+        })
+    }
+}
+
+/// One charge or refund on a card, as the bank reports it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CardTransaction {
+    pub id: String,
+    pub card_id: String,
+    /// Signed cents: negative is a charge (money out), positive a refund.
+    pub amount_cents: i64,
+    /// The bank's status word (Mercury: pending, sent, cancelled, …).
+    pub status: String,
+    pub counterparty: Option<String>,
+    pub created_at: String,
+    pub posted_at: Option<String>,
+    pub link: Option<String>,
+}
+
+impl CardTransaction {
+    fn from_mercury(t: &Value) -> Option<Self> {
+        let card_id = t["cardId"]
+            .as_str()
+            .or_else(|| t["details"]["debitCardInfo"]["id"].as_str())
+            .or_else(|| t["details"]["creditCardInfo"]["id"].as_str())?;
+        Some(CardTransaction {
+            id: t["id"].as_str().filter(|s| !s.is_empty())?.to_owned(),
+            card_id: card_id.to_owned(),
+            amount_cents: exact_cents(&t["amount"])?,
+            status: t["status"].as_str().unwrap_or_default().to_owned(),
+            counterparty: t["counterpartyName"].as_str().map(str::to_owned),
+            created_at: t["createdAt"].as_str()?.to_owned(),
+            posted_at: t["postedAt"].as_str().map(str::to_owned),
+            link: t["dashboardLink"].as_str().map(str::to_owned),
+        })
     }
 }
 
@@ -979,6 +1170,41 @@ mod tests {
         }));
         assert_eq!(credit.amount_cents, 100);
         assert_eq!(credit.posted_at, None);
+    }
+
+    #[test]
+    fn card_amounts_are_exact_cents() {
+        assert_eq!(exact_cents(&json!(-710.0)), Some(-71_000));
+        assert_eq!(exact_cents(&json!(-0.29)), Some(-29));
+        assert_eq!(exact_cents(&json!(1234.5)), Some(123_450));
+        assert_eq!(exact_cents(&json!(750)), Some(75_000));
+        assert_eq!(exact_cents(&json!("19.99")), Some(1_999));
+        assert_eq!(exact_cents(&json!(0.123)), None);
+        assert_eq!(exact_cents(&json!(1e21)), None);
+        assert_eq!(exact_cents(&json!(null)), None);
+    }
+
+    #[test]
+    fn cards_and_their_charges_keep_only_what_payvy_needs() {
+        let c = Card::from_mercury(&json!({
+            "id": "card-1", "lastFour": "4242", "nickname": "Local Bin", "nameOnCard": "Robert",
+            "kind": "credit", "status": "active", "type": "virtual", "accountId": "acc"
+        }))
+        .unwrap();
+        assert_eq!((c.last_four.as_str(), c.kind.as_str()), ("4242", "credit"));
+        let t = CardTransaction::from_mercury(&json!({
+            "id": "txn-1", "cardId": "card-1", "amount": -710.0, "status": "sent",
+            "counterpartyName": "LOCAL BIN RENTALS", "createdAt": "2026-11-01T17:02:00Z",
+            "postedAt": "2026-11-02T09:00:00Z", "kind": "creditCardTransaction"
+        }))
+        .unwrap();
+        assert_eq!(t.amount_cents, -71_000);
+        assert_eq!(t.posted_at.as_deref(), Some("2026-11-02T09:00:00Z"));
+        // No card on it: not a card transaction.
+        assert!(
+            CardTransaction::from_mercury(&json!({"id": "t", "amount": -1, "createdAt": "x"}))
+                .is_none()
+        );
     }
 
     #[test]

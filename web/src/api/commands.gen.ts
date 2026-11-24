@@ -1002,6 +1002,44 @@ export interface PaymentRefreshInput {
   payment_id: string;
 }
 
+export interface BankCardsInput {}
+
+export interface VendorLinkCardInput {
+  vendor_id: string;
+  /**
+   * The card's id at the bank, from bank.cards
+   */
+  card_id: string;
+  /**
+   * Match charges from this day on; default 30 days ago
+   */
+  charges_from?: string;
+  reason?: string;
+}
+
+export interface VendorUnlinkCardInput {
+  vendor_id: string;
+  reason: string;
+}
+
+export interface CardSyncInput {}
+
+export interface CardChargesInput {
+  vendor_id?: string;
+  open?: boolean;
+  limit?: number;
+}
+
+export interface CardMatchChargeInput {
+  charge_id: string;
+  bill_id: string;
+}
+
+export interface CardDismissChargeInput {
+  charge_id: string;
+  reason: string;
+}
+
 export interface DocumentUploadInput {
   filename: string;
   /**
@@ -1393,6 +1431,13 @@ export interface CommandInputs {
   "bank.recipients": BankRecipientsInput;
   "payment.list": PaymentListInput;
   "payment.refresh": PaymentRefreshInput;
+  "bank.cards": BankCardsInput;
+  "vendor.link_card": VendorLinkCardInput;
+  "vendor.unlink_card": VendorUnlinkCardInput;
+  "card.sync": CardSyncInput;
+  "card.charges": CardChargesInput;
+  "card.match_charge": CardMatchChargeInput;
+  "card.dismiss_charge": CardDismissChargeInput;
   "document.upload": DocumentUploadInput;
   "document.list": DocumentListInput;
   "document.get": DocumentGetInput;
@@ -1528,6 +1573,13 @@ export const COMMANDS: Record<CommandName, { tier: Tier; personOnly: boolean; su
   "bank.recipients": { tier: "read", personOnly: false, summary: "Discover existing bank payees. Ramp lists vendors first; pass recipient_id to list specific ACH instruments, masked destinations and fingerprints for vendor.propose_payee. Never guess an instrument or enter bank numbers here." },
   "payment.list": { tier: "read", personOnly: false, summary: "Payments sent through the bank, newest first, or only those still waiting on the bank." },
   "payment.refresh": { tier: "routine", personOnly: false, summary: "Ask the bank where a payment stands now and record it: sent marks the bill paid; failed, cancelled or rejected sends the bill back for release; returned reopens a paid bill. Payvy does this on its own every minute or two." },
+  "bank.cards": { tier: "read", personOnly: false, summary: "The company's cards at the connected Mercury account (last four, nickname, debit or credit, status) and which vendor each is on file with. Never a card number. Needs a token allowed to read cards." },
+  "vendor.link_card": { tier: "routine", personOnly: true, summary: "Record that this vendor keeps one of the company's cards on file and charges it (see bank.cards). From then on releasing its bills sends no payment: the vendor charges the card, and Payvy reads the card's charges and marks a bill paid when one plainly pays it. Replaces the vendor's previous card. One card per vendor." },
+  "vendor.unlink_card": { tier: "routine", personOnly: true, summary: "Stop treating a card as this vendor's card on file. Charges already seen stay; releasing its bills pays its payee again, if it has one." },
+  "card.sync": { tier: "routine", personOnly: false, summary: "Read the charges on every card on file from the bank, record them, pair each with a bill when exactly one open bill of that vendor has the same amount near the charge date, and mark cleared bills paid. Payvy does this on its own every few minutes." },
+  "card.charges": { tier: "read", personOnly: false, summary: "Charges seen on cards on file, newest first, with the bill each pays. open: only those a person still has to look at (paying no bill, or paying one charged before it was released)." },
+  "card.match_charge": { tier: "routine", personOnly: true, summary: "Say which bill a card charge paid, when Payvy couldn't tell (two bills for the same amount, say). Same vendor and exact amount. The bill is marked paid once it is released and the charge has posted." },
+  "card.dismiss_charge": { tier: "routine", personOnly: true, summary: "Set aside a card charge that pays no bill (a fee, a mistake the vendor refunded), with the reason." },
   "document.upload": { tier: "routine", personOnly: false, summary: "Add a file to the inbox: a PDF or image (PNG, JPEG, GIF, WebP, TIFF) of a bill, up to 25 MB, as base64. Its type is read from the file itself. Refused if the same file is already here, naming the existing document." },
   "document.list": { tier: "read", personOnly: false, summary: "Documents in the inbox (default), oldest first; or filed or trashed ones, or split ones (every page moved to other documents). A document split from another has split_from: its id and filename. Each says what its latest reading found (reading: vendor and how it matched, invoice_count, invoice_numbers, total_cents, dates, failed_checks, ready; null until read) and its cover: the first page shown, for a thumbnail." },
   "document.get": { tier: "read", personOnly: false, summary: "A document's details, every time a model read it (newest first, with checks, the suggested bill_input, and out_of_date when its pages were rearranged since), its pages (page count of the original file, the current arrangement and version, every earlier version, and whether they are locked and why), split_from (the document it was split from) and split_into (documents split from it, with their pages), its history, and a download link to the original file valid for 15 minutes. A reading of a file with several invoices has invoices: the pages, invoice number and total of each." },
