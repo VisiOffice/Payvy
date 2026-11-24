@@ -30,6 +30,7 @@ and Airwallex fit the same shape (`payvy-pay`).
    | Read transactions | `GET /account/{id}/transactions`, `/transaction/{id}`, `/transactions` | Always: whether a payment went, and marking the bill paid |
    | Request payments | `POST /account/{id}/request-send-money`, `GET /request-send-money/{id}` | Request mode (RequestSendMoney) |
    | Read recipients | `GET /recipients`, `/recipient/{id}` | Linking vendors to Mercury payees |
+   | Read cards | `GET /cards` | Cards on file: linking a card a vendor keeps and charges ([cards.md](cards.md)) |
    | Webhooks | `POST /webhooks` | Optional: without it the payment worker checks every five minutes |
    | Create recipients | `POST /recipients` | Optional: `vendor.create_recipient` (needs an allowlist) |
    | Invite recipients | `POST /recipients/invites` | Optional: `vendor.invite_payee` (needs an allowlist) |
@@ -309,6 +310,12 @@ Rho tokens expire after 45 days unused (a year at most). When one lapses,
 reads fail with a clear "Rho refused this token" and a person reconnects.
 Stored transaction sync and matching bank transactions to bills are not
 built yet — reads are live from Rho each time.
+
+## Vendors that charge a card on file
+
+A vendor that keeps one of the company's cards charges it itself, so
+releasing its bills sends no payment; Payvy reads the card's charges and marks
+a bill paid when one plainly pays it. See [cards.md](cards.md).
 
 ## Not yet
 

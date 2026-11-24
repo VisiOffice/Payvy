@@ -8,6 +8,7 @@ mod bank;
 mod bill_batches;
 mod billing;
 mod bills;
+mod cards;
 mod documents;
 mod email;
 mod events;
@@ -364,6 +365,13 @@ async fn execute(cx: &mut Cx<'_>, name: &str, input: &Value) -> Result<Value, Co
         "bank.transactions" => bank::transactions(cx, parse(input)?).await,
         "payment.refresh" => payments::refresh(cx, parse(input)?).await,
         "payment.list" => payments::list(cx, parse(input)?).await,
+        "bank.cards" => cards::list_cards(cx, parse(input)?).await,
+        "vendor.link_card" => cards::link(cx, parse(input)?).await,
+        "vendor.unlink_card" => cards::unlink(cx, parse(input)?).await,
+        "card.sync" => cards::sync(cx, parse(input)?).await,
+        "card.charges" => cards::list_charges(cx, parse(input)?).await,
+        "card.match_charge" => cards::match_charge(cx, parse(input)?).await,
+        "card.dismiss_charge" => cards::dismiss(cx, parse(input)?).await,
         "workflow.get" => workflows::get(cx, parse(input)?).await,
         "workflow.propose" => workflows::propose(cx, parse(input)?).await,
         "workflow.accept" => workflows::decide(cx, parse(input)?, true).await,

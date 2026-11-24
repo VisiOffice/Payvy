@@ -3308,6 +3308,7 @@ pub async fn lock_invite_vendor(tx: &mut Tx, vendor_id: Uuid) -> anyhow::Result<
 }
 
 pub mod bill_arrivals;
+pub mod cards;
 pub mod purchase_orders;
 pub mod ramp;
 

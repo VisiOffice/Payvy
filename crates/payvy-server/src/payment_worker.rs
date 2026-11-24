@@ -5,7 +5,9 @@
 //! `vendor.refresh_payee_invite`, so a completed one turns into a proposed
 //! payee without anyone pressing "Check invitation". A person still accepts it.
 //! And it pays bills whose workflow pays automatically (`bill.auto_pay`, as
-//! the agent `workflow`) once they reach that step.
+//! the agent `workflow`) once they reach that step. Every few minutes it
+//! reads the charges on cards vendors keep on file (`card.sync`), which marks
+//! bills paid when a charge plainly pays them.
 
 use std::time::Duration;
 
@@ -20,9 +22,18 @@ const EVERY: Duration = Duration::from_secs(60);
 const PER_TICK: i64 = 50;
 /// Vendors take days to answer an invitation; minutes is plenty.
 const INVITES_EVERY: chrono::Duration = chrono::Duration::minutes(5);
+/// Card charges post within a day; a few minutes is prompt enough.
+const CARDS_EVERY: Duration = Duration::from_secs(300);
 
 pub async fn run(state: AppState) {
+    let mut cards_at: Option<std::time::Instant> = None;
     loop {
+        if cards_at.is_none_or(|t| t.elapsed() >= CARDS_EVERY) {
+            cards_at = Some(std::time::Instant::now());
+            if let Err(e) = sync_cards(&state).await {
+                tracing::warn!("card checker: {e:#}");
+            }
+        }
         if let Err(e) = tick(&state).await {
             tracing::warn!("payment checker: {e:#}");
         }
@@ -157,4 +168,38 @@ pub async fn auto_pay(state: &AppState) -> anyhow::Result<usize> {
         }
     }
     Ok(attempted)
+}
+
+/// Reads card charges for every company with a card on file. Returns how
+/// many bills it marked paid.
+pub async fn sync_cards(state: &AppState) -> anyhow::Result<usize> {
+    let mut paid = 0;
+    for org in state.store.org_ids().await? {
+        let mut tx = state.store.begin(org).await?;
+        let any = match store::live_paying_connection(&mut tx).await? {
+            Some(c) if c.provider == "mercury" => !store::cards::vendor_cards_at(&mut tx, c.id)
+                .await?
+                .is_empty(),
+            _ => false,
+        };
+        tx.rollback().await?;
+        if !any {
+            continue;
+        }
+        match commands::run(
+            state,
+            &Actor::agent(org, ACTOR),
+            "card.sync",
+            json!({}),
+            Mode::Commit {
+                confirm_token: None,
+            },
+        )
+        .await
+        {
+            Ok(out) => paid += out["result"]["paid"].as_u64().unwrap_or(0) as usize,
+            Err(e) => tracing::warn!(%org, "card checker: {e}"),
+        }
+    }
+    Ok(paid)
 }

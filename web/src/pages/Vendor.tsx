@@ -24,6 +24,7 @@ import { RampPayee } from './RampPayee';
 import { VendorDialog } from './VendorDialog';
 import { VendorAutoPayLimit } from './AutoPaySettings';
 import { VendorPoSettings } from './VendorPoSettings';
+import { VendorCardOnFile, type CardCharge, type CardOnFile } from './VendorCardOnFile';
 import { BillsTable, type Listed } from '../bills/BillsTable';
 import { METHOD } from '../inbox/types';
 import { date } from '../money';
@@ -37,6 +38,8 @@ interface VendorDetail {
   workflow: Current;
   auto_pay_limit: Parameters<typeof VendorAutoPayLimit>[0]['limit'];
   payee_invites: PayeeInvite[];
+  card: CardOnFile | null;
+  card_charges: CardCharge[];
   payees: {
     id: string;
     recipient_name: string;
@@ -184,6 +187,24 @@ export function VendorPage() {
                 </HStack>
               ))}
             </VStack>
+          </Card>
+        </VStack>
+
+        <VStack gap={3} width={420} maxWidth="100%">
+          <Heading level={2}>Card on file</Heading>
+          <Card>
+            <VendorCardOnFile
+              vendorId={vendor.id}
+              vendorName={vendor.name}
+              card={detail.card}
+              charges={detail.card_charges}
+              bills={bills}
+              onChanged={async () => {
+                await loadVendor();
+                const r = await run<{ bills: Listed[] }>('bill.list', { vendor_id: id, limit: 100 });
+                setBills(r.result.bills);
+              }}
+            />
           </Card>
         </VStack>
 

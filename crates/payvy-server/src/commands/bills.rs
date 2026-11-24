@@ -193,6 +193,10 @@ async fn detail(cx: &mut Cx<'_>, bill_id: Uuid) -> Result<Value, CommandError> {
         None => None,
     };
     let payments = store::bill_payments(&mut cx.tx, bill.id).await?;
+    let card_charge = store::cards::charge_for_bill(&mut cx.tx, bill.id).await?;
+    let card_on_file = super::cards::on_file(cx, bill.vendor_id)
+        .await?
+        .map(|k| super::cards::shown(&k));
     let arrivals = store::bill_arrivals::list_arrivals(&mut cx.tx, bill.id).await?;
     let pending_revision = arrivals
         .iter()
@@ -218,6 +222,8 @@ async fn detail(cx: &mut Cx<'_>, bill_id: Uuid) -> Result<Value, CommandError> {
         "received_count": received_count,
         "pending_revision": pending_revision,
         "payments": payments,
+        "card_charge": card_charge,
+        "card_on_file": card_on_file,
         "invoice_review": invoice_review,
         "invoice_review_pages_changed": invoice_review_pages_changed,
         "bill": bill,
@@ -1040,10 +1046,12 @@ pub async fn release(cx: &mut Cx<'_>, input: Release) -> Result<Value, CommandEr
     // With a paying bank connected, a release pays through it, to the payee a
     // person accepted for this vendor. With no paying bank — Rho connected
     // or none — a release records that it will be paid elsewhere, exactly
-    // as it did before Rho existed.
+    // as it did before Rho existed. A vendor with a card on file charges it
+    // itself: the release sends nothing, and the charge marks the bill paid.
     let connection = store::live_paying_connection(&mut cx.tx).await?;
-    let pay = match (&connection, input.pay_elsewhere) {
-        (Some(c), false) => {
+    let card = super::cards::on_file(cx, bill.vendor_id).await?;
+    let pay = match (&connection, input.pay_elsewhere, &card) {
+        (Some(c), false, None) => {
             // A new payment through the bank needs the plan; releasing to pay
             // elsewhere doesn't.
             cx.require(crate::entitlements::Need::Payments).await?;
@@ -1069,10 +1077,15 @@ pub async fn release(cx: &mut Cx<'_>, input: Release) -> Result<Value, CommandEr
     };
     store::release_bill(&mut cx.tx, bill.id, &cx.actor.name, cx.now).await?;
     let plan = pay.as_ref().map(|(c, p)| payments::plan(&bill, c, p));
+    let card_plan = card
+        .as_ref()
+        .filter(|_| !input.pay_elsewhere)
+        .map(|k| super::cards::plan(k, &bill.vendor_name));
     cx.emit(
         "bill.released",
         bill.id,
-        json!({ "bill_id": bill.id, "amount_cents": bill.amount_cents, "payment": plan }),
+        json!({ "bill_id": bill.id, "amount_cents": bill.amount_cents, "payment": plan,
+                "card": card_plan }),
     )
     .await?;
     if let Some((c, payee)) = &pay
@@ -1081,12 +1094,81 @@ pub async fn release(cx: &mut Cx<'_>, input: Release) -> Result<Value, CommandEr
         // The bank is asked only on commit; the preview shows the plan.
         payments::submit(cx, &bill, c, payee, payments::Authority::Person).await?;
     }
+    // Charged before it was released: paid now.
+    if card_plan.is_some() {
+        super::cards::settle_bill(cx, bill.id).await?;
+    }
     let mut out = detail(cx, bill.id).await?;
     out["payment_plan"] = json!(plan);
-    if pay.is_none() {
+    out["card_plan"] = json!(card_plan);
+    if card_plan.is_some() {
+        out["next"] = json!(
+            "the vendor charges the card on file; Payvy marks the bill paid when the charge posts"
+        );
+    } else if pay.is_none() {
         out["next"] = json!("pay it outside Payvy, then record it with bill.mark_paid");
     }
     Ok(out)
+}
+
+/// Marks a bill paid by the posted card charge that pays it, once the bill
+/// is cleared for payment (released, or at an automatic pay step). Returns
+/// whether it did. A bill not yet cleared waits: the vendor charged before
+/// anyone approved it, which a person sees on the charge.
+pub(super) async fn settle_by_card(
+    cx: &mut Cx<'_>,
+    charge: &store::cards::CardCharge,
+) -> Result<bool, CommandError> {
+    let Some(bill_id) = charge.bill_id else {
+        return Ok(false);
+    };
+    if charge.status != "posted" {
+        return Ok(false);
+    }
+    let bill = store::get_bill(&mut cx.tx, bill_id)
+        .await?
+        .ok_or(CommandError::NotFound("bill"))?;
+    // Matched while pending and posted for a different amount: a person looks.
+    if bill.state != State::Open || bill.amount_cents != charge.amount_cents {
+        return Ok(false);
+    }
+    let (bill, _, progress) = open_bill(cx, bill_id).await?;
+    if !matches!(
+        progress.status,
+        Status::Released { .. } | Status::ReadyToPay
+    ) {
+        return Ok(false);
+    }
+    let payments = store::bill_payments(&mut cx.tx, bill.id).await?;
+    if payments.iter().any(|p| payments::is_live(&p.status)) {
+        // A transfer is going or went too: a person sorts out which paid it.
+        return Ok(false);
+    }
+    let paid_on = charge
+        .posted_at
+        .unwrap_or(charge.charged_at)
+        .date_naive()
+        .max(bill.invoice_date);
+    store::mark_paid(
+        &mut cx.tx,
+        bill.id,
+        paid_on,
+        "card",
+        Some(&charge.transaction_id),
+    )
+    .await?;
+    cx.emit_as(
+        super::cards::MATCHER,
+        "bill.paid",
+        bill.id,
+        json!({ "bill_id": bill.id, "amount_cents": bill.amount_cents, "paid_on": paid_on,
+                "method": "card", "reference": charge.transaction_id, "via": "card",
+                "charge_id": charge.id, "card": format!("••{}", charge.last_four) }),
+    )
+    .await?;
+    super::ledger::on_outside_payment(cx, &bill, "card", paid_on, Some(&charge.transaction_id))
+        .await?;
+    Ok(true)
 }
 
 #[derive(Deserialize)]
@@ -1117,6 +1199,26 @@ pub async fn auto_pay(cx: &mut Cx<'_>, input: AutoPay) -> Result<Value, CommandE
             "this bill doesn't pay automatically now; it is {}{why}",
             status_name(&progress)
         )));
+    }
+    // A vendor with a card on file charges it itself: the pay step clears
+    // the bill for that charge and sends nothing.
+    if let Some(card) = super::cards::on_file(cx, bill.vendor_id).await? {
+        payments::within_auto_pay_limit(cx, &bill).await?;
+        ensure_no_pending_revision(cx, &bill).await?;
+        super::purchase_orders::ensure_payable(cx, &bill).await?;
+        store::release_bill(&mut cx.tx, bill.id, "workflow", cx.now).await?;
+        let plan = super::cards::plan(&card, &bill.vendor_name);
+        cx.emit(
+            "bill.auto_released",
+            bill.id,
+            json!({ "bill_id": bill.id, "amount_cents": bill.amount_cents,
+                    "workflow_id": bill.workflow_id, "payment": null, "card": plan }),
+        )
+        .await?;
+        super::cards::settle_bill(cx, bill.id).await?;
+        let mut out = detail(cx, bill.id).await?;
+        out["card_plan"] = plan;
+        return Ok(out);
     }
     cx.require(crate::entitlements::Need::Payments).await?;
     // Checked here as well as at sending, so a preview says it too.
