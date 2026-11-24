@@ -118,6 +118,7 @@ async fn view(cx: &mut Cx<'_>, po: &po_store::PurchaseOrder) -> Result<Value, Co
         None => Vec::new(),
     };
     let allocations = po_store::allocations_for(&mut cx.tx, po.id).await?;
+    let outside_payments = po_store::outside_payments_for_po(&mut cx.tx, po.id).await?;
     Ok(json!({
         "id": po.id, "vendor_id": po.vendor_id, "vendor_name": po.vendor_name,
         "po_number": po.po_number, "status": po.status, "currency": po.currency,
@@ -141,7 +142,7 @@ async fn view(cx: &mut Cx<'_>, po: &po_store::PurchaseOrder) -> Result<Value, Co
             "available_cents": amounts.available_cents_for(&po.status),
             "progress": amounts.progress(),
         },
-        "lines": lines, "allocations": allocations,
+        "lines": lines, "allocations": allocations, "outside_payments": outside_payments,
     }))
 }
 
@@ -788,17 +789,19 @@ pub async fn set_vendor_settings(
 
 // ── The enumerated policy registry ───────────────────────────────────────
 
-use payvy_domain::purchase_orders::{OverPeriod, Policies, QuantityMatching};
+use payvy_domain::purchase_orders::{OverPeriod, PaidOutside, Policies, QuantityMatching};
 
 fn policy_view(vendor_id: Uuid, v: Option<&po_store::PolicyVersion>) -> Value {
     match v {
         Some(v) => json!({ "vendor_id": vendor_id, "version": v.version,
             "over_period": v.over_period, "quantity_matching": v.quantity_matching,
+            "paid_outside": v.paid_outside,
             "reason": v.reason,
             "updated_by": v.created_by, "updated_at": v.created_at }),
         None => json!({ "vendor_id": vendor_id, "version": 0,
             "over_period": Policies::default().over_period.as_str(),
             "quantity_matching": Policies::default().quantity_matching.as_str(),
+            "paid_outside": Policies::default().paid_outside.as_str(),
             "reason": null, "updated_by": null, "updated_at": null }),
     }
 }
@@ -809,6 +812,7 @@ pub struct PolicyIn {
     vendor_id: Uuid,
     over_period: Option<String>,
     quantity_matching: Option<String>,
+    paid_outside: Option<String>,
     reason: Option<String>,
 }
 
@@ -842,7 +846,16 @@ pub async fn policy_set(cx: &mut Cx<'_>, input: PolicyIn) -> Result<Value, Comma
         })?,
         None => cur_policies.quantity_matching,
     };
-    if next_over == cur_policies.over_period && next_qty == cur_policies.quantity_matching {
+    let next_paid_outside = match input.paid_outside.as_deref() {
+        Some(s) => PaidOutside::parse(s).ok_or_else(|| {
+            CommandError::Invalid("paid_outside is person_confirms or accept_from_source".into())
+        })?,
+        None => cur_policies.paid_outside,
+    };
+    if next_over == cur_policies.over_period
+        && next_qty == cur_policies.quantity_matching
+        && next_paid_outside == cur_policies.paid_outside
+    {
         return Err(CommandError::Conflict(
             "these policies are already in force for this vendor".into(),
         ));
@@ -854,6 +867,7 @@ pub async fn policy_set(cx: &mut Cx<'_>, input: PolicyIn) -> Result<Value, Comma
         input.vendor_id,
         next_over.as_str(),
         next_qty.as_str(),
+        next_paid_outside.as_str(),
         reason.as_deref(),
         &cx.actor.name,
         cx.now,
@@ -864,9 +878,11 @@ pub async fn policy_set(cx: &mut Cx<'_>, input: PolicyIn) -> Result<Value, Comma
         input.vendor_id,
         json!({ "vendor_id": input.vendor_id, "version": v.version,
                 "from": { "over_period": cur_policies.over_period.as_str(),
-                          "quantity_matching": cur_policies.quantity_matching.as_str() },
+                          "quantity_matching": cur_policies.quantity_matching.as_str(),
+                          "paid_outside": cur_policies.paid_outside.as_str() },
                 "to": { "over_period": next_over.as_str(),
-                        "quantity_matching": next_qty.as_str() }, "reason": reason }),
+                        "quantity_matching": next_qty.as_str(),
+                        "paid_outside": next_paid_outside.as_str() }, "reason": reason }),
     )
     .await?;
     Ok(policy_view(input.vendor_id, Some(&v)))
@@ -878,6 +894,8 @@ fn policies_of(v: Option<&po_store::PolicyVersion>) -> Policies {
             over_period: OverPeriod::parse(&v.over_period).unwrap_or(OverPeriod::FlagOnly),
             quantity_matching: QuantityMatching::parse(&v.quantity_matching)
                 .unwrap_or(QuantityMatching::FlagOnly),
+            paid_outside: PaidOutside::parse(&v.paid_outside)
+                .unwrap_or(PaidOutside::PersonConfirms),
         },
         None => Policies::default(),
     }
@@ -2642,4 +2660,633 @@ pub async fn source_revoke(cx: &mut Cx<'_>, input: SourceRevoke) -> Result<Value
         "authorized_by": auth.authorized_by,
         "outcome": if changed { "revoked" } else { "unchanged" },
     }))
+}
+
+// ── Paid outside Payvy declarations ─────────────────────────────────────────
+
+const OUTSIDE_METHODS: &[&str] = &["card", "check", "ach", "wire", "cash", "other"];
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeclarePaid {
+    po_id: Option<Uuid>,
+    external_source: Option<String>,
+    external_id: Option<String>,
+    amount_cents: Cents,
+    method: String,
+    paid_on: NaiveDate,
+    note: String,
+    reference: Option<String>,
+    invoice_number: Option<String>,
+}
+
+pub async fn declare_paid(cx: &mut Cx<'_>, input: DeclarePaid) -> Result<Value, CommandError> {
+    ensure_enabled(cx).await?;
+    if input.amount_cents <= 0 {
+        return Err(CommandError::Invalid(
+            "amount_cents must be greater than zero".into(),
+        ));
+    }
+    if !OUTSIDE_METHODS.contains(&input.method.as_str()) {
+        return Err(CommandError::Invalid(
+            "method is card, check, ach, wire, cash or other".into(),
+        ));
+    }
+    let note =
+        text(Some(input.note)).ok_or_else(|| CommandError::Invalid("a note is required".into()))?;
+    let reference = text(input.reference);
+    if let Some(ref r) = reference
+        && r.chars().count() > 64
+    {
+        return Err(CommandError::Invalid(
+            "reference must be at most 64 characters".into(),
+        ));
+    }
+    let invoice_number = text(input.invoice_number);
+    if input.paid_on > cx.now.date_naive() {
+        return Err(CommandError::Invalid(
+            "paid_on cannot be in the future".into(),
+        ));
+    }
+    if input.po_id.is_some() && cx.actor.kind != store::ActorKind::Person {
+        return Err(CommandError::PersonOnly("po.declare_paid"));
+    }
+    po_store::lock_outside_payments(&mut cx.tx, cx.org).await?;
+    let by_external = input.po_id.is_none();
+    let mut po = match (
+        input.po_id,
+        text(input.external_source),
+        text(input.external_id),
+    ) {
+        (Some(id), None, None) => must_po(cx, id).await?,
+        (None, Some(source), Some(ext)) => po_store::po_by_external(&mut cx.tx, &source, &ext)
+            .await?
+            .ok_or(CommandError::NotFound("purchase order"))?,
+        _ => {
+            return Err(CommandError::Invalid(
+                "give po_id, or external_source and external_id".into(),
+            ));
+        }
+    };
+    let locked = po_store::lock_pos(&mut cx.tx, &[po.id]).await?;
+    po = locked
+        .into_iter()
+        .next()
+        .ok_or(CommandError::NotFound("purchase order"))?;
+    let declared_by_source = if by_external {
+        let source = po.external_source.as_deref().unwrap_or("");
+        let allowed = match cx.actor.key_id {
+            Some(key_id) if cx.actor.kind == store::ActorKind::Agent => {
+                po_store::key_can_end(&mut cx.tx, key_id, source, po.vendor_id).await?
+            }
+            _ => false,
+        };
+        if !allowed {
+            return Err(CommandError::Conflict(
+                "po_source: only the authorized key can declare outside payments for this source"
+                    .into(),
+            ));
+        }
+        true
+    } else {
+        false
+    };
+    if po.status != "active" && po.status != "suspended" {
+        return Err(CommandError::Conflict(format!(
+            "PO {} is {}; outside payments can only be declared on active or suspended POs",
+            po.po_number, po.status
+        )));
+    }
+    let authorized_cents = po.revision.as_ref().map_or(0, |r| r.authorized_cents);
+    if input.amount_cents > authorized_cents {
+        return Err(CommandError::Conflict(format!(
+            "declared amount {} exceeds PO {}'s authorized amount {}",
+            payvy_domain::workflow::dollars(input.amount_cents),
+            po.po_number,
+            payvy_domain::workflow::dollars(authorized_cents)
+        )));
+    }
+    if po_store::has_duplicate_outside_payment(
+        &mut cx.tx,
+        po.id,
+        input.amount_cents,
+        &input.method,
+        input.paid_on,
+        reference.as_deref(),
+    )
+    .await?
+    {
+        return Err(CommandError::Conflict(
+            "an identical outside-payment declaration already exists on this PO".into(),
+        ));
+    }
+    let decl = po_store::insert_outside_payment(
+        &mut cx.tx,
+        cx.org,
+        &po_store::NewOutsidePayment {
+            po_id: po.id,
+            vendor_id: po.vendor_id,
+            amount_cents: input.amount_cents,
+            method: &input.method,
+            paid_on: input.paid_on,
+            reference: reference.as_deref(),
+            note: &note,
+            invoice_number: invoice_number.as_deref(),
+            declared_by: &cx.actor.name,
+            declared_by_source,
+            declared_at: cx.now,
+        },
+    )
+    .await?;
+    cx.emit(
+        "po.paid_outside_declared",
+        po.id,
+        json!({
+            "declaration_id": decl.id,
+            "po_id": po.id,
+            "po_number": po.po_number,
+            "vendor_id": po.vendor_id,
+            "amount_cents": decl.amount_cents,
+            "method": decl.method,
+            "paid_on": decl.paid_on,
+            "reference": decl.reference,
+            "note": decl.note,
+            "invoice_number": decl.invoice_number,
+            "declared_by_source": decl.declared_by_source,
+        }),
+    )
+    .await?;
+    // If the declaration is immediately effective (e.g. accept_from_source)
+    // and its paired bill is already Released, settle it now.
+    settle_po_declarations(cx, po.id, po.vendor_id).await?;
+    let decl = po_store::lock_outside_payment(&mut cx.tx, decl.id)
+        .await?
+        .unwrap_or(decl);
+    Ok(json!({
+        "declaration": decl,
+        "purchase_order": view(cx, &po).await?,
+    }))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfirmPaid {
+    declaration_id: Uuid,
+}
+
+pub async fn confirm_paid(cx: &mut Cx<'_>, input: ConfirmPaid) -> Result<Value, CommandError> {
+    ensure_enabled(cx).await?;
+    po_store::lock_outside_payments(&mut cx.tx, cx.org).await?;
+    let decl = po_store::lock_outside_payment(&mut cx.tx, input.declaration_id)
+        .await?
+        .ok_or(CommandError::NotFound("outside payment declaration"))?;
+    if decl.status == "confirmed" {
+        return Err(CommandError::Conflict(
+            "this declaration is already confirmed".into(),
+        ));
+    }
+    if decl.status == "withdrawn" {
+        return Err(CommandError::Conflict(
+            "this declaration was withdrawn".into(),
+        ));
+    }
+    if decl.declared_by == cx.actor.name {
+        return Err(CommandError::Forbidden(
+            "someone other than the person who declared this payment must confirm it".into(),
+        ));
+    }
+    let decl =
+        po_store::confirm_outside_payment(&mut cx.tx, decl.id, &cx.actor.name, cx.now).await?;
+    let po = must_po(cx, decl.po_id).await?;
+    cx.emit(
+        "po.paid_outside_confirmed",
+        po.id,
+        json!({
+            "declaration_id": decl.id,
+            "po_id": po.id,
+            "po_number": po.po_number,
+            "amount_cents": decl.amount_cents,
+            "confirmed_by": cx.actor.name,
+        }),
+    )
+    .await?;
+    // If the paired bill is already Released, mark it paid now.
+    settle_po_declarations(cx, po.id, po.vendor_id).await?;
+    let decl = po_store::lock_outside_payment(&mut cx.tx, decl.id)
+        .await?
+        .unwrap_or(decl);
+    Ok(json!({
+        "declaration": decl,
+        "purchase_order": view(cx, &po).await?,
+    }))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WithdrawPaid {
+    declaration_id: Uuid,
+    reason: String,
+}
+
+pub async fn withdraw_paid(cx: &mut Cx<'_>, input: WithdrawPaid) -> Result<Value, CommandError> {
+    ensure_enabled(cx).await?;
+    let reason = text(Some(input.reason))
+        .ok_or_else(|| CommandError::Invalid("a reason is required".into()))?;
+    po_store::lock_outside_payments(&mut cx.tx, cx.org).await?;
+    let decl = po_store::lock_outside_payment(&mut cx.tx, input.declaration_id)
+        .await?
+        .ok_or(CommandError::NotFound("outside payment declaration"))?;
+    if decl.status == "withdrawn" {
+        return Err(CommandError::Conflict(
+            "this declaration is already withdrawn".into(),
+        ));
+    }
+    if decl.bill_id.is_some() {
+        return Err(CommandError::Conflict(
+            "cannot withdraw a declaration that has already marked a bill paid".into(),
+        ));
+    }
+    let decl =
+        po_store::withdraw_outside_payment(&mut cx.tx, decl.id, &cx.actor.name, &reason, cx.now)
+            .await?;
+    let po = must_po(cx, decl.po_id).await?;
+    cx.emit(
+        "po.paid_outside_withdrawn",
+        po.id,
+        json!({
+            "declaration_id": decl.id,
+            "po_id": po.id,
+            "po_number": po.po_number,
+            "reason": reason,
+        }),
+    )
+    .await?;
+    Ok(json!({
+        "declaration": decl,
+        "purchase_order": view(cx, &po).await?,
+    }))
+}
+
+pub(super) async fn is_outside_payment_effective(
+    cx: &mut Cx<'_>,
+    bill: &store::Bill,
+    decl: &po_store::OutsidePayment,
+) -> Result<bool, CommandError> {
+    let (policies, _) = policies_for_bill(cx, bill).await?;
+    Ok(payvy_domain::purchase_orders::outside_payment_effective(
+        &decl.status,
+        decl.declared_by_source,
+        policies.paid_outside,
+    ))
+}
+
+/// Settles any already-released open bills on `po_id` that have a plain 1-to-1
+/// pairing with an effective live declaration.
+async fn settle_po_declarations(
+    cx: &mut Cx<'_>,
+    po_id: Uuid,
+    vendor_id: Uuid,
+) -> Result<usize, CommandError> {
+    let decls = po_store::live_outside_payments_for_po(&mut cx.tx, po_id).await?;
+    if decls.is_empty() {
+        return Ok(0);
+    }
+    let bills = po_store::open_bills_on_po(&mut cx.tx, po_id, vendor_id).await?;
+    if bills.is_empty() {
+        return Ok(0);
+    }
+    let domain_decls: Vec<payvy_domain::purchase_orders::OutsideDeclaration> = decls
+        .iter()
+        .map(|d| payvy_domain::purchase_orders::OutsideDeclaration {
+            amount_cents: d.amount_cents,
+            invoice_number: d.invoice_number.clone(),
+        })
+        .collect();
+    let domain_bills: Vec<payvy_domain::purchase_orders::PoBillCandidate> = bills
+        .iter()
+        .map(|b| payvy_domain::purchase_orders::PoBillCandidate {
+            amount_cents: b.amount_cents,
+            invoice_number: b.invoice_number.clone(),
+        })
+        .collect();
+    let pairs = payvy_domain::purchase_orders::plain_outside_matches(&domain_decls, &domain_bills);
+    let mut settled = 0;
+    for (di, bi) in pairs {
+        if super::bills::settle_by_declaration(cx, bills[bi].bill_id, &decls[di]).await? {
+            settled += 1;
+        }
+    }
+    Ok(settled)
+}
+
+/// How live outside-payment declarations relate to one bill.
+pub(super) enum BillOutsidePayment {
+    None,
+    Settled {
+        po_number: String,
+        declaration: po_store::OutsidePayment,
+    },
+    Paired {
+        po_number: String,
+        declaration: po_store::OutsidePayment,
+        effective: bool,
+    },
+    Ambiguous {
+        po_number: String,
+        declarations: Vec<po_store::OutsidePayment>,
+    },
+}
+
+pub(super) async fn bill_outside_payment(
+    cx: &mut Cx<'_>,
+    bill: &store::Bill,
+) -> Result<BillOutsidePayment, CommandError> {
+    if let Some(decl) = po_store::outside_payment_for_bill(&mut cx.tx, bill.id).await? {
+        let po_number = po_store::get_po(&mut cx.tx, decl.po_id)
+            .await?
+            .map(|p| p.po_number)
+            .unwrap_or_default();
+        return Ok(BillOutsidePayment::Settled {
+            po_number,
+            declaration: decl,
+        });
+    }
+    if bill.state != payvy_domain::bills::State::Open {
+        return Ok(BillOutsidePayment::None);
+    }
+    let allocs = po_store::allocations_for_bill(&mut cx.tx, bill.id).await?;
+    let mut po_ids: Vec<Uuid> = allocs.iter().map(|a| a.po_id).collect();
+    po_ids.sort();
+    po_ids.dedup();
+    if po_ids.is_empty() {
+        return Ok(BillOutsidePayment::None);
+    }
+
+    let mut paired: Vec<(String, po_store::OutsidePayment)> = Vec::new();
+    let mut ambiguous: Option<(String, Vec<po_store::OutsidePayment>)> = None;
+
+    for po_id in po_ids {
+        let decls = po_store::live_outside_payments_for_po(&mut cx.tx, po_id).await?;
+        if decls.is_empty() {
+            continue;
+        }
+        let Some(po) = po_store::get_po(&mut cx.tx, po_id).await? else {
+            continue;
+        };
+        if po.vendor_id != bill.vendor_id {
+            continue;
+        }
+        let open_bills = po_store::open_bills_on_po(&mut cx.tx, po_id, po.vendor_id).await?;
+        let domain_decls: Vec<payvy_domain::purchase_orders::OutsideDeclaration> = decls
+            .iter()
+            .map(|d| payvy_domain::purchase_orders::OutsideDeclaration {
+                amount_cents: d.amount_cents,
+                invoice_number: d.invoice_number.clone(),
+            })
+            .collect();
+        let domain_bills: Vec<payvy_domain::purchase_orders::PoBillCandidate> = open_bills
+            .iter()
+            .map(|b| payvy_domain::purchase_orders::PoBillCandidate {
+                amount_cents: b.amount_cents,
+                invoice_number: b.invoice_number.clone(),
+            })
+            .collect();
+        let pairs =
+            payvy_domain::purchase_orders::plain_outside_matches(&domain_decls, &domain_bills);
+        if let Some((di, _)) = pairs
+            .iter()
+            .find(|(_, bi)| open_bills[*bi].bill_id == bill.id)
+        {
+            paired.push((po.po_number, decls[*di].clone()));
+        } else {
+            // Collect declarations on this PO that did not pair with some other bill.
+            let unpaired: Vec<po_store::OutsidePayment> = decls
+                .into_iter()
+                .enumerate()
+                .filter(|(i, _)| !pairs.iter().any(|(di, _)| di == i))
+                .map(|(_, d)| d)
+                .collect();
+            if !unpaired.is_empty() && ambiguous.is_none() {
+                ambiguous = Some((po.po_number, unpaired));
+            }
+        }
+    }
+
+    if paired.len() == 1 && ambiguous.is_none() {
+        let (po_number, decl) = paired.remove(0);
+        let effective = is_outside_payment_effective(cx, bill, &decl).await?;
+        return Ok(BillOutsidePayment::Paired {
+            po_number,
+            declaration: decl,
+            effective,
+        });
+    }
+    if paired.len() > 1 {
+        let po_number = paired[0].0.clone();
+        let declarations = paired.into_iter().map(|(_, d)| d).collect();
+        return Ok(BillOutsidePayment::Ambiguous {
+            po_number,
+            declarations,
+        });
+    }
+    if let Some((po_number, declarations)) = ambiguous {
+        return Ok(BillOutsidePayment::Ambiguous {
+            po_number,
+            declarations,
+        });
+    }
+    Ok(BillOutsidePayment::None)
+}
+
+/// Pure helper turning an already-computed `BillOutsidePayment` into the
+/// reason string for `workflow::Facts::declared_paid_outside`.
+pub(super) fn outside_payment_reason_from(state: &BillOutsidePayment) -> Option<String> {
+    match state {
+        BillOutsidePayment::Paired {
+            po_number,
+            declaration,
+            effective,
+        } => Some(format!(
+            "paid outside Payvy per declaration on PO {} ({}, {}); a person releases it",
+            po_number,
+            payvy_domain::workflow::dollars(declaration.amount_cents),
+            if *effective {
+                "effective"
+            } else {
+                "waiting for confirmation"
+            }
+        )),
+        BillOutsidePayment::Ambiguous { po_number, .. } => Some(format!(
+            "an unmatched outside-payment declaration on PO {} may concern this bill; a person resolves it",
+            po_number
+        )),
+        BillOutsidePayment::None | BillOutsidePayment::Settled { .. } => None,
+    }
+}
+
+/// Reason string for `workflow::Facts::declared_paid_outside`, blocking
+/// automatic payment whenever a live declaration concerns (or ambiguously
+/// may concern) this bill.
+pub(super) async fn bill_outside_payment_reason(
+    cx: &mut Cx<'_>,
+    bill: &store::Bill,
+) -> Result<Option<String>, CommandError> {
+    let state = bill_outside_payment(cx, bill).await?;
+    Ok(outside_payment_reason_from(&state))
+}
+
+/// Checked under `lock_outside_payments` in `payments::submit` so a race with
+/// `po.declare_paid` cannot send a bank transfer.
+pub(super) async fn ensure_no_outside_payment_for_submit(
+    cx: &mut Cx<'_>,
+    bill: &store::Bill,
+    automatic: bool,
+) -> Result<(), CommandError> {
+    match bill_outside_payment(cx, bill).await? {
+        BillOutsidePayment::Paired {
+            po_number,
+            declaration,
+            ..
+        } => Err(CommandError::Conflict(format!(
+            "a live outside-payment declaration ({}) on PO {} concerns this bill; no bank transfer may be sent",
+            declaration.id, po_number
+        ))),
+        BillOutsidePayment::Ambiguous { po_number, .. } if automatic => {
+            Err(CommandError::Conflict(format!(
+                "an unmatched outside-payment declaration on PO {} may concern this bill; automatic payment is blocked",
+                po_number
+            )))
+        }
+        _ => Ok(()),
+    }
+}
+
+pub(super) fn outside_payment_plan(
+    po_number: &str,
+    decl: &po_store::OutsidePayment,
+    effective: bool,
+) -> Value {
+    json!({
+        "declaration_id": decl.id,
+        "po_id": decl.po_id,
+        "po_number": po_number,
+        "amount_cents": decl.amount_cents,
+        "method": decl.method,
+        "paid_on": decl.paid_on,
+        "reference": decl.reference,
+        "effective": effective,
+    })
+}
+
+pub(super) fn outside_payment_ambiguous_warning(po_number: &str, count: usize) -> Value {
+    json!({
+        "po_number": po_number,
+        "count": count,
+        "message": format!(
+            "an unmatched outside-payment declaration on PO {po_number} may concern this bill"
+        ),
+    })
+}
+
+pub(super) fn bill_outside_payment_view_from(
+    state: &BillOutsidePayment,
+    payments: &[store::PaymentRow],
+) -> Value {
+    match state {
+        BillOutsidePayment::None => Value::Null,
+        BillOutsidePayment::Settled {
+            po_number,
+            declaration,
+        } => json!({
+            "state": "paid",
+            "po_number": po_number,
+            "declaration": declaration,
+        }),
+        BillOutsidePayment::Paired {
+            po_number,
+            declaration,
+            effective,
+        } => {
+            let live_payment = payments.iter().any(|p| super::payments::is_live(&p.status));
+            let state = if live_payment {
+                "live_payment_conflict"
+            } else if !effective {
+                "awaiting_confirmation"
+            } else {
+                "awaiting_release"
+            };
+            json!({
+                "state": state,
+                "po_number": po_number,
+                "effective": effective,
+                "declaration": declaration,
+                "message": if live_payment {
+                    Some("a bank payment is already in flight or sent for this bill; it was not marked paid by the declaration")
+                } else {
+                    None
+                },
+            })
+        }
+        BillOutsidePayment::Ambiguous {
+            po_number,
+            declarations,
+        } => json!({
+            "state": "ambiguous",
+            "po_number": po_number,
+            "declarations": declarations,
+        }),
+    }
+}
+
+pub(super) async fn bill_outside_payment_summary_from(
+    cx: &mut Cx<'_>,
+    bill: &store::Bill,
+    state: &BillOutsidePayment,
+) -> Result<Value, CommandError> {
+    match state {
+        BillOutsidePayment::None => Ok(Value::Null),
+        BillOutsidePayment::Settled {
+            po_number,
+            declaration,
+        } => Ok(json!({
+            "state": "paid",
+            "po_number": po_number,
+            "declaration_id": declaration.id,
+            "amount_cents": declaration.amount_cents,
+            "method": declaration.method,
+            "paid_on": declaration.paid_on,
+        })),
+        BillOutsidePayment::Paired {
+            po_number,
+            declaration,
+            effective,
+        } => {
+            let payments = store::bill_payments(&mut cx.tx, bill.id).await?;
+            let live_payment = payments.iter().any(|p| super::payments::is_live(&p.status));
+            let state = if live_payment {
+                "live_payment_conflict"
+            } else if !effective {
+                "awaiting_confirmation"
+            } else {
+                "awaiting_release"
+            };
+            Ok(json!({
+                "state": state,
+                "po_number": po_number,
+                "declaration_id": declaration.id,
+                "amount_cents": declaration.amount_cents,
+                "method": declaration.method,
+                "paid_on": declaration.paid_on,
+                "effective": effective,
+            }))
+        }
+        BillOutsidePayment::Ambiguous {
+            po_number,
+            declarations,
+        } => Ok(json!({
+            "state": "ambiguous",
+            "po_number": po_number,
+            "count": declarations.len(),
+        })),
+    }
 }

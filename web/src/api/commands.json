@@ -501,15 +501,39 @@
       "name": "po.policy_get",
       "permission": "read",
       "person_only": false,
-      "summary": "A vendor's PO policies in force (the enumerated registry): over_period (flag_only or require_full_cover), quantity_matching (flag_only or enforce), and the version. Version 0 is the defaults: flag; do not silently match.",
+      "summary": "A vendor's PO policies in force (the enumerated registry): over_period (flag_only or require_full_cover), quantity_matching (flag_only or enforce), paid_outside (person_confirms or accept_from_source), and the version. Version 0 is the defaults: flag; do not silently match; person confirms outside payments.",
       "tier": "read"
     },
     {
-      "input_schema": "{\"type\":\"object\",\"required\":[\"vendor_id\"],\"properties\":{\"vendor_id\":{\"type\":\"string\",\"format\":\"uuid\"},\"over_period\":{\"type\":\"string\",\"enum\":[\"flag_only\",\"require_full_cover\"]},\"quantity_matching\":{\"type\":\"string\",\"enum\":[\"flag_only\",\"enforce\"],\"description\":\"enforce: quantity_over and rate_mismatch block payment\"},\"reason\":{\"type\":\"string\"}}}",
+      "input_schema": "{\"type\":\"object\",\"required\":[\"vendor_id\"],\"properties\":{\"vendor_id\":{\"type\":\"string\",\"format\":\"uuid\"},\"over_period\":{\"type\":\"string\",\"enum\":[\"flag_only\",\"require_full_cover\"]},\"quantity_matching\":{\"type\":\"string\",\"enum\":[\"flag_only\",\"enforce\"],\"description\":\"enforce: quantity_over and rate_mismatch block payment\"},\"paid_outside\":{\"type\":\"string\",\"enum\":[\"person_confirms\",\"accept_from_source\"],\"description\":\"person_confirms (default): a paid-outside declaration needs confirmation by someone else; accept_from_source: a declaration from the standing-authorization source key is effective at once\"},\"reason\":{\"type\":\"string\"}}}",
       "name": "po.policy_set",
       "permission": "admin",
       "person_only": true,
       "summary": "Set a vendor's PO policies (person only): a new immutable version supersedes the old; bills already created keep the version they pinned. Asking for what is already in force is refused. Agents may not set policy.",
+      "tier": "routine"
+    },
+    {
+      "input_schema": "{\"type\":\"object\",\"required\":[\"amount_cents\",\"method\",\"paid_on\",\"note\"],\"properties\":{\"po_id\":{\"type\":\"string\",\"format\":\"uuid\"},\"external_source\":{\"type\":\"string\"},\"external_id\":{\"type\":\"string\"},\"amount_cents\":{\"type\":\"integer\",\"minimum\":1},\"method\":{\"type\":\"string\",\"enum\":[\"card\",\"check\",\"ach\",\"wire\",\"cash\",\"other\"]},\"paid_on\":{\"type\":\"string\",\"format\":\"date\"},\"note\":{\"type\":\"string\",\"description\":\"What it paid for and who agreed to it\"},\"reference\":{\"type\":\"string\",\"maxLength\":64,\"description\":\"Optional check number, auth code, or bank trace (at most 64 chars). Never put a card number, account number, or routing number here.\"},\"invoice_number\":{\"type\":\"string\",\"description\":\"Optional vendor invoice number it paid, when known\"}}}",
+      "name": "po.declare_paid",
+      "permission": "prepare",
+      "person_only": false,
+      "summary": "Record that a purchase order (or one of its invoices) was paid outside Payvy (card by phone, check, cash, etc.). A person passes po_id; the agent key on the standing authorization passes external_source and external_id for its own source and vendors; any other agent is refused. Allowed on an active or suspended PO. Blocks automatic payment of matching bills right away; the bill is marked paid once the declaration is effective and a person releases it. Never put a card number, account number or routing number in reference (at most 64 characters: check number, auth code, or bank trace only).",
+      "tier": "routine"
+    },
+    {
+      "input_schema": "{\"type\":\"object\",\"required\":[\"declaration_id\"],\"properties\":{\"declaration_id\":{\"type\":\"string\",\"format\":\"uuid\"}}}",
+      "name": "po.confirm_paid",
+      "permission": "pay",
+      "person_only": true,
+      "summary": "Confirm a paid-outside declaration on a purchase order (person only, Pay permission). Refused for the person who declared it. Once confirmed, a paired bill that is already released is marked paid at once.",
+      "tier": "routine"
+    },
+    {
+      "input_schema": "{\"type\":\"object\",\"required\":[\"declaration_id\",\"reason\"],\"properties\":{\"declaration_id\":{\"type\":\"string\",\"format\":\"uuid\"},\"reason\":{\"type\":\"string\"}}}",
+      "name": "po.withdraw_paid",
+      "permission": "pay",
+      "person_only": true,
+      "summary": "Withdraw a paid-outside declaration on a purchase order (person only, Pay permission), with a reason. Allowed only while no bill has been marked paid by it.",
       "tier": "routine"
     },
     {

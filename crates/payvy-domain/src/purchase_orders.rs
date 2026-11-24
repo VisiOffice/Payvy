@@ -79,20 +79,121 @@ impl QuantityMatching {
     }
 }
 
+/// Whether a "paid outside Payvy" declaration from the PO's standing-authorization
+/// source key is effective at once or still needs a person to confirm it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PaidOutside {
+    /// A declaration is effective only once another person confirms it (the default).
+    PersonConfirms,
+    /// A declaration made by the standing-authorization source key is effective at once;
+    /// one made by anyone else still needs confirming.
+    AcceptFromSource,
+}
+
+impl PaidOutside {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PaidOutside::PersonConfirms => "person_confirms",
+            PaidOutside::AcceptFromSource => "accept_from_source",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "person_confirms" => PaidOutside::PersonConfirms,
+            "accept_from_source" => PaidOutside::AcceptFromSource,
+            _ => return None,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Policies {
     pub over_period: OverPeriod,
     pub quantity_matching: QuantityMatching,
+    pub paid_outside: PaidOutside,
 }
 
 impl Default for Policies {
-    /// The safe defaults: flag; do not silently match.
+    /// The safe defaults: flag; do not silently match; person confirms outside payments.
     fn default() -> Self {
         Policies {
             over_period: OverPeriod::FlagOnly,
             quantity_matching: QuantityMatching::FlagOnly,
+            paid_outside: PaidOutside::PersonConfirms,
         }
     }
+}
+
+/// Whether a live outside-payment declaration is effective under the bill's
+/// pinned `paid_outside` policy.
+pub fn outside_payment_effective(
+    status: &str,
+    declared_by_source: bool,
+    policy: PaidOutside,
+) -> bool {
+    match status {
+        "confirmed" => true,
+        "declared" => declared_by_source && policy == PaidOutside::AcceptFromSource,
+        _ => false,
+    }
+}
+
+/// A live outside-payment declaration on a PO (`declared` or `confirmed`, no
+/// `bill_id` yet), for pure pairing against open bills allocated to that PO.
+#[derive(Debug, Clone)]
+pub struct OutsideDeclaration {
+    pub amount_cents: Cents,
+    pub invoice_number: Option<String>,
+}
+
+/// An open bill of the PO's vendor with a live (reserved or consumed)
+/// allocation on that PO.
+#[derive(Debug, Clone)]
+pub struct PoBillCandidate {
+    pub amount_cents: Cents,
+    pub invoice_number: String,
+}
+
+fn outside_fits(d: &OutsideDeclaration, b: &PoBillCandidate) -> bool {
+    if d.amount_cents != b.amount_cents {
+        return false;
+    }
+    match d.invoice_number.as_deref() {
+        Some(inv) => {
+            let dk = crate::bills::invoice_key(inv);
+            !dk.is_empty() && dk == crate::bills::invoice_key(&b.invoice_number)
+        }
+        None => true,
+    }
+}
+
+/// The declaration-to-bill pairs that are plain, as `(declaration_index, bill_index)`.
+/// A pair is plain only when that bill is the declaration's sole fit and that
+/// declaration is the bill's sole fit: exact amount to the cent, and matching
+/// normalized invoice number when the declaration names one. Never widens to
+/// nearest date, partial amounts or fuzzy text.
+pub fn plain_outside_matches(
+    declarations: &[OutsideDeclaration],
+    bills: &[PoBillCandidate],
+) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    for (di, d) in declarations.iter().enumerate() {
+        let mut fit = bills.iter().enumerate().filter(|(_, b)| outside_fits(d, b));
+        let (Some((bi, b)), None) = (fit.next(), fit.next()) else {
+            continue;
+        };
+        if declarations
+            .iter()
+            .filter(|other| outside_fits(other, b))
+            .count()
+            == 1
+        {
+            out.push((di, bi));
+        }
+    }
+    out
 }
 
 /// Whether an invoice date falls outside a PO's service period. A PO with
@@ -476,5 +577,111 @@ mod tests {
         a.consumed_cents = 60_000;
         assert!(!a.can_reserve(60_000));
         assert!(a.can_reserve(50_000));
+    }
+
+    #[test]
+    fn outside_payment_pairing_requires_exact_one_to_one() {
+        let decl = |amount_cents, inv: Option<&str>| OutsideDeclaration {
+            amount_cents,
+            invoice_number: inv.map(str::to_owned),
+        };
+        let bill = |amount_cents, inv: &str| PoBillCandidate {
+            amount_cents,
+            invoice_number: inv.to_owned(),
+        };
+
+        // Exact single fit by amount.
+        assert_eq!(
+            plain_outside_matches(
+                &[decl(75_000, None)],
+                &[bill(75_000, "INV-1"), bill(50_000, "INV-2")]
+            ),
+            vec![(0, 0)]
+        );
+
+        // A cent off is no match.
+        assert_eq!(
+            plain_outside_matches(&[decl(75_001, None)], &[bill(75_000, "INV-1")]),
+            vec![]
+        );
+
+        // Two bills of the same amount without invoice_number: ambiguous, no pair.
+        assert_eq!(
+            plain_outside_matches(
+                &[decl(75_000, None)],
+                &[bill(75_000, "INV-1"), bill(75_000, "INV-2")]
+            ),
+            vec![]
+        );
+
+        // Two declarations of the same amount for one bill: ambiguous, no pair.
+        assert_eq!(
+            plain_outside_matches(
+                &[decl(75_000, None), decl(75_000, None)],
+                &[bill(75_000, "INV-1")]
+            ),
+            vec![]
+        );
+
+        // invoice_number disambiguates two same-amount bills using invoice_key normalization.
+        assert_eq!(
+            plain_outside_matches(
+                &[decl(75_000, Some("inv 2"))],
+                &[bill(75_000, "INV-1"), bill(75_000, "INV-2")]
+            ),
+            vec![(0, 1)]
+        );
+
+        // Mismatched invoice_number never pairs even when amount matches.
+        assert_eq!(
+            plain_outside_matches(&[decl(75_000, Some("INV-9"))], &[bill(75_000, "INV-1")]),
+            vec![]
+        );
+    }
+
+    #[test]
+    fn outside_payment_effectiveness_respects_policy() {
+        assert!(!outside_payment_effective(
+            "declared",
+            false,
+            PaidOutside::PersonConfirms
+        ));
+        assert!(!outside_payment_effective(
+            "declared",
+            true,
+            PaidOutside::PersonConfirms
+        ));
+        assert!(outside_payment_effective(
+            "confirmed",
+            false,
+            PaidOutside::PersonConfirms
+        ));
+        assert!(outside_payment_effective(
+            "confirmed",
+            true,
+            PaidOutside::PersonConfirms
+        ));
+
+        assert!(!outside_payment_effective(
+            "declared",
+            false,
+            PaidOutside::AcceptFromSource
+        ));
+        assert!(outside_payment_effective(
+            "declared",
+            true,
+            PaidOutside::AcceptFromSource
+        ));
+        assert!(outside_payment_effective(
+            "confirmed",
+            false,
+            PaidOutside::AcceptFromSource
+        ));
+
+        assert!(!outside_payment_effective(
+            "withdrawn",
+            true,
+            PaidOutside::AcceptFromSource
+        ));
     }
 }

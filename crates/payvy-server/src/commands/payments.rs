@@ -85,6 +85,15 @@ pub(super) async fn submit(
     if authority == Authority::Workflow {
         within_auto_pay_limit(cx, bill).await?;
     }
+    // Check under the advisory lock that no live outside-payment declaration
+    // concerns this bill, so a concurrent po.declare_paid cannot race past.
+    store::purchase_orders::lock_outside_payments(&mut cx.tx, cx.org).await?;
+    super::purchase_orders::ensure_no_outside_payment_for_submit(
+        cx,
+        bill,
+        authority == Authority::Workflow,
+    )
+    .await?;
     let earlier = store::bill_payments(&mut cx.tx, bill.id).await?;
     if let Some(live) = earlier.iter().find(|p| is_live(&p.status)) {
         return Err(CommandError::Conflict(format!(

@@ -756,7 +756,41 @@ export interface PoPolicySetInput {
    * enforce: quantity_over and rate_mismatch block payment
    */
   quantity_matching?: "flag_only" | "enforce";
+  /**
+   * person_confirms (default): a paid-outside declaration needs confirmation by someone else; accept_from_source: a declaration from the standing-authorization source key is effective at once
+   */
+  paid_outside?: "person_confirms" | "accept_from_source";
   reason?: string;
+}
+
+export interface PoDeclarePaidInput {
+  po_id?: string;
+  external_source?: string;
+  external_id?: string;
+  amount_cents: number;
+  method: "card" | "check" | "ach" | "wire" | "cash" | "other";
+  paid_on: string;
+  /**
+   * What it paid for and who agreed to it
+   */
+  note: string;
+  /**
+   * Optional check number, auth code, or bank trace (at most 64 chars). Never put a card number, account number, or routing number here.
+   */
+  reference?: string;
+  /**
+   * Optional vendor invoice number it paid, when known
+   */
+  invoice_number?: string;
+}
+
+export interface PoConfirmPaidInput {
+  declaration_id: string;
+}
+
+export interface PoWithdrawPaidInput {
+  declaration_id: string;
+  reason: string;
 }
 
 export interface PoMatchPreviewInput {
@@ -1393,6 +1427,9 @@ export interface CommandInputs {
   "po.set_vendor_settings": PoSetVendorSettingsInput;
   "po.policy_get": PoPolicyGetInput;
   "po.policy_set": PoPolicySetInput;
+  "po.declare_paid": PoDeclarePaidInput;
+  "po.confirm_paid": PoConfirmPaidInput;
+  "po.withdraw_paid": PoWithdrawPaidInput;
   "po.match_preview": PoMatchPreviewInput;
   "po.match_apply": PoMatchApplyInput;
   "po.override": PoOverrideInput;
@@ -1533,8 +1570,11 @@ export const COMMANDS: Record<CommandName, { tier: Tier; personOnly: boolean; su
   "po.import": { tier: "routine", personOnly: false, summary: "Import a purchase order from another system by external source/id (idempotent). Always lands as a draft: a person activates it with po.activate. opening_consumed_cents records amounts already billed in the source system and is not counted twice on a re-import. Once a source has a standing authorization, only that key can import an id under it." },
   "po.vendor_settings": { tier: "read", personOnly: false, summary: "A vendor's purchase-order settings: whether its bills require a PO, and its overage caps (dollar and/or percentage in basis points). Caps are pinned onto each PO revision when it is made." },
   "po.set_vendor_settings": { tier: "routine", personOnly: true, summary: "Set a vendor's purchase-order settings (person only): whether its bills require a PO, and overage caps. Zero overage is the default; an absent cap is not configured, a cap of 0 is zero. Existing PO revisions keep the allowance pinned on them." },
-  "po.policy_get": { tier: "read", personOnly: false, summary: "A vendor's PO policies in force (the enumerated registry): over_period (flag_only or require_full_cover), quantity_matching (flag_only or enforce), and the version. Version 0 is the defaults: flag; do not silently match." },
+  "po.policy_get": { tier: "read", personOnly: false, summary: "A vendor's PO policies in force (the enumerated registry): over_period (flag_only or require_full_cover), quantity_matching (flag_only or enforce), paid_outside (person_confirms or accept_from_source), and the version. Version 0 is the defaults: flag; do not silently match; person confirms outside payments." },
   "po.policy_set": { tier: "routine", personOnly: true, summary: "Set a vendor's PO policies (person only): a new immutable version supersedes the old; bills already created keep the version they pinned. Asking for what is already in force is refused. Agents may not set policy." },
+  "po.declare_paid": { tier: "routine", personOnly: false, summary: "Record that a purchase order (or one of its invoices) was paid outside Payvy (card by phone, check, cash, etc.). A person passes po_id; the agent key on the standing authorization passes external_source and external_id for its own source and vendors; any other agent is refused. Allowed on an active or suspended PO. Blocks automatic payment of matching bills right away; the bill is marked paid once the declaration is effective and a person releases it. Never put a card number, account number or routing number in reference (at most 64 characters: check number, auth code, or bank trace only)." },
+  "po.confirm_paid": { tier: "routine", personOnly: true, summary: "Confirm a paid-outside declaration on a purchase order (person only, Pay permission). Refused for the person who declared it. Once confirmed, a paired bill that is already released is marked paid at once." },
+  "po.withdraw_paid": { tier: "routine", personOnly: true, summary: "Withdraw a paid-outside declaration on a purchase order (person only, Pay permission), with a reason. Allowed only while no bill has been marked paid by it." },
   "po.match_preview": { tier: "read", personOnly: false, summary: "Which of a bill's vendor's active POs it could go against: available amounts, a proposed allocation and any exception (no PO, over available). Writes and reserves nothing." },
   "po.match_apply": { tier: "confirmed", personOnly: false, summary: "Reserve bill amounts against purchase orders. Atomic across every PO in the call: all affected POs are locked in a consistent order, the whole set is validated (active, vendor, available plus the revision's pinned allowance, total not over the bill), then everything reserves together or nothing does. Reserving is preparation, not approval." },
   "po.override": { tier: "confirmed", personOnly: true, summary: "Permit one bill's PO exception (person only, separate from vendor approval): bound to this bill, its current POs and allocations, the exception and an authorized excess amount, with a required reason. Relevant changes void it and need a new override. It does not create PO capacity or hide the excess." },

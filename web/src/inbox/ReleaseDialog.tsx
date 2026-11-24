@@ -22,9 +22,30 @@ interface Plan {
   then: string;
 }
 
+interface OutsidePlan {
+  po_number: string;
+  amount_cents: number;
+  method: string;
+  paid_on: string;
+  reference: string | null;
+  effective: boolean;
+}
+
+interface OutsideWarning {
+  po_number: string;
+  count: number;
+  message: string;
+}
+
 type State =
   | { kind: 'loading' }
-  | { kind: 'ready'; token: string; plan: Plan | null }
+  | {
+      kind: 'ready';
+      token: string;
+      plan: Plan | null;
+      outsidePlan: OutsidePlan | null;
+      outsideWarning: OutsideWarning | null;
+    }
   | { kind: 'needs_payee'; message: string }
   | { kind: 'ramp_setup' }
   | { kind: 'error'; message: string };
@@ -48,12 +69,22 @@ export function ReleaseDialog({
 
   useEffect(() => {
     setState({ kind: 'loading' });
-    preview<{ payment_plan?: Plan }>('bill.release', {
+    preview<{
+      payment_plan?: Plan;
+      outside_declaration_plan?: OutsidePlan;
+      outside_declaration_warning?: OutsideWarning;
+    }>('bill.release', {
       bill_id: bill.id,
       ...(payElsewhere ? { pay_elsewhere: true } : {}),
     })
       .then((p) =>
-        setState({ kind: 'ready', token: p.confirm_token!, plan: p.result.payment_plan ?? null }),
+        setState({
+          kind: 'ready',
+          token: p.confirm_token!,
+          plan: p.result.payment_plan ?? null,
+          outsidePlan: p.result.outside_declaration_plan ?? null,
+          outsideWarning: p.result.outside_declaration_warning ?? null,
+        }),
       )
       .catch((e: unknown) => {
         const message = e instanceof Error ? e.message : String(e);
@@ -82,6 +113,8 @@ export function ReleaseDialog({
           ? `Sent to Mercury for approval: ${money(bill.amount_cents)} to ${bill.vendor_name}`
           : status === 'failed'
             ? `The bank refused the payment to ${bill.vendor_name}; it's back in your inbox`
+            : state.outsidePlan
+              ? `Marked paid per outside-payment declaration on ${state.outsidePlan.po_number}; no payment was sent`
             : state.plan
               ? `Paying ${money(bill.amount_cents)} to ${bill.vendor_name}`
               : `Released. Mark it paid once you've paid it.`,
@@ -116,6 +149,13 @@ export function ReleaseDialog({
         )}
         {state.kind === 'ready' && (
           <VStack gap={4}>
+            {state.outsideWarning && (
+              <Banner
+                status="warning"
+                title={`Unmatched outside-payment declaration on ${state.outsideWarning.po_number}`}
+                description={`${state.outsideWarning.message}. Review the PO before sending money so this bill isn't paid twice.`}
+              />
+            )}
             {state.plan ? (
               <MetadataList>
                 <MetadataListItem label="Amount">
@@ -133,6 +173,10 @@ export function ReleaseDialog({
                 <MetadataListItem label="From">{state.plan.from_account}</MetadataListItem>
                 <MetadataListItem label="Then">{state.plan.then}</MetadataListItem>
               </MetadataList>
+            ) : state.outsidePlan ? (
+              <Text>
+                Paid outside Payvy per declaration on {state.outsidePlan.po_number}. Releasing sends no payment and marks this bill paid immediately.
+              </Text>
             ) : (
               <Text>
                 Payvy won't send this payment. Pay it however you normally do, then mark it paid.

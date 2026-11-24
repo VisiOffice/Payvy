@@ -122,6 +122,21 @@ Conventions follow Visirent (`~/Code/visirent`).
   the bill is marked paid (method `card`, the bank's transaction id) once released.
   A reversed charge reopens its bill. Never widen the match; a person decides the
   rest (`card.match_charge`, `card.dismiss_charge`). See `docs/cards.md`.
+- **A payment declared outside Payvy blocks the bill, and a person's release settles it.**
+  `po.declare_paid` records an outside payment on an active or suspended PO (`po_outside_payments`;
+  a person passes `po_id`, the standing-authorization source key passes `external_source` +
+  `external_id`, never store card/account/routing numbers in `reference`). A live declaration pairs
+  strictly one-to-one with an open bill allocated to that PO by exact amount (and normalized
+  `invoice_number` when given, `payvy_domain::purchase_orders::plain_outside_matches`). Paired and
+  ambiguous bills evaluate to `awaiting_release` at automatic pay steps (`workflow::Facts`),
+  `bill.release` refuses a paired bill while its declaration is not yet effective (even with
+  `pay_elsewhere`), sends no transfer and settles immediately once effective, warns on ambiguous
+  POs, and `payments::submit` re-checks under an advisory lock. A bill already `Released` before
+  the declaration settles when the declaration becomes effective (skipping if a live bank payment
+  exists). Settlement goes through `on_outside_payment` (`via: "declaration"`), and effectiveness
+  requires confirmation by someone else (`po.confirm_paid`, person-only) or the source key under
+  the pinned `paid_outside: accept_from_source` policy. `po.withdraw_paid` (person-only) withdraws
+  before settlement. See `docs/purchase-orders.md`.
 - **Quantity matching is cumulative, exact, and policy-gated** (`payvy-domain/src/quantity.rs`).
   Bill lines carry quantity/unit/unit-price as printed (extraction details, invoice review,
   or `bill.create`); a bill line maps to a PO line by normalized description (+unit when

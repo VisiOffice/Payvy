@@ -231,3 +231,68 @@ for a person. Only that key can change the POs it sent, and not after a person h
 `po.source_list` lists the grants (standing first, with the key's actor and the vendors' names);
 `po.source_revoke` stops new syncs and leaves POs already sent as they are. A grant whose key was
 revoked in Settings > Agents shows as "Key revoked" and matches nothing.
+
+## Payments made outside Payvy
+
+Sometimes a vendor is paid outside Payvy before its invoice is processed — a staff member lets the
+vendor charge a card by phone, hands over a check, or pays cash. The invoice still arrives, matches
+the PO, and looks payable. Recording that knowledge against the PO as a **declaration** stops Payvy
+from paying the bill a second time.
+
+- **`po.declare_paid`** (Routine, `Prepare` permission) records a declaration on an `active` or
+  `suspended` PO (`po_outside_payments`): amount (positive, not above the PO's authorized amount),
+  method (`card`, `check`, `ach`, `wire`, `cash`, or `other`), `paid_on` (not in the future),
+  required `note`, optional `reference` (at most 64 characters — a check number, auth code, or bank
+  trace; **never put a card number, account number, or routing number in `reference`**), and
+  optional `invoice_number`. A person passes `po_id`; the agent key on the PO's standing
+  authorization passes `external_source` and `external_id` for its own source and vendors; any other
+  agent is refused. Draft, closed, and canceled POs are refused, as is an exact repeat of a live
+  declaration (same PO, amount, method, date, and reference, treating two absent references as
+  equal). A PO may hold several declarations; each settles at most one whole bill, never a partial
+  amount. Declaring does not change the PO's status.
+- **`po.confirm_paid`** (Routine, person-only, `Pay` permission) moves a declaration from
+  `declared` to `confirmed`. Someone other than the declarer must confirm it.
+- **`po.withdraw_paid`** (Routine, person-only, `Pay` permission, with a reason) withdraws a
+  declaration while no bill has been marked paid by it. Withdrawn declarations do nothing.
+
+### Pairing and payment blocking
+
+A live declaration (`declared` or `confirmed`, no `bill_id` yet) concerns an open bill of the PO's
+vendor with a live (reserved or consumed) allocation on that PO when the bill's amount equals the
+declaration's amount to the cent — and, if the declaration names an `invoice_number`, its
+normalized invoice number (`payvy_domain::bills::invoice_key`) equals the bill's. Pairing
+(`payvy_domain::purchase_orders::plain_outside_matches`) is strictly one-to-one; anything ambiguous
+(two bills of the same amount, a cent off, two matching declarations) is not paired and stays for a
+person.
+
+From the moment of declaration, in either `declared` or `confirmed` status:
+
+- At an automatic pay step, the bill evaluates to `awaiting_release` (via `workflow::Facts`), never
+  `ready_to_pay`, so `bill.auto_pay` never runs on it. This also holds when an unpaired live
+  declaration on the PO *might* concern the bill.
+- `bill.release` is refused while a paired declaration is not yet effective (even with
+  `pay_elsewhere: true`): confirm or withdraw the declaration first. Once effective, `bill.release`
+  sends no bank transfer and marks the bill paid immediately. `payments::submit` re-checks under an
+  advisory lock so a race cannot send money.
+- If a bill was already `Released` before the declaration existed (for example, released to be paid
+  elsewhere), it is marked paid the moment the declaration becomes effective. If a live bank
+  payment is already in flight or sent for the bill, the declaration does not mark it paid; a person
+  resolves it.
+- When a person releases a bill with an ambiguous (unmatched) declaration on its PO, `bill.release`
+  returns a warning naming the PO so the person knows an outside payment may concern it.
+- Settling marks the bill paid with `paid_on` floored at the invoice date, emits `bill.paid` with
+  `via: "declaration"` and `declaration_id`, and queues the ledger through `on_outside_payment`. A
+  `cash` declaration is kept as `cash` on the declaration and recorded as `other` on the bill to
+  match `bill.mark_paid` and ledger bank maps. The approval workflow is never skipped.
+
+### The `paid_outside` policy
+
+The policy registry (`vendor_po_policies`, `po.policy_get`/`po.policy_set`, pinned on each bill at
+creation) includes `paid_outside`:
+
+- `person_confirms` (default): a declaration is effective only once `confirmed` by someone else.
+- `accept_from_source`: a declaration made by the standing-authorization source key is effective at
+  once; one made by anyone else still needs confirming.
+
+Under either value, the payment block applies immediately upon declaration.
+

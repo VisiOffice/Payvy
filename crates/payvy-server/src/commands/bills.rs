@@ -29,13 +29,14 @@ async fn workflow_of(cx: &mut Cx<'_>, bill: &Bill) -> Result<Workflow, CommandEr
     })
 }
 
-async fn evaluate(
+async fn evaluate_with_outside(
     cx: &mut Cx<'_>,
     bill: &Bill,
     workflow: &Workflow,
     approvals: &[Approval],
     signals: &[Signal],
     auto_pay_limit: AutoPayLimit,
+    declared_paid_outside: Option<String>,
 ) -> Result<Progress, CommandError> {
     // A bill payable only by override waits for a person even at an
     // automatic pay step, so it is never ready_to_pay.
@@ -50,10 +51,33 @@ async fn evaluate(
             released_at: bill.released_at,
             release_by_person: bill.release_by_person,
             payable_by_override,
+            declared_paid_outside,
             auto_pay_limit,
             now: cx.now,
         },
     ))
+}
+
+async fn evaluate(
+    cx: &mut Cx<'_>,
+    bill: &Bill,
+    workflow: &Workflow,
+    approvals: &[Approval],
+    signals: &[Signal],
+    auto_pay_limit: AutoPayLimit,
+) -> Result<Progress, CommandError> {
+    let declared_paid_outside =
+        super::purchase_orders::bill_outside_payment_reason(cx, bill).await?;
+    evaluate_with_outside(
+        cx,
+        bill,
+        workflow,
+        approvals,
+        signals,
+        auto_pay_limit,
+        declared_paid_outside,
+    )
+    .await
 }
 
 /// What the separation-of-duties rules need besides a bill and its facts:
@@ -166,8 +190,20 @@ async fn detail(cx: &mut Cx<'_>, bill_id: Uuid) -> Result<Value, CommandError> {
     let limit = store::auto_pay_limits(&mut cx.tx)
         .await?
         .for_vendor(bill.vendor_id);
+    let outside_state = super::purchase_orders::bill_outside_payment(cx, &bill).await?;
     let progress = match bill.state {
-        State::Open => Some(evaluate(cx, &bill, &wf, &approvals, &signals, limit).await?),
+        State::Open => Some(
+            evaluate_with_outside(
+                cx,
+                &bill,
+                &wf,
+                &approvals,
+                &signals,
+                limit,
+                super::purchase_orders::outside_payment_reason_from(&outside_state),
+            )
+            .await?,
+        ),
         _ => None,
     };
     let approval = match &progress {
@@ -193,6 +229,8 @@ async fn detail(cx: &mut Cx<'_>, bill_id: Uuid) -> Result<Value, CommandError> {
         None => None,
     };
     let payments = store::bill_payments(&mut cx.tx, bill.id).await?;
+    let outside_payment =
+        super::purchase_orders::bill_outside_payment_view_from(&outside_state, &payments);
     let card_charge = store::cards::charge_for_bill(&mut cx.tx, bill.id).await?;
     let card_on_file = super::cards::on_file(cx, bill.vendor_id)
         .await?
@@ -222,6 +260,7 @@ async fn detail(cx: &mut Cx<'_>, bill_id: Uuid) -> Result<Value, CommandError> {
         "received_count": received_count,
         "pending_revision": pending_revision,
         "payments": payments,
+        "outside_payment": outside_payment,
         "card_charge": card_charge,
         "card_on_file": card_on_file,
         "invoice_review": invoice_review,
@@ -660,6 +699,7 @@ pub async fn list(cx: &mut Cx<'_>, input: List) -> Result<Value, CommandError> {
     let mut out = Vec::new();
     for bill in &bills {
         let mut approval = None;
+        let outside_state = super::purchase_orders::bill_outside_payment(cx, bill).await?;
         let progress = if bill.state == State::Open {
             let wf = bill
                 .workflow_id
@@ -675,7 +715,16 @@ pub async fn list(cx: &mut Cx<'_>, input: List) -> Result<Value, CommandError> {
                 .filter(|(b, _)| *b == bill.id)
                 .map(|(_, s)| s.clone())
                 .collect();
-            let p = evaluate(cx, bill, wf, &a, &s, limits.for_vendor(bill.vendor_id)).await?;
+            let p = evaluate_with_outside(
+                cx,
+                bill,
+                wf,
+                &a,
+                &s,
+                limits.for_vendor(bill.vendor_id),
+                super::purchase_orders::outside_payment_reason_from(&outside_state),
+            )
+            .await?;
             approval = turn(cx, &d, bill, wf, &p, &a);
             Some(p)
         } else {
@@ -736,10 +785,14 @@ pub async fn list(cx: &mut Cx<'_>, input: List) -> Result<Value, CommandError> {
         let (received_count, pending_amount) = arrivals
             .get(&bill.id)
             .map_or((1, None), |(count, pending)| (*count, *pending));
+        let outside_payment =
+            super::purchase_orders::bill_outside_payment_summary_from(cx, bill, &outside_state)
+                .await?;
         let mut item = json!({ "bill": bill, "progress": progress.map(|p| p.status),
             "can_release": releaseable, "overridden_by": overridden_by,
             "received_count": received_count,
-            "pending_revision_amount_cents": pending_amount });
+            "pending_revision_amount_cents": pending_amount,
+            "outside_payment": outside_payment });
         if let Some(t) = approval {
             item["approval"] = json!(t);
         }
@@ -1019,6 +1072,9 @@ pub struct Release {
 }
 
 pub async fn release(cx: &mut Cx<'_>, input: Release) -> Result<Value, CommandError> {
+    // Acquire the outside-payment advisory lock before locking the bill row
+    // so lock order is always: outside_payments lock -> declaration/PO -> bill.
+    store::purchase_orders::lock_outside_payments(&mut cx.tx, cx.org).await?;
     let (bill, _, progress) = open_bill(cx, input.bill_id).await?;
     match &progress.status {
         Status::AwaitingRelease { by, .. } if !by.is_empty() && !by.contains(&cx.actor.name) => {
@@ -1050,8 +1106,40 @@ pub async fn release(cx: &mut Cx<'_>, input: Release) -> Result<Value, CommandEr
     // itself: the release sends nothing, and the charge marks the bill paid.
     let connection = store::live_paying_connection(&mut cx.tx).await?;
     let card = super::cards::on_file(cx, bill.vendor_id).await?;
-    let pay = match (&connection, input.pay_elsewhere, &card) {
-        (Some(c), false, None) => {
+    let (outside_decl, outside_warning) = match super::purchase_orders::bill_outside_payment(
+        cx, &bill,
+    )
+    .await?
+    {
+        super::purchase_orders::BillOutsidePayment::Paired {
+            po_number,
+            declaration,
+            effective: false,
+        } => {
+            return Err(CommandError::Conflict(format!(
+                "this bill is paired with an unconfirmed outside-payment declaration ({}) on PO {}; confirm or withdraw the declaration before releasing",
+                declaration.id, po_number
+            )));
+        }
+        super::purchase_orders::BillOutsidePayment::Paired {
+            po_number,
+            declaration,
+            effective: true,
+        } => (Some((po_number, declaration)), None),
+        super::purchase_orders::BillOutsidePayment::Ambiguous {
+            po_number,
+            declarations,
+        } => (
+            None,
+            Some(super::purchase_orders::outside_payment_ambiguous_warning(
+                &po_number,
+                declarations.len(),
+            )),
+        ),
+        _ => (None, None),
+    };
+    let pay = match (&connection, input.pay_elsewhere, &card, &outside_decl) {
+        (Some(c), false, None, None) => {
             // A new payment through the bank needs the plan; releasing to pay
             // elsewhere doesn't.
             cx.require(crate::entitlements::Need::Payments).await?;
@@ -1079,13 +1167,16 @@ pub async fn release(cx: &mut Cx<'_>, input: Release) -> Result<Value, CommandEr
     let plan = pay.as_ref().map(|(c, p)| payments::plan(&bill, c, p));
     let card_plan = card
         .as_ref()
-        .filter(|_| !input.pay_elsewhere)
+        .filter(|_| !input.pay_elsewhere && outside_decl.is_none())
         .map(|k| super::cards::plan(k, &bill.vendor_name));
+    let outside_plan = outside_decl
+        .as_ref()
+        .map(|(po_number, d)| super::purchase_orders::outside_payment_plan(po_number, d, true));
     cx.emit(
         "bill.released",
         bill.id,
         json!({ "bill_id": bill.id, "amount_cents": bill.amount_cents, "payment": plan,
-                "card": card_plan }),
+                "card": card_plan, "outside_declaration": outside_plan }),
     )
     .await?;
     if let Some((c, payee)) = &pay
@@ -1094,6 +1185,10 @@ pub async fn release(cx: &mut Cx<'_>, input: Release) -> Result<Value, CommandEr
         // The bank is asked only on commit; the preview shows the plan.
         payments::submit(cx, &bill, c, payee, payments::Authority::Person).await?;
     }
+    // Outside-payment declaration is effective: paid now.
+    if let Some((_, decl)) = &outside_decl {
+        settle_by_declaration(cx, bill.id, decl).await?;
+    }
     // Charged before it was released: paid now.
     if card_plan.is_some() {
         super::cards::settle_bill(cx, bill.id).await?;
@@ -1101,7 +1196,12 @@ pub async fn release(cx: &mut Cx<'_>, input: Release) -> Result<Value, CommandEr
     let mut out = detail(cx, bill.id).await?;
     out["payment_plan"] = json!(plan);
     out["card_plan"] = json!(card_plan);
-    if card_plan.is_some() {
+    out["outside_declaration_plan"] = json!(outside_plan);
+    out["outside_declaration_warning"] = json!(outside_warning);
+    if outside_plan.is_some() {
+        out["next"] =
+            json!("marked paid per the outside-payment declaration; no bank transfer was sent");
+    } else if card_plan.is_some() {
         out["next"] = json!(
             "the vendor charges the card on file; Payvy marks the bill paid when the charge posts"
         );
@@ -1109,6 +1209,72 @@ pub async fn release(cx: &mut Cx<'_>, input: Release) -> Result<Value, CommandEr
         out["next"] = json!("pay it outside Payvy, then record it with bill.mark_paid");
     }
     Ok(out)
+}
+
+/// Marks a released bill paid by an effective outside-payment declaration.
+/// Returns whether it did. Never marks a bill paid while a bank payment is
+/// live (in flight or sent).
+pub(super) async fn settle_by_declaration(
+    cx: &mut Cx<'_>,
+    bill_id: Uuid,
+    decl: &store::purchase_orders::OutsidePayment,
+) -> Result<bool, CommandError> {
+    if decl.bill_id.is_some() || decl.status == "withdrawn" {
+        return Ok(false);
+    }
+    let bill = store::get_bill(&mut cx.tx, bill_id)
+        .await?
+        .ok_or(CommandError::NotFound("bill"))?;
+    if bill.state != State::Open || bill.amount_cents != decl.amount_cents {
+        return Ok(false);
+    }
+    if !super::purchase_orders::is_outside_payment_effective(cx, &bill, decl).await? {
+        return Ok(false);
+    }
+    let (bill, _, progress) = open_bill(cx, bill_id).await?;
+    if !matches!(progress.status, Status::Released { .. }) {
+        return Ok(false);
+    }
+    let payments = store::bill_payments(&mut cx.tx, bill.id).await?;
+    if payments.iter().any(|p| payments::is_live(&p.status)) {
+        // A bank transfer is going or went too: a person sorts out which paid it.
+        return Ok(false);
+    }
+    let paid_on = decl.paid_on.max(bill.invoice_date);
+    // bill.mark_paid and ledger bank maps accept ach, check, wire, card, other;
+    // map cash declarations to "other" on the bill while keeping "cash" on the declaration.
+    let bill_method = if decl.method == "cash" {
+        "other"
+    } else {
+        decl.method.as_str()
+    };
+    store::mark_paid(
+        &mut cx.tx,
+        bill.id,
+        paid_on,
+        bill_method,
+        decl.reference.as_deref(),
+    )
+    .await?;
+    store::purchase_orders::set_outside_payment_bill(&mut cx.tx, decl.id, bill.id).await?;
+    cx.emit(
+        "bill.paid",
+        bill.id,
+        json!({
+            "bill_id": bill.id,
+            "amount_cents": bill.amount_cents,
+            "paid_on": paid_on,
+            "method": bill_method,
+            "declared_method": decl.method,
+            "reference": decl.reference,
+            "via": "declaration",
+            "declaration_id": decl.id,
+        }),
+    )
+    .await?;
+    super::ledger::on_outside_payment(cx, &bill, bill_method, paid_on, decl.reference.as_deref())
+        .await?;
+    Ok(true)
 }
 
 /// Marks a bill paid by the posted card charge that pays it, once the bill
@@ -1187,6 +1353,7 @@ pub struct AutoPay {
 /// release), and the limit is checked again, under its lock, as the payment
 /// is sent.
 pub async fn auto_pay(cx: &mut Cx<'_>, input: AutoPay) -> Result<Value, CommandError> {
+    store::purchase_orders::lock_outside_payments(&mut cx.tx, cx.org).await?;
     let (bill, _, progress) = open_bill(cx, input.bill_id).await?;
     if progress.status != Status::ReadyToPay {
         let why = match &progress.status {
