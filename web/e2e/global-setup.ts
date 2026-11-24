@@ -134,6 +134,8 @@ export default async function globalSetup() {
     PAYVY_INBOUND_SECRET: randomBytes(32).toString('hex'),
     PAYVY_MERCURY_SANDBOX_URL: `http://127.0.0.1:${BANK_PORT}/mercury`,
     PAYVY_RHO_SANDBOX_URL: `http://127.0.0.1:${BANK_PORT}/rho`,
+    // A documentation address (RFC 5737): Settings > Bank shows it for Mercury's allowlist.
+    PAYVY_OUTBOUND_IP: '203.0.113.7',
     PAYVY_RAMP_CLIENT_ID: 'fake-client',
     PAYVY_RAMP_CLIENT_SECRET: 'fake-secret',
     PAYVY_RAMP_REDIRECT_URI: `${BASE_URL}/settings/bank`,

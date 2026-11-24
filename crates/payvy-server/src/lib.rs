@@ -161,6 +161,30 @@ pub struct Bank {
     /// webhook so payment updates arrive at once; without it the payment
     /// checker's polling is the only path.
     pub webhook_base: Option<String>,
+    /// The addresses this server's requests to a bank come from
+    /// (PAYVY_OUTBOUND_IP). Mercury's direct mode only accepts a token from
+    /// addresses on its allowlist, so Settings > Bank shows these to copy.
+    /// The server doesn't work them out: it can't see its own public
+    /// address from behind NAT or a proxy.
+    pub outbound_ips: Vec<std::net::IpAddr>,
+}
+
+/// PAYVY_OUTBOUND_IP: one address or several separated by commas.
+pub fn parse_outbound_ips(value: &str) -> anyhow::Result<Vec<std::net::IpAddr>> {
+    let mut ips = Vec::new();
+    for part in value.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+        let ip: std::net::IpAddr = part
+            .parse()
+            .map_err(|_| anyhow::anyhow!("PAYVY_OUTBOUND_IP: {part:?} is not an IP address"))?;
+        anyhow::ensure!(
+            !ip.is_loopback() && !ip.is_unspecified(),
+            "PAYVY_OUTBOUND_IP: {ip} is not an address a bank could see"
+        );
+        if !ips.contains(&ip) {
+            ips.push(ip);
+        }
+    }
+    Ok(ips)
 }
 
 impl Bank {
@@ -173,6 +197,7 @@ impl Bank {
             rho_production: payvy_pay::RHO_PRODUCTION.into(),
             rho_sandbox: payvy_pay::RHO_SANDBOX.into(),
             webhook_base: None,
+            outbound_ips: Vec::new(),
         }
     }
 }
@@ -580,3 +605,29 @@ impl IntoResponse for CommandError {
 pub mod ramp;
 
 pub mod ramp_worker;
+
+#[cfg(test)]
+mod outbound_ip_tests {
+    use super::parse_outbound_ips;
+
+    #[test]
+    fn one_or_several_addresses_without_repeats() {
+        let ips = parse_outbound_ips(" 203.0.113.7, 2001:db8::1 ,203.0.113.7,").unwrap();
+        let shown: Vec<String> = ips.iter().map(ToString::to_string).collect();
+        assert_eq!(shown, ["203.0.113.7", "2001:db8::1"]);
+        assert!(parse_outbound_ips("").unwrap().is_empty());
+    }
+
+    #[test]
+    fn refuses_what_a_bank_could_never_see() {
+        for bad in [
+            "dev.payvy.com",
+            "203.0.113.7/32",
+            "127.0.0.1",
+            "0.0.0.0",
+            "::1",
+        ] {
+            assert!(parse_outbound_ips(bad).is_err(), "{bad} was accepted");
+        }
+    }
+}

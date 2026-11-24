@@ -379,6 +379,7 @@ async fn db() -> Option<(TestDb, Fake)> {
         rho_production: base.clone(),
         rho_sandbox: base,
         webhook_base: Some("https://payvy.test".into()),
+        outbound_ips: vec!["203.0.113.7".parse().unwrap()],
     });
     Some((db, fake))
 }
@@ -508,6 +509,8 @@ async fn connecting_needs_a_person_a_good_token_and_an_account() {
         "Ops Checking ••1234"
     );
     assert!(!got.to_string().contains("mercury_sandbox_good"));
+    // The address to allow on a direct-mode token, as the server was told it.
+    assert_eq!(got["result"]["outbound_ips"], json!(["203.0.113.7"]));
 
     // Recipients show the last four, never the account number.
     let r = commit(

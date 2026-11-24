@@ -33,6 +33,7 @@ fn with_fake(db: &TestDb) -> (payvy_server::AppState, FakeLedger) {
             rho_production: "https://rho.invalid".into(),
             rho_sandbox: "http://127.0.0.1:9".into(),
             webhook_base: None,
+            outbound_ips: Vec::new(),
         })
         .with_ledger(fake.clone())
         .with_auth(Auth::new(

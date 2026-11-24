@@ -38,6 +38,8 @@ interface Connection {
 
 interface BankState {
   ramp_available: boolean;
+  /** The addresses this server calls a bank from, if it was told them. */
+  outbound_ips?: string[];
   connection: Connection | null;
   connections: (Connection & { capability: 'pay' | 'read_only' | 'setup' })[];
 }
@@ -82,7 +84,7 @@ export function Bank() {
       {!bank && !error && <Spinner label="Loading" />}
       {bank && (
         <>
-          <PayingBank connection={bank.connection} onChange={load} />
+          <PayingBank connection={bank.connection} outboundIps={bank.outbound_ips ?? []} onChange={load} />
           <section id="ramp-connect" style={{ scrollMarginTop: 24 }}>
             <RampConnection available={bank.ramp_available} onChanged={load} />
           </section>
@@ -141,7 +143,7 @@ const MODE: Record<string, string> = {
   direct: 'Payments are sent as soon as a bill is released',
 };
 
-function PayingBank({ connection, onChange }: { connection: Connection | null; onChange: () => void }) {
+function PayingBank({ connection, outboundIps, onChange }: { connection: Connection | null; outboundIps: string[]; onChange: () => void }) {
   const [replacing, setReplacing] = useState(false);
   const c = connection;
   return (
@@ -163,6 +165,14 @@ function PayingBank({ connection, onChange }: { connection: Connection | null; o
               <MetadataListItem label="Updates">
                 {c.provider === 'ramp' ? 'Access renews automatically' : c.webhook_id ? 'As they happen' : 'Checked every minute'}
               </MetadataListItem>
+              {c.provider === 'mercury' && c.mode === 'direct' && outboundIps.length > 0 && (
+                <MetadataListItem label="Payvy's IP address">
+                  <VStack gap={1}>
+                    <AllowedAddresses ips={outboundIps} />
+                    <Text type="supporting">Keep it on the token's allowlist in Mercury, or Mercury refuses payments.</Text>
+                  </VStack>
+                </MetadataListItem>
+              )}
             </MetadataList>
             {c.provider === 'ramp' && <RampHealth connectionId={c.id} health={c.health} onChanged={onChange} />}
             <HStack gap={2} hAlign="between" vAlign="center" wrap="wrap">
@@ -188,6 +198,7 @@ function PayingBank({ connection, onChange }: { connection: Connection | null; o
             )}
             {c && <Text type="supporting">Connecting again replaces {c.account_name}.</Text>}
             <ConnectMercury
+              outboundIps={outboundIps}
               onCancel={c ? () => setReplacing(false) : undefined}
               onConnected={() => {
                 setReplacing(false);
@@ -212,7 +223,30 @@ function accountChoices(err: string): { value: string; label: string }[] | null 
   return out.length ? out : null;
 }
 
-function ConnectMercury({ onConnected, onCancel }: { onConnected: () => void; onCancel?: () => void }) {
+/** Each address with its own Copy button: Mercury's allowlist takes one at a time. */
+function AllowedAddresses({ ips }: { ips: string[] }) {
+  const toast = useToast();
+  async function copy(ip: string) {
+    try {
+      await navigator.clipboard.writeText(ip);
+      toast({ body: 'Copied' });
+    } catch {
+      toast({ body: "Couldn't copy. Select the address and copy it instead.", type: 'error' });
+    }
+  }
+  return (
+    <VStack gap={1}>
+      {ips.map((ip) => (
+        <HStack key={ip} gap={3} vAlign="center" wrap="wrap">
+          <code aria-label="Payvy's IP address">{ip}</code>
+          <Button label="Copy" variant="secondary" size="sm" onClick={() => void copy(ip)} />
+        </HStack>
+      ))}
+    </VStack>
+  );
+}
+
+function ConnectMercury({ outboundIps, onConnected, onCancel }: { outboundIps: string[]; onConnected: () => void; onCancel?: () => void }) {
   const [mode, setMode] = useState<'request' | 'direct'>('request');
   const [token, setToken] = useState('');
   const [sandbox, setSandbox] = useState(false);
@@ -256,9 +290,25 @@ function ConnectMercury({ onConnected, onCancel }: { onConnected: () => void; on
         <RadioListItem
           value="direct"
           label="Send at once"
-          description="Mercury pays as soon as a person releases the bill in Payvy. Use a Read and Write token, with this server's IP allowed in Mercury."
+          description="Mercury pays as soon as a person releases the bill in Payvy. Use a Read and Write token, with Payvy's IP address on its allowlist."
         />
       </RadioList>
+      {mode === 'direct' && (outboundIps.length > 0 ? (
+        <VStack gap={2}>
+          <Text>
+            {outboundIps.length === 1
+              ? "When you make the token in Mercury, add this address to its IP allowlist. Mercury refuses the token from anywhere else."
+              : "When you make the token in Mercury, add each of these addresses to its IP allowlist. Mercury refuses the token from anywhere else."}
+          </Text>
+          <AllowedAddresses ips={outboundIps} />
+        </VStack>
+      ) : (
+        <Banner
+          status="warning"
+          title="This server hasn't been told its public IP address"
+          description="Mercury needs it on the token's allowlist. Ask whoever runs this server for the address; setting PAYVY_OUTBOUND_IP shows it here."
+        />
+      ))}
       <TextInput
         label="Mercury API token"
         type="password"

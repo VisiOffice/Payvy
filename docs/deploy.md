@@ -169,4 +169,5 @@ and uses no repository secrets.
    open https://beta.payvy.com and ask for a link. Create the inbound address
    (`email.new_address`), then send a test bill.
 7. Paying through Mercury: in direct mode, add 5.78.94.150 to the token's IP allowlist; request
-   mode needs none. Connect with `bank.connect` (see `docs/payments.md`).
+   mode needs none. `PAYVY_OUTBOUND_IP` in `config/deploy.yml` shows that address in
+   Settings → Bank; keep the two in step if the host moves. Connect with `bank.connect` (see `docs/payments.md`).

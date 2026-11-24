@@ -59,6 +59,9 @@ env:
     PAYVY_PUBLIC_URL: https://app.payvy.com
     # Mercury posts payment updates here; connecting Mercury registers it.
     PAYVY_WEBHOOK_URL: https://dev.payvy.com
+    # The address Mercury sees this server call from. Settings > Bank shows it
+    # for a direct-mode token's IP allowlist. Change it if the host moves.
+    PAYVY_OUTBOUND_IP: 5.78.94.150
     # Sign-in links and notifications go out through Amazon SES, where
     # payvy.com is already verified (the legacy app sends from it too).
     PAYVY_MAIL_FROM: Payvy <noreply@payvy.com>
