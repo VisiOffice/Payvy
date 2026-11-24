@@ -402,6 +402,21 @@ async fn two_bills_for_the_same_amount_wait_for_a_person() {
             .unwrap()
             .contains("match it to a bill")
     );
+    // The vendor page reads the same, with what each charge needs.
+    let shown = commit(
+        &db.state,
+        &person("robert"),
+        "vendor.get",
+        json!({ "vendor_id": v }),
+    )
+    .await
+    .unwrap();
+    assert!(
+        shown["result"]["card_charges"][0]["needs"]
+            .as_str()
+            .unwrap()
+            .contains("match it to a bill")
+    );
     let charge_id = charge["id"].as_str().unwrap();
 
     // An agent can't decide; a person can, and the bill is paid.

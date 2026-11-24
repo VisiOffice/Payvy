@@ -66,7 +66,11 @@ pub async fn get(cx: &mut Cx<'_>, input: Get) -> Result<Value, CommandError> {
         })
         .collect();
     let card = super::cards::on_file(cx, v.id).await?;
-    let card_charges = store::cards::list_charges(&mut cx.tx, Some(v.id), false, 20).await?;
+    let card_charges: Vec<Value> = store::cards::list_charges(&mut cx.tx, Some(v.id), false, 20)
+        .await?
+        .into_iter()
+        .map(super::cards::described)
+        .collect();
     let limits = store::auto_pay_limits(&mut cx.tx).await?;
     let auto_pay_limit = json!({
         "own_cents": limits.vendors.get(&v.id),

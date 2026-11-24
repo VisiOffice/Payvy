@@ -118,7 +118,7 @@ pub async fn list_charges(cx: &mut Cx<'_>, input: ListCharges) -> Result<Value, 
 }
 
 /// A charge, with what is left for a person to do about it.
-fn described(c: cards::CardCharge) -> Value {
+pub(super) fn described(c: cards::CardCharge) -> Value {
     let needs = if c.status == "reversed" || c.dismissed_at.is_some() {
         None
     } else if c.bill_id.is_none() {
