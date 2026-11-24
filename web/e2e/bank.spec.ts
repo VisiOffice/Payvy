@@ -21,7 +21,10 @@ test('a person connects Rho to read and Mercury to pay, then disconnects', async
 
   // Sending at once needs Payvy's address on the token's allowlist, so the
   // form shows it to copy; approving in Mercury needs none and shows none.
+  // The option names the address before it is chosen, so nobody has to
+  // pick it just to find out what to allow.
   await expect(page.getByLabel("Payvy's IP address")).toHaveCount(0);
+  await expect(page.getByText(/with Payvy's IP address \(203\.0\.113\.7\) on its allowlist/)).toBeVisible();
   await page.getByRole('radio', { name: /Send at once/ }).check();
   await expect(page.getByLabel("Payvy's IP address")).toHaveText('203.0.113.7');
   await expect(page.getByText(/add this address to its IP allowlist/)).toBeVisible();

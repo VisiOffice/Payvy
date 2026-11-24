@@ -290,7 +290,7 @@ function ConnectMercury({ outboundIps, onConnected, onCancel }: { outboundIps: s
         <RadioListItem
           value="direct"
           label="Send at once"
-          description="Mercury pays as soon as a person releases the bill in Payvy. Use a Read and Write token, with Payvy's IP address on its allowlist."
+          description={`Mercury pays as soon as a person releases the bill in Payvy. Use a Read and Write token, with Payvy's IP address${outboundIps.length ? ` (${outboundIps.join(', ')})` : ''} on its allowlist.`}
         />
       </RadioList>
       {mode === 'direct' && (outboundIps.length > 0 ? (
