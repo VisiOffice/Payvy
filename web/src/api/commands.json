@@ -517,7 +517,7 @@
       "name": "po.declare_paid",
       "permission": "prepare",
       "person_only": false,
-      "summary": "Record that a purchase order (or one of its invoices) was paid outside Payvy (card by phone, check, cash, etc.). A person passes po_id; the agent key on the standing authorization passes external_source and external_id for its own source and vendors; any other agent is refused. Allowed on an active or suspended PO. Blocks automatic payment of matching bills right away; the bill is marked paid once the declaration is effective and a person releases it. Never put a card number, account number or routing number in reference (at most 64 characters: check number, auth code, or bank trace only).",
+      "summary": "Record that a purchase order (or one of its invoices) was paid outside Payvy (card by phone, check, cash, etc.). A person passes po_id; the agent key on the standing authorization passes external_source and external_id for its own source and vendors; any other agent is refused. Allowed on an active or suspended PO. An exact repeat is refused with po_already_declared:. Blocks automatic payment of matching bills right away; the bill is marked paid once the declaration is effective and a person releases it. Never put a card number, account number or routing number in reference (at most 64 characters: check number, auth code, or bank trace only).",
       "tier": "routine"
     },
     {

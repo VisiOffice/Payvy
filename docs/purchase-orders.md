@@ -248,8 +248,9 @@ from paying the bill a second time.
   authorization passes `external_source` and `external_id` for its own source and vendors; any other
   agent is refused. Draft, closed, and canceled POs are refused, as is an exact repeat of a live
   declaration (same PO, amount, method, date, and reference, treating two absent references as
-  equal). A PO may hold several declarations; each settles at most one whole bill, never a partial
-  amount. Declaring does not change the PO's status.
+  equal); a repeat refusal's message starts with `po_already_declared:`, which a sender should treat
+  as "already recorded" and not retry. A PO may hold several declarations; each settles at most one
+  whole bill, never a partial amount. Declaring does not change the PO's status.
 - **`po.confirm_paid`** (Routine, person-only, `Pay` permission) moves a declaration from
   `declared` to `confirmed`. Someone other than the declarer must confirm it.
 - **`po.withdraw_paid`** (Routine, person-only, `Pay` permission, with a reason) withdraws a
