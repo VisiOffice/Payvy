@@ -457,6 +457,14 @@
       "tier": "routine"
     },
     {
+      "input_schema": "{\"type\":\"object\",\"properties\":{}}",
+      "name": "po.source_list",
+      "permission": "admin",
+      "person_only": false,
+      "summary": "List standing purchase-order authorizations (po.source_authorize): source, agent key, named vendors, per-PO limit, owner, who granted it, and whether it or its key was revoked. Standing ones first.",
+      "tier": "read"
+    },
+    {
       "input_schema": "{\"type\":\"object\",\"required\":[\"authorization_id\"],\"properties\":{\"authorization_id\":{\"type\":\"string\",\"format\":\"uuid\"}}}",
       "name": "po.source_revoke",
       "permission": "admin",

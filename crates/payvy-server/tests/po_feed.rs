@@ -148,6 +148,19 @@ async fn a_standing_authorization_activates_within_the_limit() {
 
     let grant = authorize(&db, &v, 100_000).await;
     let q = quarry(grant.key_id);
+
+    // Settings > Purchase orders lists the grant with its key and vendor names.
+    let listed = commit(&db.state, &robert, "po.source_list", json!({}))
+        .await
+        .unwrap();
+    let a = &listed["result"]["authorizations"][0];
+    assert_eq!(a["id"], json!(grant.auth_id));
+    assert_eq!(a["source"], "quarry");
+    assert_eq!(a["key_actor"], "quarry");
+    assert_eq!(a["key_revoked"], false);
+    assert_eq!(a["vendors"][0]["name"], "Allied");
+    assert_eq!(a["max_cents"], 100_000);
+    assert!(a["revoked_at"].is_null());
     let active = commit(
         &db.state,
         &q,

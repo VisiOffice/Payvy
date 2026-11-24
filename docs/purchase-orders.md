@@ -184,3 +184,16 @@ bill, its current allocations, the exception and an authorized excess. Two rules
    changed), there is no restriction. Auto-pay is unaffected (no person releases), and
    `bill.mark_paid` still only warns about an open exception, since it records a payment that
    already happened.
+
+## POs sent by another system
+
+An outside system (for example the company's order software) can send POs through an agent key:
+`po.upsert` creates or revises a PO by `external_source` + `external_id`, and `po.cancel` /
+`po.close` end one by the same pair. A person who is an Admin first grants that key a standing
+authorization in Settings > Purchase orders (`po.source_authorize`): the source name, the key, the
+vendors it may send POs for, a per-PO limit, and the owner recorded on those POs. Within the limit
+a PO is active at once (`activated_by` is the admin who granted it); above it, it stays a draft
+for a person. Only that key can change the POs it sent, and not after a person has edited one.
+`po.source_list` lists the grants (standing first, with the key's actor and the vendors' names);
+`po.source_revoke` stops new syncs and leaves POs already sent as they are. A grant whose key was
+revoked in Settings > Agents shows as "Key revoked" and matches nothing.
