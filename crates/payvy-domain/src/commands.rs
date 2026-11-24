@@ -707,7 +707,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         tier: RiskTier::Routine,
         person_only: true,
         permission: Permission::Admin,
-        input_schema: r#"{"type":"object","additionalProperties":false,"required":["name"],"properties":{"name":{"type":"string","description":"What the agent's actions are recorded under, e.g. quarry-agent"}}}"#,
+        input_schema: r#"{"type":"object","additionalProperties":false,"required":["name"],"properties":{"name":{"type":"string","description":"What the agent's actions are recorded under, e.g. acme-agent"}}}"#,
     },
     CommandSpec {
         name: "agent_key.revoke",
@@ -1028,7 +1028,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "ledger.vendor_matches",
-        summary: "Each vendor's ledger vendor: the link in force, or a suggestion (the same id in another system, such as Quarry's vendor id, else the same name). Also lists the ledger's active vendors and which Payvy vendor each is linked to.",
+        summary: "Each vendor's ledger vendor: the link in force, or a suggestion (the same id in another system, such as an operations system's vendor id, else the same name). Also lists the ledger's active vendors and which Payvy vendor each is linked to.",
         tier: RiskTier::Read,
         person_only: false,
         permission: Permission::Read,

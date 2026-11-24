@@ -122,7 +122,7 @@ function McpTab() {
       <Card>
         <VStack gap={3}>
           <Text weight="semibold">New agent key</Text>
-          <TextInput label="Agent name" value={name} onChange={setName} placeholder="quarry-agent"
+          <TextInput label="Agent name" value={name} onChange={setName} placeholder="acme-agent"
             description="What the agent's work is recorded under: lowercase letters, digits, . _ -" />
           <HStack>
             <Button label="Create key" variant="primary" clickAction={create} isDisabled={busy || !name.trim()} />

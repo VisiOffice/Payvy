@@ -248,7 +248,7 @@ export function LedgerSettings() {
             <VStack gap={3}>
               <Text weight="semibold">Vendors in VisiBooks</Text>
               <Text type="supporting">
-                Each vendor's bills post to the VisiBooks vendor linked here. Payvy suggests a match (Quarry's vendor id,
+                Each vendor's bills post to the VisiBooks vendor linked here. Payvy suggests a match (the same vendor id from another system,
                 else the same name); a person links it. Once a bill has posted, the link can't change.
               </Text>
               {matches?.summary && (
@@ -267,7 +267,7 @@ export function LedgerSettings() {
                       {v.linked
                         ? `Linked to ${v.linked.name || v.linked.external_id}${v.linked.archived ? ' (archived in VisiBooks)' : ''}`
                         : v.suggestion
-                          ? `Suggested: ${v.suggestion.name} (${v.suggestion.reason === 'external_id' ? 'same Quarry vendor id' : 'same name'})`
+                          ? `Suggested: ${v.suggestion.name} (${v.suggestion.reason === 'external_id' ? 'same vendor id' : 'same name'})`
                           : 'No match in VisiBooks'}
                     </Text>
                   </VStack>

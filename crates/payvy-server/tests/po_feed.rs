@@ -1,4 +1,4 @@
-//! Quarry's purchase-order feed: upsert, standing authorization, and cancel
+//! Another system's purchase-order feed: upsert, standing authorization, and cancel
 //! by external id.
 
 use payvy_server::Actor;

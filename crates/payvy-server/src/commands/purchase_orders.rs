@@ -1856,7 +1856,7 @@ pub async fn release_bill_allocations(
     Ok(())
 }
 
-// ── Quarry feed: upsert, standing authorization ───────────────────────────
+// ── External PO feed: upsert, standing authorization ───────────────────────────
 
 fn sha256_hex(bytes: &[u8]) -> String {
     Sha256::digest(bytes)

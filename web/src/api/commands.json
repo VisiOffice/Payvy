@@ -649,7 +649,7 @@
       "tier": "read"
     },
     {
-      "input_schema": "{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"name\"],\"properties\":{\"name\":{\"type\":\"string\",\"description\":\"What the agent's actions are recorded under, e.g. quarry-agent\"}}}",
+      "input_schema": "{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"name\"],\"properties\":{\"name\":{\"type\":\"string\",\"description\":\"What the agent's actions are recorded under, e.g. acme-agent\"}}}",
       "name": "agent_key.create",
       "permission": "admin",
       "person_only": true,
@@ -973,7 +973,7 @@
       "name": "ledger.vendor_matches",
       "permission": "read",
       "person_only": false,
-      "summary": "Each vendor's ledger vendor: the link in force, or a suggestion (the same id in another system, such as Quarry's vendor id, else the same name). Also lists the ledger's active vendors and which Payvy vendor each is linked to.",
+      "summary": "Each vendor's ledger vendor: the link in force, or a suggestion (the same id in another system, such as an operations system's vendor id, else the same name). Also lists the ledger's active vendors and which Payvy vendor each is linked to.",
       "tier": "read"
     },
     {

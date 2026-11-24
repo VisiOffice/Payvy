@@ -666,7 +666,7 @@ mod tests {
         }
     }
 
-    /// Quarry-style: controller approves bills from $5,000, the bill waits
+    /// A typical setup: controller approves bills from $5,000, the bill waits
     /// until the customer has paid, then a 3-day hold, then auto-pay.
     fn quarry() -> Workflow {
         wf(json!({"steps": [
