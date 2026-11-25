@@ -1164,6 +1164,16 @@ pub async fn match_preview(cx: &mut Cx<'_>, input: Preview) -> Result<Value, Com
 pub struct Apply {
     bill_id: Uuid,
     allocations: Vec<AllocIn>,
+    #[serde(default)]
+    evidence: Vec<EvidenceIn>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EvidenceIn {
+    field: String,
+    quote: String,
+    page: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -1265,11 +1275,14 @@ pub async fn match_apply(cx: &mut Cx<'_>, input: Apply) -> Result<Value, Command
         )
         .await?;
     }
-    Ok(
-        json!({ "bill_id": bill.id, "bill_amount_cents": bill.amount_cents,
+    let examples = save_evidence_tags(cx, &bill, &locked, &input.evidence).await?;
+    let mut out = json!({ "bill_id": bill.id, "bill_amount_cents": bill.amount_cents,
         "allocated_cents": existing + total, "uncovered_cents": bill.amount_cents - existing - total,
-        "allocations": made }),
-    )
+        "allocations": made });
+    if !examples.is_empty() {
+        out["examples"] = json!(examples);
+    }
+    Ok(out)
 }
 
 #[derive(Deserialize)]
@@ -1772,6 +1785,18 @@ pub async fn bill_po_view(cx: &mut Cx<'_>, bill: &store::Bill) -> Result<Value, 
                     po.period_end.map_or("…".into(), |d| d.to_string())) }));
         }
     }
+    let diagnosis = if on && bill.state == payvy_domain::bills::State::Open && allocs.is_empty() {
+        let diag = diagnose_bill(cx, bill).await?;
+        match &diag {
+            payvy_domain::purchase_orders::MatchDiagnosis::NotMatched {
+                reason: payvy_domain::purchase_orders::NotMatchedReason::NoActivePo,
+                ..
+            } => None,
+            _ => Some(diag),
+        }
+    } else {
+        None
+    };
     Ok(json!({
         "enabled": on,
         "can_override": can_override,
@@ -1779,6 +1804,7 @@ pub async fn bill_po_view(cx: &mut Cx<'_>, bill: &store::Bill) -> Result<Value, 
         "covered_cents": covered,
         "uncovered_cents": bill.amount_cents - covered,
         "allocations": rows,
+        "diagnosis": diagnosis,
         "exception": ex.map(|e| json!({ "kind": e.kind, "excess_cents": e.excess_cents, "detail": e.detail })),
         "exceptions": exception_details,
         "overridden": all_permitted,
@@ -1909,11 +1935,14 @@ async fn place_bill(
     };
     if bill.state != payvy_domain::bills::State::Open
         || bill.released_at.is_some()
-        || (bill.po_reference.is_none() && bill.service_address.is_none())
         || !po_store::allocations_for_bill(&mut cx.tx, bill.id)
             .await?
             .is_empty()
     {
+        return Ok(None);
+    }
+    let bill = fill_hints_from_reading(cx, bill).await?;
+    if bill.po_reference.is_none() && bill.service_address.is_none() {
         return Ok(None);
     }
     let ids: Vec<Uuid> = po_store::list_pos(&mut cx.tx, Some(bill.vendor_id))
@@ -3290,4 +3319,439 @@ pub(super) async fn bill_outside_payment_summary_from(
             "count": declarations.len(),
         })),
     }
+}
+
+// ── Phase 1: hint backfill, match retry/diagnosis, and person tagging ────────
+
+async fn bill_stored_extraction(
+    cx: &mut Cx<'_>,
+    bill_id: Uuid,
+) -> Result<(Option<Uuid>, Option<store::Extraction>), CommandError> {
+    if let Some(rev) = store::bill_invoice_review(&mut cx.tx, bill_id).await?
+        && let Some(eid) = rev.extraction_id
+        && let Some(ex) = store::get_extraction(&mut cx.tx, eid).await?
+    {
+        return Ok((Some(rev.document_id), Some(ex)));
+    }
+    let docs = store::bill_documents(&mut cx.tx, bill_id).await?;
+    let Some(doc) = docs.first() else {
+        return Ok((None, None));
+    };
+    let ex = store::document_extractions(&mut cx.tx, doc.id)
+        .await?
+        .into_iter()
+        .find(|e| e.draft.is_some() || e.answer.is_some());
+    Ok((Some(doc.id), ex))
+}
+
+/// Copies missing `po_reference` or `service_address` onto the bill from its
+/// stored reading without ever overwriting a hint the bill already carries.
+async fn fill_hints_from_reading(
+    cx: &mut Cx<'_>,
+    mut bill: store::Bill,
+) -> Result<store::Bill, CommandError> {
+    if bill.po_reference.is_some() && bill.service_address.is_some() {
+        return Ok(bill);
+    }
+    let (_, Some(ex)) = bill_stored_extraction(cx, bill.id).await? else {
+        return Ok(bill);
+    };
+    let read_str = |key: &str| {
+        ex.draft
+            .as_ref()
+            .and_then(|d| d[key].as_str())
+            .or_else(|| ex.answer.as_ref().and_then(|a| a[key].as_str()))
+            .map(str::to_owned)
+    };
+    let fill_po = if bill.po_reference.is_none() {
+        text(read_str("po_number"))
+    } else {
+        None
+    };
+    let fill_addr = if bill.service_address.is_none() {
+        text(read_str("service_address"))
+    } else {
+        None
+    };
+    if fill_po.is_none() && fill_addr.is_none() {
+        return Ok(bill);
+    }
+    store::fill_bill_po_hints(
+        &mut cx.tx,
+        bill.id,
+        fill_po.as_deref(),
+        fill_addr.as_deref(),
+    )
+    .await?;
+    let mut fields = Vec::new();
+    if let Some(ref v) = fill_po {
+        fields.push("po_reference");
+        bill.po_reference = Some(v.clone());
+    }
+    if let Some(ref v) = fill_addr {
+        fields.push("service_address");
+        bill.service_address = Some(v.clone());
+    }
+    cx.emit(
+        "bill.po_hints_filled",
+        bill.id,
+        json!({
+            "bill_id": bill.id,
+            "fields": fields,
+            "source": "stored_reading",
+            "po_reference": fill_po,
+            "service_address": fill_addr,
+        }),
+    )
+    .await?;
+    Ok(bill)
+}
+
+async fn diagnose_bill(
+    cx: &mut Cx<'_>,
+    bill: &store::Bill,
+) -> Result<payvy_domain::purchase_orders::MatchDiagnosis, CommandError> {
+    let on = enabled(cx).await?;
+    if !on {
+        return Ok(payvy_domain::purchase_orders::diagnose_auto_match(
+            false,
+            bill.amount_cents,
+            bill.po_reference.as_deref(),
+            bill.service_address.as_deref(),
+            &[],
+        ));
+    }
+    let active: Vec<_> = po_store::list_pos(&mut cx.tx, Some(bill.vendor_id))
+        .await?
+        .into_iter()
+        .filter(|p| p.status == "active" && p.revision.is_some())
+        .collect();
+    let mut unbilled = Vec::with_capacity(active.len());
+    for po in &active {
+        let a = po_store::amounts(&mut cx.tx, po).await?;
+        unbilled.push((a.authorized_cents - a.committed_cents()).max(0));
+    }
+    let candidates: Vec<_> = active
+        .iter()
+        .zip(&unbilled)
+        .map(|(po, &left)| payvy_domain::purchase_orders::AutoCandidate {
+            po_number: &po.po_number,
+            vendor_reference: po.vendor_reference.as_deref(),
+            service_address: po.service_address.as_deref(),
+            unbilled_cents: left,
+            in_period: !payvy_domain::purchase_orders::outside_period(
+                po.period_start,
+                po.period_end,
+                bill.invoice_date,
+            ),
+        })
+        .collect();
+    Ok(payvy_domain::purchase_orders::diagnose_auto_match(
+        true,
+        bill.amount_cents,
+        bill.po_reference.as_deref(),
+        bill.service_address.as_deref(),
+        &candidates,
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MatchRetry {
+    bill_id: Uuid,
+}
+
+pub async fn match_retry(cx: &mut Cx<'_>, input: MatchRetry) -> Result<Value, CommandError> {
+    let bill = store::get_bill(&mut cx.tx, input.bill_id)
+        .await?
+        .ok_or(CommandError::NotFound("bill"))?;
+    if bill.state != payvy_domain::bills::State::Open {
+        return Err(CommandError::Conflict(format!(
+            "bill is {}; only open bills can be matched",
+            bill.state.as_str()
+        )));
+    }
+    if !po_store::allocations_for_bill(&mut cx.tx, bill.id)
+        .await?
+        .is_empty()
+    {
+        return Err(CommandError::Conflict(
+            "bill already has purchase order allocations".into(),
+        ));
+    }
+    if !enabled(cx).await? {
+        let diag = diagnose_bill(cx, &bill).await?;
+        return Ok(json!({ "bill_id": bill.id, "matched": null, "diagnosis": diag }));
+    }
+    if let Some(matched) = place_bill(cx, bill.id, true).await? {
+        let diag = payvy_domain::purchase_orders::MatchDiagnosis::Matched {
+            po_number: matched["po_number"].as_str().unwrap_or_default().to_owned(),
+            rule: matched["rule"].as_str().unwrap_or_default().to_owned(),
+        };
+        return Ok(json!({ "bill_id": bill.id, "matched": matched, "diagnosis": diag }));
+    }
+    let fresh = store::get_bill(&mut cx.tx, bill.id)
+        .await?
+        .ok_or(CommandError::NotFound("bill"))?;
+    let diag = diagnose_bill(cx, &fresh).await?;
+    Ok(json!({ "bill_id": fresh.id, "matched": null, "diagnosis": diag }))
+}
+
+async fn save_evidence_tags(
+    cx: &mut Cx<'_>,
+    bill: &store::Bill,
+    allocated_pos: &[po_store::PurchaseOrder],
+    evidence: &[EvidenceIn],
+) -> Result<Vec<po_store::VendorFieldExample>, CommandError> {
+    if evidence.is_empty() {
+        return Ok(Vec::new());
+    }
+    if cx.actor.kind != store::ActorKind::Person {
+        return Err(CommandError::PersonOnly("po.match_tag"));
+    }
+    let (doc_id, ex) = bill_stored_extraction(cx, bill.id).await?;
+    let source_pages: Vec<payvy_domain::invoice_evidence::SourcePage> = ex
+        .as_ref()
+        .and_then(|e| e.analysis.as_ref())
+        .and_then(|a| serde_json::from_value(a["source_pages"].clone()).ok())
+        .unwrap_or_default();
+
+    let mut saved = Vec::with_capacity(evidence.len());
+    let mut fill_po: Option<String> = None;
+    let mut fill_addr: Option<String> = None;
+
+    for item in evidence {
+        let field = item.field.as_str();
+        if !matches!(
+            field,
+            "po_reference" | "service_address" | "vendor_reference"
+        ) {
+            return Err(CommandError::Invalid(
+                "field must be po_reference, service_address, or vendor_reference".into(),
+            ));
+        }
+        let quote = text(Some(item.quote.clone()))
+            .ok_or_else(|| CommandError::Invalid("quote cannot be empty".into()))?;
+        if let Some(p) = item.page
+            && p == 0
+        {
+            return Err(CommandError::Invalid("page must be >= 1".into()));
+        }
+
+        let (matched_po, normalized_value) = match field {
+            "po_reference" | "vendor_reference" => {
+                let key = payvy_domain::purchase_orders::reference_key(&quote);
+                if key.is_empty() {
+                    return Err(CommandError::Invalid(
+                        "quote contains no alphanumeric characters to match a PO identifier".into(),
+                    ));
+                }
+                let found = allocated_pos.iter().find(|po| {
+                    payvy_domain::purchase_orders::reference_key(&po.po_number) == key
+                        || po
+                            .vendor_reference
+                            .as_deref()
+                            .map(payvy_domain::purchase_orders::reference_key)
+                            .as_deref()
+                            == Some(key.as_str())
+                });
+                match found {
+                    Some(po) => (po, key),
+                    None => {
+                        let available: Vec<String> = allocated_pos
+                            .iter()
+                            .map(|po| match &po.vendor_reference {
+                                Some(vr) => format!("{} (vendor ref {})", po.po_number, vr),
+                                None => po.po_number.clone(),
+                            })
+                            .collect();
+                        return Err(CommandError::Invalid(format!(
+                            "quote {quote:?} does not match the allocated PO's number or vendor reference (allocated PO has: {})",
+                            available.join(", ")
+                        )));
+                    }
+                }
+            }
+            "service_address" => {
+                let Some(key) = payvy_domain::purchase_orders::street_key(&quote) else {
+                    return Err(CommandError::Invalid(format!(
+                        "quote {quote:?} is not a street address with a house number"
+                    )));
+                };
+                let found = allocated_pos.iter().find(|po| {
+                    po.service_address
+                        .as_deref()
+                        .and_then(payvy_domain::purchase_orders::street_key)
+                        .as_deref()
+                        == Some(key.as_str())
+                });
+                match found {
+                    Some(po) => (po, key),
+                    None => {
+                        let available: Vec<String> = allocated_pos
+                            .iter()
+                            .map(|po| {
+                                format!(
+                                    "{}: {}",
+                                    po.po_number,
+                                    po.service_address.as_deref().unwrap_or("(no address)")
+                                )
+                            })
+                            .collect();
+                        return Err(CommandError::Invalid(format!(
+                            "quote {quote:?} does not match the allocated PO's service address (allocated PO has: {})",
+                            available.join(", ")
+                        )));
+                    }
+                }
+            }
+            _ => unreachable!(),
+        };
+
+        let grounded =
+            payvy_domain::invoice_evidence::quote_located(&quote, item.page, &source_pages);
+        let example = po_store::insert_vendor_field_example(
+            &mut cx.tx,
+            cx.org,
+            &po_store::NewVendorFieldExample {
+                vendor_id: bill.vendor_id,
+                bill_id: bill.id,
+                document_id: doc_id,
+                po_id: Some(matched_po.id),
+                field,
+                quote: &quote,
+                value: &normalized_value,
+                page: item.page.map(|p| p as i32),
+                grounded,
+                source: "person_tag",
+                created_by: &cx.actor.name,
+                created_at: cx.now,
+            },
+        )
+        .await?;
+        cx.emit(
+            "vendor.field_example_added",
+            bill.vendor_id,
+            json!({
+                "example_id": example.id,
+                "vendor_id": bill.vendor_id,
+                "bill_id": bill.id,
+                "po_id": matched_po.id,
+                "field": field,
+                "quote": quote,
+                "value": normalized_value,
+                "grounded": grounded,
+                "source": "person_tag",
+            }),
+        )
+        .await?;
+        if field == "po_reference" && bill.po_reference.is_none() && fill_po.is_none() {
+            fill_po = Some(quote);
+        } else if field == "service_address"
+            && bill.service_address.is_none()
+            && fill_addr.is_none()
+        {
+            fill_addr = Some(quote);
+        }
+        saved.push(example);
+    }
+
+    if fill_po.is_some() || fill_addr.is_some() {
+        store::fill_bill_po_hints(
+            &mut cx.tx,
+            bill.id,
+            fill_po.as_deref(),
+            fill_addr.as_deref(),
+        )
+        .await?;
+        let mut fields = Vec::new();
+        if fill_po.is_some() {
+            fields.push("po_reference");
+        }
+        if fill_addr.is_some() {
+            fields.push("service_address");
+        }
+        cx.emit(
+            "bill.po_hints_filled",
+            bill.id,
+            json!({
+                "bill_id": bill.id,
+                "fields": fields,
+                "source": "person_tag",
+                "po_reference": fill_po,
+                "service_address": fill_addr,
+            }),
+        )
+        .await?;
+    }
+    Ok(saved)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MatchTag {
+    bill_id: Uuid,
+    evidence: Vec<EvidenceIn>,
+}
+
+pub async fn match_tag(cx: &mut Cx<'_>, input: MatchTag) -> Result<Value, CommandError> {
+    ensure_enabled(cx).await?;
+    if input.evidence.is_empty() {
+        return Err(CommandError::Invalid("evidence must not be empty".into()));
+    }
+    let bill = store::get_bill(&mut cx.tx, input.bill_id)
+        .await?
+        .ok_or(CommandError::NotFound("bill"))?;
+    let allocs = po_store::allocations_for_bill(&mut cx.tx, bill.id).await?;
+    if allocs.is_empty() {
+        return Err(CommandError::Conflict(
+            "bill has no purchase order allocations to tag against".into(),
+        ));
+    }
+    let mut po_ids: Vec<Uuid> = allocs.iter().map(|a| a.po_id).collect();
+    po_ids.sort();
+    po_ids.dedup();
+    let mut pos = Vec::with_capacity(po_ids.len());
+    for id in po_ids {
+        if let Some(po) = po_store::get_po(&mut cx.tx, id).await? {
+            pos.push(po);
+        }
+    }
+    let examples = save_evidence_tags(cx, &bill, &pos, &input.evidence).await?;
+    Ok(json!({ "bill_id": bill.id, "examples": examples }))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExampleRetire {
+    example_id: Uuid,
+    reason: String,
+}
+
+pub async fn example_retire(cx: &mut Cx<'_>, input: ExampleRetire) -> Result<Value, CommandError> {
+    ensure_enabled(cx).await?;
+    let reason = text(Some(input.reason))
+        .ok_or_else(|| CommandError::Invalid("a reason is required".into()))?;
+    let ex = po_store::get_vendor_field_example(&mut cx.tx, input.example_id)
+        .await?
+        .ok_or(CommandError::NotFound("vendor field example"))?;
+    if ex.retired_at.is_some() {
+        return Err(CommandError::Conflict(
+            "this example is already retired".into(),
+        ));
+    }
+    let retired =
+        po_store::retire_vendor_field_example(&mut cx.tx, ex.id, &cx.actor.name, &reason, cx.now)
+            .await?;
+    cx.emit(
+        "vendor.field_example_retired",
+        retired.vendor_id,
+        json!({
+            "example_id": retired.id,
+            "vendor_id": retired.vendor_id,
+            "reason": reason,
+        }),
+    )
+    .await?;
+    Ok(json!({ "example": retired }))
 }

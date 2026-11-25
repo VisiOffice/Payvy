@@ -77,9 +77,11 @@ pub async fn get(cx: &mut Cx<'_>, input: Get) -> Result<Value, CommandError> {
         "in_force": limits.for_vendor(v.id),
         "company_cents": payvy_domain::workflow::AutoPayLimit::effective(limits.company, None).cents,
     });
+    let field_examples =
+        store::purchase_orders::list_live_vendor_field_examples(&mut cx.tx, v.id).await?;
     Ok(
         json!({ "vendor": v, "accounts": accounts, "workflow": workflow, "payees": payees, "payee_invites": store::vendor_payee_invites(&mut cx.tx, v.id).await?, "auto_pay_limit": auto_pay_limit,
-               "card": card.as_ref().map(super::cards::shown), "card_charges": card_charges }),
+               "card": card.as_ref().map(super::cards::shown), "card_charges": card_charges, "field_examples": field_examples }),
     )
 }
 
