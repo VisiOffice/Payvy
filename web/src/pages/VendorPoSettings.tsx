@@ -5,6 +5,7 @@
 // (po.set_vendor_settings). Caps are pinned onto each PO revision when it
 // is made, so changing them here never rewrites an existing PO.
 import { useCallback, useEffect, useState } from 'react';
+import { Badge } from '@astryxdesign/core/Badge';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
 import { Card } from '@astryxdesign/core/Card';
@@ -17,7 +18,26 @@ import { useToast } from '@astryxdesign/core/Toast';
 import { VStack } from '@astryxdesign/core/VStack';
 import { Allowed, useCan } from '../permissions';
 import { run } from '../api/client';
-import { cents as toCents, dollars } from '../money';
+import { cents as toCents, date, dollars } from '../money';
+import { ReasonDialog } from '../inbox/ReasonDialog';
+
+export interface FieldExample {
+  id: string;
+  field: 'po_reference' | 'service_address' | 'vendor_reference';
+  quote: string;
+  value: string;
+  page: number | null;
+  grounded: boolean;
+  source: string;
+  created_by: string;
+  created_at: string;
+}
+
+const EXAMPLE_FIELD_LABEL: Record<FieldExample['field'], string> = {
+  po_reference: 'PO number',
+  service_address: 'Service address',
+  vendor_reference: 'Vendor reference',
+};
 
 interface VendorPo {
   vendor_id: string;
@@ -36,10 +56,19 @@ interface VendorPolicy {
   updated_by: string | null;
 }
 
-export function VendorPoSettings({ vendorId }: { vendorId: string }) {
+export function VendorPoSettings({
+  vendorId,
+  examples = [],
+  onExamplesChanged,
+}: {
+  vendorId: string;
+  examples?: FieldExample[];
+  onExamplesChanged?: () => Promise<void> | void;
+}) {
   const [on, setOn] = useState<boolean | null>(null);
   const [data, setData] = useState<VendorPo | null>(null);
   const [policy, setPolicy] = useState<VendorPolicy | null>(null);
+  const [retiring, setRetiring] = useState<FieldExample | null>(null);
   const canPolicy = useCan()('po.policy_set');
   const [capDollars, setCapDollars] = useState('');
   const [capPercent, setCapPercent] = useState('');
@@ -198,7 +227,54 @@ export function VendorPoSettings({ vendorId }: { vendorId: string }) {
             </VStack>
           </Card>
         )}
+        <Card>
+          <VStack gap={3}>
+            <Text weight="semibold">Learned PO matching examples</Text>
+            {examples.length === 0 ? (
+              <Text type="supporting">
+                None yet. When a person matches a bill by hand and tags what on the invoice tied it to the PO, it appears here.
+              </Text>
+            ) : (
+              <VStack gap={2}>
+                {examples.map((ex) => (
+                  <HStack key={ex.id} gap={2} hAlign="between" vAlign="center" wrap="wrap">
+                    <VStack gap={0}>
+                      <HStack gap={2} vAlign="center" wrap="wrap">
+                        <Text weight="semibold">{EXAMPLE_FIELD_LABEL[ex.field] ?? ex.field}</Text>
+                        <Text>“{ex.quote}”</Text>
+                        <Badge
+                          label={ex.grounded ? 'Text located' : 'Not located in text'}
+                          variant={ex.grounded ? 'success' : 'neutral'}
+                        />
+                      </HStack>
+                      <Text type="supporting">
+                        Normalized: {ex.value} · tagged by {ex.created_by} on {date(ex.created_at)}
+                      </Text>
+                    </VStack>
+                    <Allowed command="po.example_retire">
+                      <Button label="Retire…" variant="ghost" size="sm" onClick={() => setRetiring(ex)} />
+                    </Allowed>
+                  </HStack>
+                ))}
+              </VStack>
+            )}
+          </VStack>
+        </Card>
       </VStack>
+      {retiring && (
+        <ReasonDialog
+          title={`Retire example “${retiring.quote}”`}
+          actionLabel="Retire"
+          isRequired
+          onClose={() => setRetiring(null)}
+          onSubmit={async (reason) => {
+            await run('po.example_retire', { example_id: retiring.id, reason });
+            setRetiring(null);
+            toast({ body: 'Example retired' });
+            await onExamplesChanged?.();
+          }}
+        />
+      )}
     </section>
   );
 

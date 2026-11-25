@@ -112,6 +112,16 @@ Conventions follow Visirent (`~/Code/visirent`).
   a PO becomes active or is resent, reserves only, and is recorded as agent
   `workflow`. Never widen it to guess (fuzzy text, partial cover, nearest
   address); anything less plain stays for a person. See `docs/purchase-orders.md`.
+- **A bill that doesn't match says why, and a person's match teaches the vendor.**
+  Before automatic matching (`place_bill`, `po.match_retry`), missing `po_reference` or
+  `service_address` hints are copied from the bill's stored reading (`bill.po_hints_filled`,
+  never overwriting existing hints). Every open, unmatched bill whose vendor has active POs
+  carries a pure `diagnosis` (`payvy_domain::purchase_orders::diagnose_auto_match`) explaining why
+  it didn't match. When a person matches by hand (`po.match_apply` with optional `evidence`, or
+  person-only `po.match_tag`), quotes that normalize (`reference_key`/`street_key`) to an
+  allocated PO's own identifiers are grounded against the document text, fill NULL bill hints,
+  and are saved in `vendor_field_examples` (`po.example_retire` retires wrong ones). See
+  `docs/purchase-orders.md`.
 - **A card on file is charged by the vendor, never paid by Payvy** (`commands/cards.rs`,
   `payvy_domain::cards`). A person links one of the company's cards to a vendor
   (`vendor.link_card`; Payvy keeps the bank's card id and last four, never a number;

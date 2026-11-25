@@ -112,6 +112,38 @@ It is recorded as `po.match_applied` by Payvy's `workflow` agent, with
 Bills from before this change kept no PO number or address, so they are
 matched by a person as before.
 
+## Hint backfill, match retry, and learned examples
+
+When an open, unmatched bill has a NULL `po_reference` or `service_address`
+but its stored reading has a value for it, automatic matching (`place_bill` /
+`auto_match_bill`, including when a PO activates or is resent) copies the
+missing hint onto the bill first and emits `bill.po_hints_filled` (source
+`stored_reading`). A hint already on the bill is never overwritten.
+
+- **`po.match_retry`** (Routine, `Prepare` permission) runs that hint fill and
+  the plain automatic-matching rule on one open, unmatched bill. Its result
+  always returns a structured `diagnosis` (`payvy_domain::purchase_orders::diagnose_auto_match`):
+  either `matched` (PO and rule) or `not_matched` with a closed reason
+  (`purchase_orders_off`, `no_active_po`, `no_hints`, `po_number_names_none`,
+  `address_names_none`, `several_candidates`, `not_in_period`, or
+  `not_covered`), the candidate count, and the PO number for single-candidate
+  cases. `bill.get` also includes `purchase_orders.diagnosis` for any open,
+  unmatched bill whose vendor has active POs.
+- **Tagging evidence on a manual match** (`vendor_field_examples`):
+  `po.match_apply` accepts an optional `evidence` array (`{ field, quote, page? }`),
+  and **`po.match_tag`** (Routine, person-only, `Prepare`) records evidence
+  for a bill that already has allocations. Supported fields are
+  `po_reference`, `service_address`, and `vendor_reference`. Every quote must
+  normalize (`reference_key` or `street_key`) to an allocated PO's own
+  identifier; otherwise it is refused naming what the PO has. Quotes are
+  checked against the document's extracted text (`grounded`), emit
+  `vendor.field_example_added`, and fill NULL `po_reference`/`service_address`
+  hints on the bill (`bill.po_hints_filled`, source `person_tag`).
+  **`po.example_retire`** (Routine, person-only, `Admin`, with a reason)
+  retires a wrong example (`vendor.field_example_retired`). `vendor.get` lists
+  the vendor's live examples. In Phase 1, examples are recorded for future
+  model guidance and do not change the plain matching rule.
+
 ## Quantity matching
 
 Bill lines carry the quantity, unit and unit price as printed (from extraction's

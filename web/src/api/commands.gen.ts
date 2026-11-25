@@ -816,6 +816,39 @@ export interface PoMatchApplyInput {
       amount_cents: number;
     }[]
   ];
+  evidence?: {
+    field: "po_reference" | "service_address" | "vendor_reference";
+    quote: string;
+    page?: number;
+  }[];
+}
+
+export interface PoMatchRetryInput {
+  bill_id: string;
+}
+
+export interface PoMatchTagInput {
+  bill_id: string;
+  /**
+   * @minItems 1
+   */
+  evidence: [
+    {
+      field: "po_reference" | "service_address" | "vendor_reference";
+      quote: string;
+      page?: number;
+    },
+    ...{
+      field: "po_reference" | "service_address" | "vendor_reference";
+      quote: string;
+      page?: number;
+    }[]
+  ];
+}
+
+export interface PoExampleRetireInput {
+  example_id: string;
+  reason: string;
 }
 
 export interface PoOverrideInput {
@@ -1432,6 +1465,9 @@ export interface CommandInputs {
   "po.withdraw_paid": PoWithdrawPaidInput;
   "po.match_preview": PoMatchPreviewInput;
   "po.match_apply": PoMatchApplyInput;
+  "po.match_retry": PoMatchRetryInput;
+  "po.match_tag": PoMatchTagInput;
+  "po.example_retire": PoExampleRetireInput;
   "po.override": PoOverrideInput;
   "po.allocation_accept": PoAllocationAcceptInput;
   "po.allocation_reverse": PoAllocationReverseInput;
@@ -1576,7 +1612,10 @@ export const COMMANDS: Record<CommandName, { tier: Tier; personOnly: boolean; su
   "po.confirm_paid": { tier: "routine", personOnly: true, summary: "Confirm a paid-outside declaration on a purchase order (person only, Pay permission). Refused for the person who declared it. Once confirmed, a paired bill that is already released is marked paid at once." },
   "po.withdraw_paid": { tier: "routine", personOnly: true, summary: "Withdraw a paid-outside declaration on a purchase order (person only, Pay permission), with a reason. Allowed only while no bill has been marked paid by it." },
   "po.match_preview": { tier: "read", personOnly: false, summary: "Which of a bill's vendor's active POs it could go against: available amounts, a proposed allocation and any exception (no PO, over available). Writes and reserves nothing." },
-  "po.match_apply": { tier: "confirmed", personOnly: false, summary: "Reserve bill amounts against purchase orders. Atomic across every PO in the call: all affected POs are locked in a consistent order, the whole set is validated (active, vendor, available plus the revision's pinned allowance, total not over the bill), then everything reserves together or nothing does. Reserving is preparation, not approval." },
+  "po.match_apply": { tier: "confirmed", personOnly: false, summary: "Reserve bill amounts against purchase orders. Atomic across every PO in the call: all affected POs are locked in a consistent order, the whole set is validated (active, vendor, available plus the revision's pinned allowance, total not over the bill), then everything reserves together or nothing does. Reserving is preparation, not approval. Optional evidence tags what on the invoice tied it to the PO." },
+  "po.match_retry": { tier: "routine", personOnly: false, summary: "Fill any missing PO number or service address on an open, unmatched bill from its stored reading, then retry the plain automatic-matching rule. Always returns a structured diagnosis explaining why the bill matched or did not match." },
+  "po.match_tag": { tier: "routine", personOnly: true, summary: "Record what on an invoice tied an already-allocated bill to its purchase order (person only). Each quote must normalize to the allocated PO's number, vendor reference, or service address; fills missing hints on the bill and saves a vendor field example." },
+  "po.example_retire": { tier: "routine", personOnly: true, summary: "Retire a learned vendor field example with a reason (person only, Admin)." },
   "po.override": { tier: "confirmed", personOnly: true, summary: "Permit one bill's PO exception (person only, separate from vendor approval): bound to this bill, its current POs and allocations, the exception and an authorized excess amount, with a required reason. Relevant changes void it and need a new override. It does not create PO capacity or hide the excess." },
   "po.allocation_accept": { tier: "routine", personOnly: false, summary: "Accept a reserved allocation as part of preparing a bill: the amount moves from reserved to consumed. This is not bill approval." },
   "po.allocation_reverse": { tier: "routine", personOnly: false, summary: "Release a reserved or consumed allocation with a reason (match rejected, bill rejected, bill voided). Capacity returns by this reversal record; allocations are never deleted. A PO revision never releases an allocation." },
