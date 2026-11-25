@@ -304,7 +304,7 @@ impl AutoRule {
 }
 
 /// A PO number as compared: case, spaces, `#` and dashes don't count.
-fn reference_key(s: &str) -> String {
+pub fn reference_key(s: &str) -> String {
     s.chars()
         .filter(|c| c.is_alphanumeric())
         .flat_map(char::to_lowercase)
@@ -401,6 +401,162 @@ pub fn auto_match(
     };
     let c = &candidates[one];
     (c.in_period && bill_cents > 0 && c.unbilled_cents >= bill_cents).then_some((one, rule))
+}
+
+/// Why an open bill with no allocation did not automatically match a PO.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NotMatchedReason {
+    PurchaseOrdersOff,
+    NoActivePo,
+    NoHints,
+    PoNumberNamesNone,
+    AddressNamesNone,
+    SeveralCandidates,
+    NotInPeriod,
+    NotCovered,
+}
+
+/// Structured explanation of what the plain automatic-matching rule found
+/// for an open bill.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum MatchDiagnosis {
+    Matched {
+        po_number: String,
+        rule: String,
+    },
+    NotMatched {
+        reason: NotMatchedReason,
+        candidate_count: usize,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        po_number: Option<String>,
+    },
+}
+
+/// Explains why `auto_match` would match or not match a bill against the
+/// vendor's active POs. Mirrors `auto_match` without changing its rule.
+pub fn diagnose_auto_match(
+    po_enabled: bool,
+    bill_cents: Cents,
+    po_reference: Option<&str>,
+    service_address: Option<&str>,
+    candidates: &[AutoCandidate<'_>],
+) -> MatchDiagnosis {
+    if !po_enabled {
+        return MatchDiagnosis::NotMatched {
+            reason: NotMatchedReason::PurchaseOrdersOff,
+            candidate_count: 0,
+            po_number: None,
+        };
+    }
+    if candidates.is_empty() {
+        return MatchDiagnosis::NotMatched {
+            reason: NotMatchedReason::NoActivePo,
+            candidate_count: 0,
+            po_number: None,
+        };
+    }
+    let reference = po_reference.map(reference_key).filter(|r| !r.is_empty());
+    let addr_key = service_address.and_then(street_key);
+    if reference.is_none() && addr_key.is_none() {
+        return MatchDiagnosis::NotMatched {
+            reason: NotMatchedReason::NoHints,
+            candidate_count: candidates.len(),
+            po_number: None,
+        };
+    }
+    if let Some(r) = reference {
+        let hits: Vec<usize> = candidates
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| {
+                reference_key(c.po_number) == r
+                    || c.vendor_reference.map(reference_key).as_deref() == Some(r.as_str())
+            })
+            .map(|(i, _)| i)
+            .collect();
+        return match hits[..] {
+            [] => MatchDiagnosis::NotMatched {
+                reason: NotMatchedReason::PoNumberNamesNone,
+                candidate_count: 0,
+                po_number: None,
+            },
+            [one] => {
+                let c = &candidates[one];
+                if !c.in_period {
+                    MatchDiagnosis::NotMatched {
+                        reason: NotMatchedReason::NotInPeriod,
+                        candidate_count: 1,
+                        po_number: Some(c.po_number.to_owned()),
+                    }
+                } else if bill_cents <= 0 || c.unbilled_cents < bill_cents {
+                    MatchDiagnosis::NotMatched {
+                        reason: NotMatchedReason::NotCovered,
+                        candidate_count: 1,
+                        po_number: Some(c.po_number.to_owned()),
+                    }
+                } else {
+                    MatchDiagnosis::Matched {
+                        po_number: c.po_number.to_owned(),
+                        rule: AutoRule::PoNumber.as_str().to_owned(),
+                    }
+                }
+            }
+            _ => MatchDiagnosis::NotMatched {
+                reason: NotMatchedReason::SeveralCandidates,
+                candidate_count: hits.len(),
+                po_number: None,
+            },
+        };
+    }
+    let key = addr_key.expect("checked above");
+    let addr_hits: Vec<usize> = candidates
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.service_address.and_then(street_key).as_deref() == Some(key.as_str()))
+        .map(|(i, _)| i)
+        .collect();
+    if addr_hits.is_empty() {
+        return MatchDiagnosis::NotMatched {
+            reason: NotMatchedReason::AddressNamesNone,
+            candidate_count: 0,
+            po_number: None,
+        };
+    }
+    let in_period_hits: Vec<usize> = addr_hits
+        .iter()
+        .copied()
+        .filter(|&i| candidates[i].in_period)
+        .collect();
+    match in_period_hits[..] {
+        [] => MatchDiagnosis::NotMatched {
+            reason: NotMatchedReason::NotInPeriod,
+            candidate_count: addr_hits.len(),
+            po_number: (addr_hits.len() == 1)
+                .then(|| candidates[addr_hits[0]].po_number.to_owned()),
+        },
+        [one] => {
+            let c = &candidates[one];
+            if bill_cents <= 0 || c.unbilled_cents < bill_cents {
+                MatchDiagnosis::NotMatched {
+                    reason: NotMatchedReason::NotCovered,
+                    candidate_count: 1,
+                    po_number: Some(c.po_number.to_owned()),
+                }
+            } else {
+                MatchDiagnosis::Matched {
+                    po_number: c.po_number.to_owned(),
+                    rule: AutoRule::ServiceAddress.as_str().to_owned(),
+                }
+            }
+        }
+        _ => MatchDiagnosis::NotMatched {
+            reason: NotMatchedReason::SeveralCandidates,
+            candidate_count: in_period_hits.len(),
+            po_number: None,
+        },
+    }
 }
 
 #[cfg(test)]
@@ -683,5 +839,103 @@ mod tests {
             true,
             PaidOutside::AcceptFromSource
         ));
+    }
+
+    #[test]
+    fn diagnose_auto_match_explains_every_reason() {
+        let main_st = "120 Main Street, Austin, TX";
+        let c1 = cand("PO-1", Some(main_st), 75_000);
+
+        assert_eq!(
+            diagnose_auto_match(false, 50_000, Some("PO-1"), None, std::slice::from_ref(&c1)),
+            MatchDiagnosis::NotMatched {
+                reason: NotMatchedReason::PurchaseOrdersOff,
+                candidate_count: 0,
+                po_number: None,
+            }
+        );
+        assert_eq!(
+            diagnose_auto_match(true, 50_000, Some("PO-1"), None, &[]),
+            MatchDiagnosis::NotMatched {
+                reason: NotMatchedReason::NoActivePo,
+                candidate_count: 0,
+                po_number: None,
+            }
+        );
+        assert_eq!(
+            diagnose_auto_match(true, 50_000, None, None, std::slice::from_ref(&c1)),
+            MatchDiagnosis::NotMatched {
+                reason: NotMatchedReason::NoHints,
+                candidate_count: 1,
+                po_number: None,
+            }
+        );
+        assert_eq!(
+            diagnose_auto_match(
+                true,
+                50_000,
+                Some("PO-999"),
+                Some(main_st),
+                std::slice::from_ref(&c1)
+            ),
+            MatchDiagnosis::NotMatched {
+                reason: NotMatchedReason::PoNumberNamesNone,
+                candidate_count: 0,
+                po_number: None,
+            }
+        );
+        assert_eq!(
+            diagnose_auto_match(
+                true,
+                50_000,
+                None,
+                Some("100 Other St"),
+                std::slice::from_ref(&c1)
+            ),
+            MatchDiagnosis::NotMatched {
+                reason: NotMatchedReason::AddressNamesNone,
+                candidate_count: 0,
+                po_number: None,
+            }
+        );
+        assert_eq!(
+            diagnose_auto_match(
+                true,
+                50_000,
+                None,
+                Some(main_st),
+                &[c1.clone(), cand("PO-2", Some(main_st), 75_000)]
+            ),
+            MatchDiagnosis::NotMatched {
+                reason: NotMatchedReason::SeveralCandidates,
+                candidate_count: 2,
+                po_number: None,
+            }
+        );
+        let mut out_period = c1.clone();
+        out_period.in_period = false;
+        assert_eq!(
+            diagnose_auto_match(true, 50_000, None, Some(main_st), &[out_period]),
+            MatchDiagnosis::NotMatched {
+                reason: NotMatchedReason::NotInPeriod,
+                candidate_count: 1,
+                po_number: Some("PO-1".into()),
+            }
+        );
+        assert_eq!(
+            diagnose_auto_match(true, 80_000, Some("PO-1"), None, std::slice::from_ref(&c1)),
+            MatchDiagnosis::NotMatched {
+                reason: NotMatchedReason::NotCovered,
+                candidate_count: 1,
+                po_number: Some("PO-1".into()),
+            }
+        );
+        assert_eq!(
+            diagnose_auto_match(true, 50_000, None, Some("120 MAIN ST."), &[c1]),
+            MatchDiagnosis::Matched {
+                po_number: "PO-1".into(),
+                rule: "service_address".into(),
+            }
+        );
     }
 }

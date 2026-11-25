@@ -207,6 +207,26 @@ fn normalized(s: &str) -> String {
         .join(" ")
         .to_lowercase()
 }
+
+/// Whether `quote` appears verbatim (up to whitespace/case normalization) in
+/// the document's extracted `pages` (on `page` if given, else on any page).
+pub fn quote_located(quote: &str, page: Option<u32>, pages: &[SourcePage]) -> bool {
+    let q = normalized(quote);
+    if q.is_empty() {
+        return false;
+    }
+    match page {
+        Some(n) => pages
+            .iter()
+            .find(|p| p.page == n)
+            .and_then(|p| p.text.as_deref())
+            .is_some_and(|t| normalized(t).contains(&q)),
+        None => pages
+            .iter()
+            .filter_map(|p| p.text.as_deref())
+            .any(|t| normalized(t).contains(&q)),
+    }
+}
 /// Location is not proof of semantic correctness. The UI always says "text located".
 /// Require the claimed value and row context in the quote, not just somewhere on the page.
 pub fn ground(

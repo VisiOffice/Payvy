@@ -545,12 +545,36 @@
       "tier": "read"
     },
     {
-      "input_schema": "{\"type\":\"object\",\"required\":[\"bill_id\",\"allocations\"],\"properties\":{\"bill_id\":{\"type\":\"string\",\"format\":\"uuid\"},\"allocations\":{\"type\":\"array\",\"minItems\":1,\"items\":{\"type\":\"object\",\"required\":[\"po_id\",\"amount_cents\"],\"properties\":{\"po_id\":{\"type\":\"string\",\"format\":\"uuid\"},\"amount_cents\":{\"type\":\"integer\",\"minimum\":1}}}}}}",
+      "input_schema": "{\"type\":\"object\",\"required\":[\"bill_id\",\"allocations\"],\"properties\":{\"bill_id\":{\"type\":\"string\",\"format\":\"uuid\"},\"allocations\":{\"type\":\"array\",\"minItems\":1,\"items\":{\"type\":\"object\",\"required\":[\"po_id\",\"amount_cents\"],\"properties\":{\"po_id\":{\"type\":\"string\",\"format\":\"uuid\"},\"amount_cents\":{\"type\":\"integer\",\"minimum\":1}}}},\"evidence\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"required\":[\"field\",\"quote\"],\"properties\":{\"field\":{\"type\":\"string\",\"enum\":[\"po_reference\",\"service_address\",\"vendor_reference\"]},\"quote\":{\"type\":\"string\"},\"page\":{\"type\":\"integer\",\"minimum\":1}}}}}}",
       "name": "po.match_apply",
       "permission": "prepare",
       "person_only": false,
-      "summary": "Reserve bill amounts against purchase orders. Atomic across every PO in the call: all affected POs are locked in a consistent order, the whole set is validated (active, vendor, available plus the revision's pinned allowance, total not over the bill), then everything reserves together or nothing does. Reserving is preparation, not approval.",
+      "summary": "Reserve bill amounts against purchase orders. Atomic across every PO in the call: all affected POs are locked in a consistent order, the whole set is validated (active, vendor, available plus the revision's pinned allowance, total not over the bill), then everything reserves together or nothing does. Reserving is preparation, not approval. Optional evidence tags what on the invoice tied it to the PO.",
       "tier": "confirmed"
+    },
+    {
+      "input_schema": "{\"type\":\"object\",\"required\":[\"bill_id\"],\"properties\":{\"bill_id\":{\"type\":\"string\",\"format\":\"uuid\"}}}",
+      "name": "po.match_retry",
+      "permission": "prepare",
+      "person_only": false,
+      "summary": "Fill any missing PO number or service address on an open, unmatched bill from its stored reading, then retry the plain automatic-matching rule. Always returns a structured diagnosis explaining why the bill matched or did not match.",
+      "tier": "routine"
+    },
+    {
+      "input_schema": "{\"type\":\"object\",\"required\":[\"bill_id\",\"evidence\"],\"properties\":{\"bill_id\":{\"type\":\"string\",\"format\":\"uuid\"},\"evidence\":{\"type\":\"array\",\"minItems\":1,\"items\":{\"type\":\"object\",\"required\":[\"field\",\"quote\"],\"properties\":{\"field\":{\"type\":\"string\",\"enum\":[\"po_reference\",\"service_address\",\"vendor_reference\"]},\"quote\":{\"type\":\"string\"},\"page\":{\"type\":\"integer\",\"minimum\":1}}}}}}",
+      "name": "po.match_tag",
+      "permission": "prepare",
+      "person_only": true,
+      "summary": "Record what on an invoice tied an already-allocated bill to its purchase order (person only). Each quote must normalize to the allocated PO's number, vendor reference, or service address; fills missing hints on the bill and saves a vendor field example.",
+      "tier": "routine"
+    },
+    {
+      "input_schema": "{\"type\":\"object\",\"required\":[\"example_id\",\"reason\"],\"properties\":{\"example_id\":{\"type\":\"string\",\"format\":\"uuid\"},\"reason\":{\"type\":\"string\"}}}",
+      "name": "po.example_retire",
+      "permission": "admin",
+      "person_only": true,
+      "summary": "Retire a learned vendor field example with a reason (person only, Admin).",
+      "tier": "routine"
     },
     {
       "input_schema": "{\"type\":\"object\",\"required\":[\"bill_id\",\"authorized_excess_cents\",\"reason\"],\"properties\":{\"bill_id\":{\"type\":\"string\",\"format\":\"uuid\"},\"authorized_excess_cents\":{\"type\":\"integer\",\"minimum\":0},\"reason\":{\"type\":\"string\"}}}",

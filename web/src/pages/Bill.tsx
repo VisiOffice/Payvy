@@ -1,7 +1,7 @@
 import type { ReviewPayload } from '../documents/LineReview';
 import { NotificationHistory } from '../notifications/History';
 import { Allowed, useAccessVersion } from '../permissions';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'react-router';
 import { Badge } from '@astryxdesign/core/Badge';
 import { Banner } from '@astryxdesign/core/Banner';
@@ -85,6 +85,13 @@ interface Detail {
     covered_cents: number;
     uncovered_cents: number;
     allocations: { allocation_id: string; po_id: string; po_number: string | null; amount_cents: number; state: string; kind: string }[];
+    diagnosis?: {
+      outcome: 'matched' | 'not_matched';
+      reason?: string;
+      candidate_count?: number;
+      po_number?: string | null;
+      rule?: string;
+    } | null;
     exception: { kind: string; excess_cents: number; detail: string } | null;
     /** Every standing exception, each with its own permitted state. */
     exceptions: { kind: string; excess_cents: number; detail: string; overridden: boolean; overridden_by: string | null }[];
@@ -135,6 +142,8 @@ export function BillPage() {
   const [error, setError] = useState<string | null>(null);
   const [focus, setFocus] = useState<string | null>(null);
   const [open, setOpen] = useState<'release' | 'reject' | null>(null);
+  const [copiedText, setCopiedText] = useState<string | null>(null);
+  const onCopyRef = useRef<((text: string) => void) | null>(null);
   const toast = useToast();
 
   const load = useCallback(() => {
@@ -353,7 +362,18 @@ export function BillPage() {
         </VStack>
       )}
 
-      {detail.purchase_orders.enabled && <PoPanel billId={b.id} po={detail.purchase_orders} onChange={load} />}
+      {detail.purchase_orders.enabled && (
+        <PoPanel
+          billId={b.id}
+          po={detail.purchase_orders}
+          copiedText={copiedText}
+          onClearCopied={() => setCopiedText(null)}
+          onRegisterCopyTarget={(fn) => {
+            onCopyRef.current = fn;
+          }}
+          onChange={load}
+        />
+      )}
 
       {detail.payments.length > 0 && (
         <VStack gap={2}>
@@ -437,6 +457,15 @@ export function BillPage() {
               highlights={highlights}
               focus={focus}
               arrangement={detail.arrangement?.pages}
+              copy={{
+                onCopy: (text) => {
+                  if (onCopyRef.current) {
+                    onCopyRef.current(text);
+                  } else {
+                    setCopiedText(text);
+                  }
+                },
+              }}
             />
           </div>
         </div>
@@ -477,11 +506,41 @@ interface PoPreview {
   candidates: { po_id: string; po_number: string; available_cents: number; proposed_cents: number; verified_reference: boolean; over_period: boolean; quantity_findings: { kind: string; detail: string }[] }[];
 }
 
+function diagnosisMessage(d: NonNullable<Detail['purchase_orders']['diagnosis']>): string {
+  const n = d.candidate_count ?? 0;
+  const openPos = n === 1 ? '1 open purchase order' : `${n} open purchase orders`;
+  switch (d.reason) {
+    case 'no_hints':
+      return `No PO number or service address was read from this invoice. This vendor has ${openPos}.`;
+    case 'po_number_names_none':
+      return "The PO number read from this invoice doesn't match any active purchase order for this vendor.";
+    case 'address_names_none':
+      return "The service address read from this invoice doesn't match any active purchase order for this vendor.";
+    case 'several_candidates':
+      return `Several active purchase orders match this invoice (${n} candidates).`;
+    case 'not_in_period':
+      return `${d.po_number ? `PO ${d.po_number}` : 'The matching PO'} doesn't cover this invoice's date.`;
+    case 'not_covered':
+      return `${d.po_number ? `PO ${d.po_number}` : 'The matching PO'} doesn't have enough unbilled amount to cover this bill.`;
+    case 'purchase_orders_off':
+      return 'Purchase orders are turned off for this company.';
+    case 'no_active_po':
+      return 'This vendor has no active purchase orders.';
+    default:
+      return "This bill didn't automatically match a purchase order.";
+  }
+}
+
+type EvidenceField = 'po_reference' | 'service_address' | 'vendor_reference';
+
 /** PO matching beside the invoice: identify, reserve, accept, override.
  * Matching prepares the bill; it never approves or pays it. */
-function PoPanel({ billId, po, onChange }: {
+function PoPanel({ billId, po, copiedText, onClearCopied, onRegisterCopyTarget, onChange }: {
   billId: string;
   po: Detail['purchase_orders'];
+  copiedText: string | null;
+  onClearCopied: () => void;
+  onRegisterCopyTarget: (fn: ((text: string) => void) | null) => void;
   onChange: () => void;
 }) {
   const [preview, setPreview] = useState<PoPreview | null>(null);
@@ -489,7 +548,26 @@ function PoPanel({ billId, po, onChange }: {
   const [excess, setExcess] = useState('');
   const [reason, setReason] = useState('');
   const [reverseId, setReverseId] = useState<string | null>(null);
+  const [taggingPo, setTaggingPo] = useState<{ po_id: string; po_number: string } | null>(null);
+  const [evidence, setEvidence] = useState<Record<EvidenceField, string>>({
+    po_reference: '',
+    service_address: '',
+    vendor_reference: '',
+  });
+  const [activeField, setActiveField] = useState<EvidenceField>('service_address');
+  const [retrying, setRetrying] = useState(false);
   const toast = useToast();
+
+  useEffect(() => {
+    if (!taggingPo) {
+      onRegisterCopyTarget(null);
+      return;
+    }
+    onRegisterCopyTarget((text: string) => {
+      setEvidence((prev) => ({ ...prev, [activeField]: text }));
+    });
+    return () => onRegisterCopyTarget(null);
+  }, [taggingPo, activeField, onRegisterCopyTarget]);
 
   const loadPreview = useCallback(() => {
     run<{ result: PoPreview }>('po.match_preview', { bill_id: billId })
@@ -510,7 +588,25 @@ function PoPanel({ billId, po, onChange }: {
     if (firstUnpermitted) setExcess(dollars(firstUnpermitted.excess_cents));
   }, [firstUnpermitted?.excess_cents]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  async function apply(poId: string) {
+  async function retryMatch() {
+    setRetrying(true);
+    try {
+      const r = await run<{ matched: { po_number: string } | null; diagnosis: NonNullable<Detail['purchase_orders']['diagnosis']> }>('po.match_retry', { bill_id: billId });
+      if (r.result.matched) {
+        toast({ body: `Matched to ${r.result.matched.po_number}` });
+      } else {
+        toast({ body: diagnosisMessage(r.result.diagnosis) });
+      }
+      onChange();
+      loadPreview();
+    } catch (e) {
+      toast({ body: e instanceof Error ? e.message : String(e), type: 'error' });
+    } finally {
+      setRetrying(false);
+    }
+  }
+
+  async function apply(poId: string, poNumber: string) {
     const amount = toCents(amounts[poId] ?? '');
     if (amount === null) return;
     try {
@@ -519,8 +615,34 @@ function PoPanel({ billId, po, onChange }: {
       const p = await previewCommand('po.match_apply', input);
       await run('po.match_apply', input, p.confirm_token);
       toast({ body: 'Reserved against the purchase order' });
+      setTaggingPo({ po_id: poId, po_number: poNumber });
+      if (copiedText) {
+        setEvidence((prev) => ({ ...prev, [activeField]: copiedText }));
+        onClearCopied();
+      }
       onChange();
       loadPreview();
+    } catch (e) {
+      toast({ body: e instanceof Error ? e.message : String(e), type: 'error' });
+    }
+  }
+
+  async function saveTag() {
+    const evList = (['po_reference', 'service_address', 'vendor_reference'] as EvidenceField[])
+      .filter((f) => evidence[f].trim().length > 0)
+      .map((f) => ({ field: f, quote: evidence[f].trim() }));
+    const [first, ...rest] = evList;
+    if (!first) {
+      setTaggingPo(null);
+      return;
+    }
+    try {
+      await run('po.match_tag', { bill_id: billId, evidence: [first, ...rest] });
+      toast({ body: 'Saved matching example for this vendor' });
+      setTaggingPo(null);
+      setEvidence({ po_reference: '', service_address: '', vendor_reference: '' });
+      onClearCopied();
+      onChange();
     } catch (e) {
       toast({ body: e instanceof Error ? e.message : String(e), type: 'error' });
     }
@@ -558,6 +680,20 @@ function PoPanel({ billId, po, onChange }: {
       <Text>
         Covered {money(po.covered_cents)} · Uncovered {money(po.uncovered_cents)}
       </Text>
+      {po.diagnosis && po.diagnosis.outcome === 'not_matched' && (
+        <VStack gap={2}>
+          <Banner
+            status="info"
+            title="Not matched automatically"
+            description={diagnosisMessage(po.diagnosis)}
+          />
+          <HStack gap={2}>
+            <Allowed command="po.match_retry">
+              <Button label="Try again" variant="secondary" size="sm" isDisabled={retrying} clickAction={retryMatch} />
+            </Allowed>
+          </HStack>
+        </VStack>
+      )}
       {po.exceptions.map((e, i) =>
         e.overridden ? (
           <Banner
@@ -622,6 +758,46 @@ function PoPanel({ billId, po, onChange }: {
           </HStack>
         </HStack>
       ))}
+      {taggingPo && (
+        <Card>
+          <VStack gap={3}>
+            <Text weight="semibold">What on the invoice ties it to {taggingPo.po_number}?</Text>
+            <Text type="supporting">
+              Optional. Focus a field and click text on the invoice to copy it, or skip — the reservation is already applied.
+            </Text>
+            <div onFocusCapture={() => setActiveField('po_reference')}>
+              <TextInput
+                label="PO number printed on invoice"
+                value={evidence.po_reference}
+                onChange={(v: string) => setEvidence((prev) => ({ ...prev, po_reference: v }))}
+                placeholder="e.g. PO-1042"
+              />
+            </div>
+            <div onFocusCapture={() => setActiveField('service_address')}>
+              <TextInput
+                label="Service address printed on invoice"
+                value={evidence.service_address}
+                onChange={(v: string) => setEvidence((prev) => ({ ...prev, service_address: v }))}
+                placeholder="e.g. 120 Main St"
+              />
+            </div>
+            <div onFocusCapture={() => setActiveField('vendor_reference')}>
+              <TextInput
+                label="Vendor reference printed on invoice"
+                value={evidence.vendor_reference}
+                onChange={(v: string) => setEvidence((prev) => ({ ...prev, vendor_reference: v }))}
+                placeholder="e.g. Job #44"
+              />
+            </div>
+            <HStack gap={2} wrap="wrap">
+              <Allowed command="po.match_tag">
+                <Button label="Save example" variant="primary" size="sm" clickAction={saveTag} />
+              </Allowed>
+              <Button label="Skip" variant="ghost" size="sm" onClick={() => setTaggingPo(null)} />
+            </HStack>
+          </VStack>
+        </Card>
+      )}
       {candidates.map((c) => (
         <HStack key={c.po_id} gap={2} vAlign="end">
           <TextInput
@@ -629,7 +805,7 @@ function PoPanel({ billId, po, onChange }: {
             value={amounts[c.po_id] ?? ''}
             onChange={(v: string) => setAmounts((m) => ({ ...m, [c.po_id]: v }))}
           />
-          <Button label="Reserve" variant="secondary" onClick={() => apply(c.po_id)} />
+          <Button label="Reserve" variant="secondary" onClick={() => apply(c.po_id, c.po_number)} />
         </HStack>
       ))}
       {candidates.length === 0 && po.allocations.length === 0 && !po.exception && (
