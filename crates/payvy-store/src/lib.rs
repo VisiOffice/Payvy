@@ -1010,6 +1010,28 @@ pub async fn release_bill(
     Ok(())
 }
 
+/// Fills missing PO matching hints on a bill without ever overwriting a hint
+/// that is already present.
+pub async fn fill_bill_po_hints(
+    tx: &mut Tx,
+    bill_id: Uuid,
+    po_reference: Option<&str>,
+    service_address: Option<&str>,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "UPDATE bills \
+         SET po_reference = COALESCE(po_reference, $2), \
+             service_address = COALESCE(service_address, $3) \
+         WHERE id = $1",
+    )
+    .bind(bill_id)
+    .bind(po_reference)
+    .bind(service_address)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
 /// Closes an open bill as rejected or void, with the reason.
 pub async fn close_bill(
     tx: &mut Tx,

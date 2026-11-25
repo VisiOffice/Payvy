@@ -1523,3 +1523,151 @@ pub async fn open_bills_on_po(
         })
         .collect())
 }
+
+// ── Learned vendor field examples ───────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+pub struct VendorFieldExample {
+    pub id: Uuid,
+    pub vendor_id: Uuid,
+    pub bill_id: Uuid,
+    pub document_id: Option<Uuid>,
+    pub po_id: Option<Uuid>,
+    pub field: String,
+    pub quote: String,
+    pub value: String,
+    pub page: Option<i32>,
+    pub grounded: bool,
+    pub source: String,
+    pub created_by: String,
+    pub created_at: DateTime<Utc>,
+    pub retired_by: Option<String>,
+    pub retired_at: Option<DateTime<Utc>>,
+    pub retired_reason: Option<String>,
+}
+
+macro_rules! field_example_cols {
+    () => {
+        "id, vendor_id, bill_id, document_id, po_id, field, quote, value, page, grounded, \
+         source, created_by, created_at, retired_by, retired_at, retired_reason"
+    };
+}
+
+fn field_example(r: &PgRow) -> VendorFieldExample {
+    VendorFieldExample {
+        id: r.get("id"),
+        vendor_id: r.get("vendor_id"),
+        bill_id: r.get("bill_id"),
+        document_id: r.get("document_id"),
+        po_id: r.get("po_id"),
+        field: r.get("field"),
+        quote: r.get("quote"),
+        value: r.get("value"),
+        page: r.get("page"),
+        grounded: r.get("grounded"),
+        source: r.get("source"),
+        created_by: r.get("created_by"),
+        created_at: r.get("created_at"),
+        retired_by: r.get("retired_by"),
+        retired_at: r.get("retired_at"),
+        retired_reason: r.get("retired_reason"),
+    }
+}
+
+pub struct NewVendorFieldExample<'a> {
+    pub vendor_id: Uuid,
+    pub bill_id: Uuid,
+    pub document_id: Option<Uuid>,
+    pub po_id: Option<Uuid>,
+    pub field: &'a str,
+    pub quote: &'a str,
+    pub value: &'a str,
+    pub page: Option<i32>,
+    pub grounded: bool,
+    pub source: &'a str,
+    pub created_by: &'a str,
+    pub created_at: DateTime<Utc>,
+}
+
+pub async fn insert_vendor_field_example(
+    tx: &mut Tx,
+    org_id: Uuid,
+    new: &NewVendorFieldExample<'_>,
+) -> anyhow::Result<VendorFieldExample> {
+    let row = sqlx::query(concat!(
+        "INSERT INTO vendor_field_examples (id, org_id, vendor_id, bill_id, document_id, po_id, \
+         field, quote, value, page, grounded, source, created_by, created_at) \
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING ",
+        field_example_cols!()
+    ))
+    .bind(Uuid::new_v4())
+    .bind(org_id)
+    .bind(new.vendor_id)
+    .bind(new.bill_id)
+    .bind(new.document_id)
+    .bind(new.po_id)
+    .bind(new.field)
+    .bind(new.quote)
+    .bind(new.value)
+    .bind(new.page)
+    .bind(new.grounded)
+    .bind(new.source)
+    .bind(new.created_by)
+    .bind(new.created_at)
+    .fetch_one(&mut **tx)
+    .await?;
+    Ok(field_example(&row))
+}
+
+pub async fn list_live_vendor_field_examples(
+    tx: &mut Tx,
+    vendor_id: Uuid,
+) -> anyhow::Result<Vec<VendorFieldExample>> {
+    let rows = sqlx::query(concat!(
+        "SELECT ",
+        field_example_cols!(),
+        " FROM vendor_field_examples WHERE vendor_id = $1 AND retired_at IS NULL \
+         ORDER BY created_at DESC, id"
+    ))
+    .bind(vendor_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    Ok(rows.iter().map(field_example).collect())
+}
+
+pub async fn get_vendor_field_example(
+    tx: &mut Tx,
+    id: Uuid,
+) -> anyhow::Result<Option<VendorFieldExample>> {
+    let row = sqlx::query(concat!(
+        "SELECT ",
+        field_example_cols!(),
+        " FROM vendor_field_examples WHERE id = $1 FOR UPDATE"
+    ))
+    .bind(id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(row.as_ref().map(field_example))
+}
+
+pub async fn retire_vendor_field_example(
+    tx: &mut Tx,
+    id: Uuid,
+    by: &str,
+    reason: &str,
+    now: DateTime<Utc>,
+) -> anyhow::Result<VendorFieldExample> {
+    let row = sqlx::query(concat!(
+        "UPDATE vendor_field_examples \
+         SET retired_by = $2, retired_at = $3, retired_reason = $4 \
+         WHERE id = $1 RETURNING ",
+        field_example_cols!()
+    ))
+    .bind(id)
+    .bind(by)
+    .bind(now)
+    .bind(reason)
+    .fetch_one(&mut **tx)
+    .await?;
+    Ok(field_example(&row))
+}
