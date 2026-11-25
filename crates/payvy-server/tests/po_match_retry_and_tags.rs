@@ -179,7 +179,8 @@ async fn match_retry_fills_missing_hints_from_reading_without_overwriting() {
     )
     .await;
 
-    // 1. Bill created with no hints, then has a stored reading carrying service_address.
+    // 1. Bill created with no hints, then has a stored reading carrying service_address
+    // matching the bill's invoice_number and total_cents.
     let b1 = make_bill(&db, &v, "INV-1", 50_000, "2026-11-10", None, None).await;
     assert_eq!(
         get_bill(&db, &b1).await["purchase_orders"]["diagnosis"]["reason"],
@@ -188,7 +189,11 @@ async fn match_retry_fills_missing_hints_from_reading_without_overwriting() {
     attach_reading(
         &db,
         &b1,
-        json!({ "service_address": "120 Main Street, Austin, TX" }),
+        json!({
+            "invoice_number": "INV-1",
+            "total_cents": 50_000,
+            "service_address": "120 Main Street, Austin, TX"
+        }),
         json!([{ "page": 1, "method": "pdf_text", "text": "Service at 120 Main Street, Austin, TX" }]),
     )
     .await;
@@ -234,7 +239,12 @@ async fn match_retry_fills_missing_hints_from_reading_without_overwriting() {
     attach_reading(
         &db,
         &b2,
-        json!({ "po_number": "PO-100", "service_address": "120 Main Street" }),
+        json!({
+            "invoice_number": "INV-2",
+            "total_cents": 25_000,
+            "po_number": "PO-100",
+            "service_address": "120 Main Street"
+        }),
         json!([]),
     )
     .await;
@@ -252,6 +262,58 @@ async fn match_retry_fills_missing_hints_from_reading_without_overwriting() {
     assert_eq!(d2["bill"]["po_reference"], "WRONG-PO");
     // Missing service_address was still filled without overwriting po_reference.
     assert_eq!(d2["bill"]["service_address"], "120 Main Street");
+
+    // 2b. Fallback reading with a different invoice_number fills nothing and reserves nothing.
+    let b_diff_inv = make_bill(&db, &v, "INV-DIFF", 20_000, "2026-11-10", None, None).await;
+    attach_reading(
+        &db,
+        &b_diff_inv,
+        json!({
+            "invoice_number": "INV-OTHER",
+            "total_cents": 20_000,
+            "service_address": "120 Main Street, Austin, TX"
+        }),
+        json!([]),
+    )
+    .await;
+    let r_diff_inv = commit(
+        &db.state,
+        &agent("ap-bot"),
+        "po.match_retry",
+        json!({ "bill_id": b_diff_inv }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(r_diff_inv["result"]["diagnosis"]["outcome"], "not_matched");
+    assert_eq!(r_diff_inv["result"]["diagnosis"]["reason"], "no_hints");
+    assert!(r_diff_inv["result"]["matched"].is_null());
+    assert!(get_bill(&db, &b_diff_inv).await["bill"]["service_address"].is_null());
+
+    // 2c. Fallback reading with a different amount fills nothing and reserves nothing.
+    let b_diff_amt = make_bill(&db, &v, "INV-AMT", 20_000, "2026-11-10", None, None).await;
+    attach_reading(
+        &db,
+        &b_diff_amt,
+        json!({
+            "invoice_number": "INV-AMT",
+            "total_cents": 20_001,
+            "service_address": "120 Main Street, Austin, TX"
+        }),
+        json!([]),
+    )
+    .await;
+    let r_diff_amt = commit(
+        &db.state,
+        &agent("ap-bot"),
+        "po.match_retry",
+        json!({ "bill_id": b_diff_amt }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(r_diff_amt["result"]["diagnosis"]["outcome"], "not_matched");
+    assert_eq!(r_diff_amt["result"]["diagnosis"]["reason"], "no_hints");
+    assert!(r_diff_amt["result"]["matched"].is_null());
+    assert!(get_bill(&db, &b_diff_amt).await["bill"]["service_address"].is_null());
 }
 
 /// Test 3: Every diagnosis reason is returned for a bill built to produce it.
@@ -423,7 +485,11 @@ async fn po_activating_later_fills_hints_from_reading_and_matches_bill() {
     attach_reading(
         &db,
         &b,
-        json!({ "service_address": "500 Cedar Blvd, Austin, TX" }),
+        json!({
+            "invoice_number": "INV-LATE",
+            "total_cents": 40_000,
+            "service_address": "500 Cedar Blvd, Austin, TX"
+        }),
         json!([]),
     )
     .await;
@@ -553,6 +619,20 @@ async fn person_tagging_validation_permissions_phase1_boundary_and_rls() {
             .len(),
         1
     );
+
+    // Duplicate tag on the same bill (same field and normalized value) is refused as Conflict.
+    let dup_tag = commit(
+        &db.state,
+        &person("robert"),
+        "po.match_tag",
+        json!({
+            "bill_id": b1,
+            "evidence": [{ "field": "service_address", "quote": "742 Evergreen Terrace" }],
+        }),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(dup_tag, CommandError::Conflict(_)), "{dup_tag}");
 
     // 7. `po.match_tag` and `po.example_retire` refuse an agent key.
     let err_tag = commit(

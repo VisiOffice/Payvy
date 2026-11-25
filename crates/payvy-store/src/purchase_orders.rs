@@ -1650,6 +1650,25 @@ pub async fn get_vendor_field_example(
     Ok(row.as_ref().map(field_example))
 }
 
+pub async fn has_live_vendor_field_example_on_bill(
+    tx: &mut Tx,
+    bill_id: Uuid,
+    field: &str,
+    value: &str,
+) -> anyhow::Result<bool> {
+    let row = sqlx::query(
+        "SELECT 1 FROM vendor_field_examples \
+         WHERE bill_id = $1 AND field = $2 AND value = $3 AND retired_at IS NULL \
+         LIMIT 1",
+    )
+    .bind(bill_id)
+    .bind(field)
+    .bind(value)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(row.is_some())
+}
+
 pub async fn retire_vendor_field_example(
     tx: &mut Tx,
     id: Uuid,

@@ -843,8 +843,8 @@ mod tests {
 
     #[test]
     fn diagnose_auto_match_explains_every_reason() {
-        let bev = "8932 Beverlywood Street, Los Angeles, CA";
-        let c1 = cand("PO-1", Some(bev), 75_000);
+        let main_st = "120 Main Street, Austin, TX";
+        let c1 = cand("PO-1", Some(main_st), 75_000);
 
         assert_eq!(
             diagnose_auto_match(false, 50_000, Some("PO-1"), None, std::slice::from_ref(&c1)),
@@ -875,7 +875,7 @@ mod tests {
                 true,
                 50_000,
                 Some("PO-999"),
-                Some(bev),
+                Some(main_st),
                 std::slice::from_ref(&c1)
             ),
             MatchDiagnosis::NotMatched {
@@ -903,8 +903,8 @@ mod tests {
                 true,
                 50_000,
                 None,
-                Some(bev),
-                &[c1.clone(), cand("PO-2", Some(bev), 75_000)]
+                Some(main_st),
+                &[c1.clone(), cand("PO-2", Some(main_st), 75_000)]
             ),
             MatchDiagnosis::NotMatched {
                 reason: NotMatchedReason::SeveralCandidates,
@@ -915,7 +915,7 @@ mod tests {
         let mut out_period = c1.clone();
         out_period.in_period = false;
         assert_eq!(
-            diagnose_auto_match(true, 50_000, None, Some(bev), &[out_period]),
+            diagnose_auto_match(true, 50_000, None, Some(main_st), &[out_period]),
             MatchDiagnosis::NotMatched {
                 reason: NotMatchedReason::NotInPeriod,
                 candidate_count: 1,
@@ -931,7 +931,7 @@ mod tests {
             }
         );
         assert_eq!(
-            diagnose_auto_match(true, 50_000, None, Some("8932 BEVERLYWOOD ST."), &[c1]),
+            diagnose_auto_match(true, 50_000, None, Some("120 MAIN ST."), &[c1]),
             MatchDiagnosis::Matched {
                 po_number: "PO-1".into(),
                 rule: "service_address".into(),

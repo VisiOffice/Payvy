@@ -3326,26 +3326,29 @@ pub(super) async fn bill_outside_payment_summary_from(
 async fn bill_stored_extraction(
     cx: &mut Cx<'_>,
     bill_id: Uuid,
-) -> Result<(Option<Uuid>, Option<store::Extraction>), CommandError> {
+) -> Result<(Option<Uuid>, Option<store::Extraction>, bool), CommandError> {
     if let Some(rev) = store::bill_invoice_review(&mut cx.tx, bill_id).await?
         && let Some(eid) = rev.extraction_id
         && let Some(ex) = store::get_extraction(&mut cx.tx, eid).await?
     {
-        return Ok((Some(rev.document_id), Some(ex)));
+        return Ok((Some(rev.document_id), Some(ex), true));
     }
     let docs = store::bill_documents(&mut cx.tx, bill_id).await?;
     let Some(doc) = docs.first() else {
-        return Ok((None, None));
+        return Ok((None, None, false));
     };
     let ex = store::document_extractions(&mut cx.tx, doc.id)
         .await?
         .into_iter()
         .find(|e| e.draft.is_some() || e.answer.is_some());
-    Ok((Some(doc.id), ex))
+    Ok((Some(doc.id), ex, false))
 }
 
 /// Copies missing `po_reference` or `service_address` onto the bill from its
 /// stored reading without ever overwriting a hint the bill already carries.
+/// When the reading comes from the document fallback (no invoice review), it
+/// is used only when its invoice number and total match the bill's, so a
+/// multi-invoice document cannot copy hints from a different invoice.
 async fn fill_hints_from_reading(
     cx: &mut Cx<'_>,
     mut bill: store::Bill,
@@ -3353,7 +3356,7 @@ async fn fill_hints_from_reading(
     if bill.po_reference.is_some() && bill.service_address.is_some() {
         return Ok(bill);
     }
-    let (_, Some(ex)) = bill_stored_extraction(cx, bill.id).await? else {
+    let (_, Some(ex), from_review) = bill_stored_extraction(cx, bill.id).await? else {
         return Ok(bill);
     };
     let read_str = |key: &str| {
@@ -3363,6 +3366,26 @@ async fn fill_hints_from_reading(
             .or_else(|| ex.answer.as_ref().and_then(|a| a[key].as_str()))
             .map(str::to_owned)
     };
+    if !from_review {
+        let reading_inv = read_str("invoice_number");
+        let reading_cents = ex
+            .draft
+            .as_ref()
+            .and_then(|d| d["total_cents"].as_i64())
+            .or_else(|| {
+                ex.answer
+                    .as_ref()
+                    .and_then(|a| a["total"].as_str())
+                    .and_then(|s| payvy_domain::extraction::parse_money(s).ok())
+            });
+        let inv_matches = reading_inv.as_deref().is_some_and(|inv| {
+            let k = payvy_domain::bills::invoice_key(inv);
+            !k.is_empty() && k == payvy_domain::bills::invoice_key(&bill.invoice_number)
+        });
+        if !inv_matches || reading_cents != Some(bill.amount_cents) {
+            return Ok(bill);
+        }
+    }
     let fill_po = if bill.po_reference.is_none() {
         text(read_str("po_number"))
     } else {
@@ -3509,7 +3532,7 @@ async fn save_evidence_tags(
     if cx.actor.kind != store::ActorKind::Person {
         return Err(CommandError::PersonOnly("po.match_tag"));
     }
-    let (doc_id, ex) = bill_stored_extraction(cx, bill.id).await?;
+    let (doc_id, ex, _) = bill_stored_extraction(cx, bill.id).await?;
     let source_pages: Vec<payvy_domain::invoice_evidence::SourcePage> = ex
         .as_ref()
         .and_then(|e| e.analysis.as_ref())
@@ -3517,6 +3540,7 @@ async fn save_evidence_tags(
         .unwrap_or_default();
 
     let mut saved = Vec::with_capacity(evidence.len());
+    let mut seen = std::collections::HashSet::new();
     let mut fill_po: Option<String> = None;
     let mut fill_addr: Option<String> = None;
 
@@ -3607,6 +3631,20 @@ async fn save_evidence_tags(
             }
             _ => unreachable!(),
         };
+
+        if !seen.insert((field.to_owned(), normalized_value.clone()))
+            || po_store::has_live_vendor_field_example_on_bill(
+                &mut cx.tx,
+                bill.id,
+                field,
+                &normalized_value,
+            )
+            .await?
+        {
+            return Err(CommandError::Conflict(format!(
+                "a live {field} example with value {normalized_value:?} already exists on this bill"
+            )));
+        }
 
         let grounded =
             payvy_domain::invoice_evidence::quote_located(&quote, item.page, &source_pages);
